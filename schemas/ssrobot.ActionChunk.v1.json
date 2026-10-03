@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.ActionChunk v1",
+  "$ref": "#/$defs/ActionChunk",
+  "$defs": {
+    "ActionChunk": {
+      "type": "object",
+      "description": "A sequence of instantaneous command steps at a fixed period, typically from a policy.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.ActionChunk"
+        },
+        "version": {
+          "const": 1
+        },
+        "start": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the first step applies."
+        },
+        "period_ns": {
+          "type": "integer",
+          "description": "Time between consecutive steps.",
+          "x-unit": "ns"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/JointCommand"
+                },
+                {
+                  "$ref": "#/$defs/GripperCommand"
+                },
+                {
+                  "$ref": "#/$defs/BaseTwistCommand"
+                }
+              ]
+            }
+          },
+          "description": "Commands per step; one per addressed component."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "start",
+        "period_ns",
+        "steps"
+      ],
+      "additionalProperties": false
+    },
+    "BaseTwistCommand": {
+      "type": "object",
+      "description": "Planar velocity for a mobile base, expressed in the base's own frame.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.BaseTwistCommand"
+        },
+        "version": {
+          "const": 1
+        },
+        "base": {
+          "type": "string",
+          "description": "Mobile base name."
+        },
+        "linear": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Forward (x) and leftward (y) velocity in the base frame.",
+          "x-unit": "m/s"
+        },
+        "angular": {
+          "type": "number",
+          "description": "Counter-clockwise yaw rate about base z.",
+          "x-unit": "rad/s"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "base",
+        "linear",
+        "angular"
+      ],
+      "additionalProperties": false
+    },
+    "GripperCommand": {
+      "type": "object",
+      "description": "Target opening for a gripper.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.GripperCommand"
+        },
+        "version": {
+          "const": 1
+        },
+        "gripper": {
+          "type": "string",
+          "description": "Gripper name."
+        },
+        "opening": {
+          "type": "number",
+          "description": "0 is fully closed, 1 is fully open.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "gripper",
+        "opening"
+      ],
+      "additionalProperties": false
+    },
+    "JointCommand": {
+      "type": "object",
+      "description": "Instantaneous targets for every joint of a group, in the group's declared order.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.JointCommand"
+        },
+        "version": {
+          "const": 1
+        },
+        "group": {
+          "type": "string",
+          "description": "Joint group name."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joint names; must equal the group's order."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "position",
+            "velocity",
+            "effort"
+          ],
+          "description": "How values are interpreted."
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "One value per joint, in joint units for the mode.",
+          "x-unit": "joint"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "group",
+        "joints",
+        "mode",
+        "values"
+      ],
+      "additionalProperties": false
+    },
+    "Timestamp": {
+      "type": "object",
+      "description": "A point in time on a named clock.",
+      "properties": {
+        "clock": {
+          "type": "string",
+          "description": "Clock identity, e.g. 'sim:geodude-1' or 'ros:/clock'."
+        },
+        "time_ns": {
+          "type": "integer",
+          "description": "Nanoseconds since the clock's epoch.",
+          "x-unit": "ns"
+        }
+      },
+      "required": [
+        "clock",
+        "time_ns"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

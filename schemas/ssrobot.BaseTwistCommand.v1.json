@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.BaseTwistCommand v1",
+  "$ref": "#/$defs/BaseTwistCommand",
+  "$defs": {
+    "BaseTwistCommand": {
+      "type": "object",
+      "description": "Planar velocity for a mobile base, expressed in the base's own frame.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.BaseTwistCommand"
+        },
+        "version": {
+          "const": 1
+        },
+        "base": {
+          "type": "string",
+          "description": "Mobile base name."
+        },
+        "linear": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Forward (x) and leftward (y) velocity in the base frame.",
+          "x-unit": "m/s"
+        },
+        "angular": {
+          "type": "number",
+          "description": "Counter-clockwise yaw rate about base z.",
+          "x-unit": "rad/s"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "base",
+        "linear",
+        "angular"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

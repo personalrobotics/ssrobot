@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.RuntimeInfo v1",
+  "$ref": "#/$defs/RuntimeInfo",
+  "$defs": {
+    "CommandCapability": {
+      "type": "object",
+      "description": "A command a component accepts.",
+      "properties": {
+        "component": {
+          "type": "string",
+          "description": "Component name."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "joint",
+            "joint_trajectory",
+            "gripper",
+            "base_twist"
+          ],
+          "description": "Accepted command kind."
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "position",
+                "velocity",
+                "effort"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Joint mode; JOINT kind only."
+        }
+      },
+      "required": [
+        "component",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "RuntimeInfo": {
+      "type": "object",
+      "description": "What an opened runtime reports about itself.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.RuntimeInfo"
+        },
+        "version": {
+          "type": "string",
+          "description": "Runtime implementation and backend versions."
+        },
+        "runtime": {
+          "type": "string",
+          "description": "Runtime implementation name."
+        },
+        "clock_mode": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "external"
+          ],
+          "description": "Who advances time."
+        },
+        "clock": {
+          "type": "string",
+          "description": "Clock identity used by every timestamp it produces."
+        },
+        "description": {
+          "type": "string",
+          "description": "Fingerprint of the bound robot description."
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CommandCapability"
+          },
+          "description": "Command capabilities confirmed available now."
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Channel names confirmed available now."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "runtime",
+        "version",
+        "clock_mode",
+        "clock",
+        "description",
+        "commands",
+        "channels"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
