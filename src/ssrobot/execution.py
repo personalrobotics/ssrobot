@@ -109,3 +109,52 @@ class AppliedCommand(Record):
 
     def _validate(self) -> None:
         check_name(self.execution, path="execution")
+
+
+class HealthState(enum.StrEnum):
+    OK = "ok"
+    """Commands may be accepted."""
+    FAULTED = "faulted"
+    """The runtime stopped the affected executions and accepts no commands until recovery."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RuntimeHealth(Record):
+    """A runtime's report that it faulted or recovered."""
+
+    SCHEMA = "ssrobot.RuntimeHealth"
+    VERSION = 1
+
+    state: HealthState = field(metadata=meta("Health after this report."))
+    stamp: Timestamp = field(metadata=meta("When the change happened, on the runtime clock."))
+    diagnostic: Diagnostic | None = field(default=None, metadata=meta("Required when faulted."))
+    components: tuple[str, ...] = field(
+        default=(), metadata=meta("Affected components; empty means the whole robot.")
+    )
+
+    def _validate(self) -> None:
+        if self.state is HealthState.FAULTED and self.diagnostic is None:
+            raise ValidationError("missing_field", "a fault needs a diagnostic", path="diagnostic")
+        for i, name in enumerate(self.components):
+            check_name(name, path=f"components[{i}]")
+        if len(set(self.components)) != len(self.components):
+            raise ValidationError("duplicate_name", "components repeat", path="components")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Submission(Record):
+    """A command accepted by a context for execution, with its source and deadline."""
+
+    SCHEMA = "ssrobot.Submission"
+    VERSION = 1
+
+    execution: str = field(metadata=meta("Execution identifier assigned by the context."))
+    source: str = field(metadata=meta("Who submitted it, e.g. 'planner' or 'policy:act'."))
+    command: Command = field(metadata=meta("The submitted command."))
+    deadline: Timestamp | None = field(
+        default=None, metadata=meta("Runtime time by which it must finish, else it times out.")
+    )
+
+    def _validate(self) -> None:
+        check_name(self.execution, path="execution")
+        check_name(self.source, path="source")

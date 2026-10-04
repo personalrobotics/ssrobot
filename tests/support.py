@@ -33,9 +33,10 @@ from ssrobot import (
     Quantity,
     Reading,
     RobotDescription,
+    RuntimeEvent,
     RuntimeInfo,
+    RuntimeUpdate,
     Timestamp,
-    ValidationError,
 )
 
 ARM = JointLimits(lower=-math.pi, upper=math.pi, velocity=2.0, effort=50.0)
@@ -155,7 +156,7 @@ class KinematicRuntime:
         self._q: dict[str, float] = {}
         self._time_ns = 0
         self._pending: dict[str, JointCommand] = {}
-        self._status: dict[str, ExecutionStatus] = {}
+        self._events: list[RuntimeEvent] = []
         self.submitted: list[Command] = []
 
     def open(self, description: RobotDescription) -> RuntimeInfo:
@@ -193,44 +194,40 @@ class KinematicRuntime:
             )
         return Observation(stamp=self._stamp(), readings=tuple(readings))
 
-    def submit(self, command: Command) -> ExecutionStatus:
+    def submit(self, execution: str, command: Command) -> ExecutionStatus:
         self.submitted.append(command)
-        execution = f"exec-{len(self._status) + 1}"
         if not isinstance(command, JointCommand):
-            status = ExecutionStatus(
+            return ExecutionStatus(
                 execution=execution,
                 state=ExecutionState.REJECTED,
                 stamp=self._stamp(),
                 diagnostic=Diagnostic(code="unsupported_command", message="joint positions only"),
             )
-        else:
-            self._pending[execution] = command
-            status = ExecutionStatus(
-                execution=execution, state=ExecutionState.PENDING, stamp=self._stamp()
-            )
-        self._status[execution] = status
-        return status
+        self._pending[execution] = command
+        return ExecutionStatus(
+            execution=execution, state=ExecutionState.PENDING, stamp=self._stamp()
+        )
 
-    def status(self, execution: str) -> ExecutionStatus:
-        if execution not in self._status:
-            raise ValidationError("unknown_reference", f"unknown execution {execution!r}")
-        return self._status[execution]
-
-    def cancel(self, execution: str) -> ExecutionStatus:
-        if self._pending.pop(execution, None) is not None:
-            self._status[execution] = ExecutionStatus(
-                execution=execution, state=ExecutionState.CANCELED, stamp=self._stamp()
-            )
-        return self.status(execution)
+    def cancel(self, execution: str) -> None:
+        self._pending.pop(execution, None)
 
     def step(self) -> None:
         self._time_ns += self.tick_ns
         for execution, command in self._pending.items():
             self._q.update(zip(command.joints, command.values, strict=True))
-            self._status[execution] = ExecutionStatus(
-                execution=execution, state=ExecutionState.SUCCEEDED, stamp=self._stamp()
+            self._events.append(
+                ExecutionStatus(
+                    execution=execution, state=ExecutionState.SUCCEEDED, stamp=self._stamp()
+                )
             )
         self._pending.clear()
+
+    def poll(self) -> RuntimeUpdate:
+        events, self._events = tuple(self._events), []
+        return RuntimeUpdate(stamp=self._stamp(), events=events)
+
+    def recover(self) -> None:
+        pass
 
 
 class ObserveOnlyRuntime:
@@ -279,14 +276,88 @@ class ObserveOnlyRuntime:
             readings.append(Reading(channel=name, stamp=stamp, value=value, source_stamp=device))
         return Observation(stamp=stamp, readings=tuple(readings))
 
-    def submit(self, command: Command) -> ExecutionStatus:
+    def submit(self, execution: str, command: Command) -> ExecutionStatus:
         raise AssertionError("RobotContext must reject commands this runtime does not offer")
 
-    def status(self, execution: str) -> ExecutionStatus:
-        raise ValidationError("unknown_reference", f"unknown execution {execution!r}")
-
-    def cancel(self, execution: str) -> ExecutionStatus:
-        return self.status(execution)
+    def cancel(self, execution: str) -> None:
+        raise AssertionError("this runtime never has executions to cancel")
 
     def step(self) -> None:
         raise AssertionError("RobotContext must not step an externally clocked runtime")
+
+    def poll(self) -> RuntimeUpdate:
+        return RuntimeUpdate(stamp=Timestamp(clock=self.clock, time_ns=self.now_ns))
+
+    def recover(self) -> None:
+        pass
+
+
+class ScriptedRuntime:
+    """A runtime whose answers a test dictates, to check how a context treats a runtime
+    that breaks its contract. It logs every call and the executions it still holds."""
+
+    def __init__(self, *, clock_mode: ClockMode, clock: str = "ext:scripted") -> None:
+        self.clock_mode = clock_mode
+        self.clock = clock
+        self.now_ns = 0
+        self.calls: list[str] = []
+        self.live: list[str] = []
+        self.events: list[RuntimeEvent] = []
+        self.answer_for: str | None = None  # answer submit() about another execution
+        self._description: RobotDescription | None = None
+
+    def stamp(self) -> Timestamp:
+        return Timestamp(clock=self.clock, time_ns=self.now_ns)
+
+    def open(self, description: RobotDescription) -> RuntimeInfo:
+        self.calls.append("open")
+        self._description = description
+        return RuntimeInfo(
+            runtime="scripted",
+            runtime_version="0",
+            clock_mode=self.clock_mode,
+            clock=self.clock,
+            description=description.fingerprint(),
+            commands=description.commands,
+            channels=_joint_channels(description),
+        )
+
+    def close(self) -> None:
+        self.calls.append("close")
+
+    def observe(self, request: ObservationRequest) -> Observation:
+        assert self._description is not None
+        self.calls.append("observe")
+        readings = tuple(
+            Reading(
+                channel=name,
+                stamp=self.stamp(),
+                value=(0.0,) * self._description.channel(name).shape[0],
+            )
+            for name in request.channels
+        )
+        return Observation(stamp=self.stamp(), readings=readings)
+
+    def submit(self, execution: str, command: Command) -> ExecutionStatus:
+        self.calls.append(f"submit {execution}")
+        self.live.append(execution)
+        return ExecutionStatus(
+            execution=self.answer_for or execution, state=ExecutionState.PENDING, stamp=self.stamp()
+        )
+
+    def cancel(self, execution: str) -> None:
+        self.calls.append(f"cancel {execution}")
+        if execution in self.live:
+            self.live.remove(execution)
+
+    def step(self) -> None:
+        self.calls.append("step")
+        self.now_ns += 10_000_000
+
+    def poll(self) -> RuntimeUpdate:
+        self.calls.append("poll")
+        events, self.events = tuple(self.events), []
+        return RuntimeUpdate(stamp=self.stamp(), events=events)
+
+    def recover(self) -> None:
+        self.calls.append("recover")

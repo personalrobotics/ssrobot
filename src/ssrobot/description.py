@@ -265,6 +265,11 @@ class RobotDescription(Record):
         """Content identity. Runtimes report it so stale bindings are detected."""
         return fingerprint(self)
 
+    def component_names(self) -> frozenset[str]:
+        """Names of every joint group, gripper, and mobile base."""
+        names = [g.name for g in self.groups] + [g.name for g in self.grippers]
+        return frozenset(names + [b.name for b in self.bases])
+
     def joint(self, name: str) -> Joint:
         return _lookup(self.joints, name, "joint")
 
