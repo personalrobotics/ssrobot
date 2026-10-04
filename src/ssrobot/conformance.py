@@ -21,13 +21,21 @@ import enum
 import functools
 import math
 import sys
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from ssrobot._wire import DType, Record, Value, dumps, meta
-from ssrobot.commands import ActionChunk, CommandKind, JointCommand, JointMode, JointTrajectory
+from ssrobot.commands import (
+    ActionChunk,
+    Command,
+    CommandKind,
+    JointCommand,
+    JointMode,
+    JointTrajectory,
+)
 from ssrobot.context import ContextState, RobotContext
 from ssrobot.conventions import ClockMode, Timestamp
 from ssrobot.description import (
@@ -40,10 +48,10 @@ from ssrobot.description import (
     RobotDescription,
 )
 from ssrobot.errors import LifecycleError, OwnershipError, SsrobotError, ValidationError
-from ssrobot.execution import ExecutionState
-from ssrobot.observations import ChannelSpec, ObservationRequest, Quantity
+from ssrobot.execution import ExecutionState, ExecutionStatus
+from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity
 from ssrobot.replay import ReplayRuntime, ReplayScript
-from ssrobot.runtime import Runtime
+from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate
 from ssrobot.trace import JsonlTrace, TraceSink
 
 
@@ -183,7 +191,8 @@ def run_conformance(
     """Run the scenario on one fresh runtime and return the report."""
     checks: list[ConformanceCheck] = []
     runtime = make_runtime()
-    context = RobotContext(description, runtime, sinks=sinks)
+    counted = _CountedRuntime(runtime)
+    context = RobotContext(description, counted, sinks=sinks)
 
     def record(name: str, run: Callable[[], str]) -> None:
         try:
@@ -214,6 +223,13 @@ def run_conformance(
             skip("fault", "the runtime cannot inject faults")
         else:
             record("fault", functools.partial(_check_fault, context, arms, runtime))
+        if applicable:
+            record(
+                "terminal_short_circuit",
+                functools.partial(_check_terminal_short_circuit, context, arms, counted),
+            )
+        else:
+            skip("terminal_short_circuit", why)
         if applicable:
             record("close", functools.partial(_check_close, context, arms))
         else:
@@ -364,6 +380,76 @@ def _check_timeout(context: RobotContext, arms: list[_Arm]) -> str:
     deadline = execution.deadline
     _expect(deadline is not None and status.stamp.time_ns >= deadline.time_ns, "timed out early")
     return f"timed out {status.stamp.ns_since(start)} ns after submission, deadline 30000000 ns"
+
+
+class _CountedRuntime:
+    """Passes every call through to a runtime and counts them by method."""
+
+    def __init__(self, runtime: Runtime) -> None:
+        self.runtime = runtime
+        self.calls: Counter[str] = Counter()
+
+    def open(self, description: RobotDescription) -> RuntimeInfo:
+        self.calls["open"] += 1
+        return self.runtime.open(description)
+
+    def close(self) -> None:
+        self.calls["close"] += 1
+        self.runtime.close()
+
+    def observe(self, request: ObservationRequest) -> Observation:
+        self.calls["observe"] += 1
+        return self.runtime.observe(request)
+
+    def submit(self, execution: str, command: Command) -> ExecutionStatus:
+        self.calls["submit"] += 1
+        return self.runtime.submit(execution, command)
+
+    def cancel(self, execution: str) -> None:
+        self.calls["cancel"] += 1
+        self.runtime.cancel(execution)
+
+    def step(self) -> None:
+        self.calls["step"] += 1
+        self.runtime.step()
+
+    def poll(self) -> RuntimeUpdate:
+        self.calls["poll"] += 1
+        return self.runtime.poll()
+
+    def recover(self) -> None:
+        self.calls["recover"] += 1
+        self.runtime.recover()
+
+
+def _check_terminal_short_circuit(
+    context: RobotContext, arms: list[_Arm], counted: _CountedRuntime
+) -> str:
+    far = tuple(q + 0.5 for q in arms[0].start)
+    rejected = context.submit(
+        arms[0].trajectory(context.description, 50_000_000, start=far), source="planner"
+    )
+    succeeded = context.submit(arms[0].hold(context.description), source="planner")
+    context.run_until(succeeded, max_ticks=10)
+    canceled = context.submit(
+        arms[1].trajectory(context.description, 1_000_000_000), source="policy"
+    )
+    context.cancel(canceled)
+    calls, now = Counter(counted.calls), context.now
+    states = [
+        context.run_until(e).state.value
+        for e in (rejected, succeeded, canceled, succeeded, canceled)
+    ]
+    _expect(
+        states == ["rejected", "succeeded", "canceled", "succeeded", "canceled"],
+        f"run_until returned {states}",
+    )
+    _expect(counted.calls == calls, f"run_until called the runtime: {counted.calls - calls}")
+    _expect(context.now == now, "run_until advanced time")
+    return (
+        "run_until returned rejected, succeeded, and canceled executions, twice, without "
+        "bounds and with 0 runtime calls"
+    )
 
 
 def _check_rejection(context: RobotContext, arms: list[_Arm]) -> str:

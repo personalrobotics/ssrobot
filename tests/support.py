@@ -290,3 +290,74 @@ class ObserveOnlyRuntime:
 
     def recover(self) -> None:
         pass
+
+
+class ScriptedRuntime:
+    """A runtime whose answers a test dictates, to check how a context treats a runtime
+    that breaks its contract. It logs every call and the executions it still holds."""
+
+    def __init__(self, *, clock_mode: ClockMode, clock: str = "ext:scripted") -> None:
+        self.clock_mode = clock_mode
+        self.clock = clock
+        self.now_ns = 0
+        self.calls: list[str] = []
+        self.live: list[str] = []
+        self.events: list[RuntimeEvent] = []
+        self.answer_for: str | None = None  # answer submit() about another execution
+        self._description: RobotDescription | None = None
+
+    def stamp(self) -> Timestamp:
+        return Timestamp(clock=self.clock, time_ns=self.now_ns)
+
+    def open(self, description: RobotDescription) -> RuntimeInfo:
+        self.calls.append("open")
+        self._description = description
+        return RuntimeInfo(
+            runtime="scripted",
+            runtime_version="0",
+            clock_mode=self.clock_mode,
+            clock=self.clock,
+            description=description.fingerprint(),
+            commands=description.commands,
+            channels=_joint_channels(description),
+        )
+
+    def close(self) -> None:
+        self.calls.append("close")
+
+    def observe(self, request: ObservationRequest) -> Observation:
+        assert self._description is not None
+        self.calls.append("observe")
+        readings = tuple(
+            Reading(
+                channel=name,
+                stamp=self.stamp(),
+                value=(0.0,) * self._description.channel(name).shape[0],
+            )
+            for name in request.channels
+        )
+        return Observation(stamp=self.stamp(), readings=readings)
+
+    def submit(self, execution: str, command: Command) -> ExecutionStatus:
+        self.calls.append(f"submit {execution}")
+        self.live.append(execution)
+        return ExecutionStatus(
+            execution=self.answer_for or execution, state=ExecutionState.PENDING, stamp=self.stamp()
+        )
+
+    def cancel(self, execution: str) -> None:
+        self.calls.append(f"cancel {execution}")
+        if execution in self.live:
+            self.live.remove(execution)
+
+    def step(self) -> None:
+        self.calls.append("step")
+        self.now_ns += 10_000_000
+
+    def poll(self) -> RuntimeUpdate:
+        self.calls.append("poll")
+        events, self.events = tuple(self.events), []
+        return RuntimeUpdate(stamp=self.stamp(), events=events)
+
+    def recover(self) -> None:
+        self.calls.append("recover")

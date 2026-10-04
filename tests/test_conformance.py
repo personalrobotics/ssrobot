@@ -73,6 +73,7 @@ def test_replay_runtime_passes_the_conformance_scenario(artifacts: Path) -> None
             "runtime_rejection",
             "stale_command",
             "fault",
+            "terminal_short_circuit",
             "close",
         )
     }

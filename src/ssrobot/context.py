@@ -19,6 +19,7 @@ from ssrobot.errors import (
     CapabilityError,
     LifecycleError,
     OwnershipError,
+    SsrobotError,
     StaleRevisionError,
     ValidationError,
 )
@@ -34,7 +35,7 @@ from ssrobot.execution import (
 from ssrobot.observations import Observation, ObservationRequest
 from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate
 from ssrobot.trace import TraceKind, TracePayload, TraceRecord, TraceSink
-from ssrobot.validation import check_command, check_observation, check_request
+from ssrobot.validation import check_applied, check_command, check_observation, check_request
 
 
 class ContextState(enum.StrEnum):
@@ -116,10 +117,6 @@ class Execution:
         return f"Execution({self.id!r}, {self.source!r}, {self.status.state.value})"
 
 
-def _contract(message: str) -> ValidationError:
-    return ValidationError("runtime_contract", message)
-
-
 class RobotContext:
     """Binds one immutable description to one injected runtime for one session.
 
@@ -150,6 +147,7 @@ class RobotContext:
         self._owners: dict[str, Execution] = {}
         self._fault: RuntimeHealth | None = None
         self._submissions = 0
+        self._breached = False
 
     # -- Properties ------------------------------------------------------------------
 
@@ -199,7 +197,7 @@ class RobotContext:
             self._check_info(info)
             update = self._runtime.poll()
             if update.stamp.clock != info.clock:
-                raise _contract(f"update on clock {update.stamp.clock!r}, not {info.clock!r}")
+                raise self._breach(f"update on clock {update.stamp.clock!r}, not {info.clock!r}")
             self._info, self._now, self._state = info, update.stamp, ContextState.OPEN
             self._emit(TraceKind.OPENED, self._runtime_source, info)
             self._process(update, stepped=False)
@@ -237,8 +235,13 @@ class RobotContext:
             self._runtime.close()
 
     def recover(self) -> ContextState:
-        """Ask the runtime to clear its fault. Returns the resulting state."""
+        """Ask the runtime to clear its fault. Returns the resulting state.
+
+        A fault caused by a runtime contract breach cannot be recovered; close instead.
+        """
         self._require("recover")
+        if self._breached:
+            raise LifecycleError("unrecoverable", "the runtime broke its contract; close it")
         self._runtime.recover()
         self._process(self._runtime.poll(), stepped=False)
         return self._state
@@ -250,8 +253,8 @@ class RobotContext:
         check_request(self._description, request, info)
         observation = self._runtime.observe(request)
         check_observation(self._description, request, observation, info)
-        # Recorded at the context's time; the observation keeps its own stamp.
-        self._emit(TraceKind.OBSERVED, self._runtime_source, observation)
+        self._accept_direct(observation.stamp)
+        self._emit(TraceKind.OBSERVED, self._runtime_source, observation, observation.stamp)
         return observation
 
     # -- Commands --------------------------------------------------------------------
@@ -263,8 +266,9 @@ class RobotContext:
 
         ``source`` identifies the writer. A component controlled by an unfinished
         execution from another source cannot be commanded (``ownership_conflict``); one
-        from the same source is superseded and canceled. ``timeout_ns`` sets a deadline
-        on the runtime clock. Does not advance time.
+        from the same source is superseded and canceled once the runtime accepts the new
+        command. ``timeout_ns`` sets a deadline on the runtime clock, counted from when
+        the runtime accepted the command. Does not advance a manual clock.
         """
         info = self._require("submit")
         check_name(source, path="source")
@@ -297,34 +301,38 @@ class RobotContext:
 
         self._submissions += 1
         execution_id = f"e{self._submissions}"
-        for old in superseded:
-            self._finish(
-                old,
-                ExecutionState.CANCELED,
-                Diagnostic(code="superseded", message=f"superseded by {execution_id}"),
+        status = self._runtime.submit(execution_id, command)
+        # Nothing is committed until the runtime's answer is valid; on a breach the
+        # context cancels this exact execution in the runtime before anything else.
+        if status.execution != execution_id or status.state not in (
+            ExecutionState.PENDING,
+            ExecutionState.REJECTED,
+        ):
+            raise self._breach(
+                f"submit of {execution_id} answered {status.state} for {status.execution!r}",
+                rollback=execution_id,
             )
+        self._accept_direct(status.stamp, rollback=execution_id)
+        accepted = self.now
         deadline = (
             None
             if timeout_ns is None
-            else Timestamp(clock=now.clock, time_ns=now.time_ns + timeout_ns)
+            else Timestamp(clock=accepted.clock, time_ns=accepted.time_ns + timeout_ns)
         )
         submission = Submission(
             execution=execution_id, source=source, command=command, deadline=deadline
         )
         execution = Execution(self, submission, components)
-        self._emit(TraceKind.SUBMITTED, source, submission)
-
-        status = self._runtime.submit(execution_id, command)
-        if status.execution != execution_id or status.state not in (
-            ExecutionState.PENDING,
-            ExecutionState.REJECTED,
-        ):
-            raise _contract(f"submit must return pending or rejected for {execution_id}")
-        self._check_stamp(status.stamp, earliest=now)
-        # Registered only once the runtime has answered validly.
         self._executions[execution_id] = execution
-        self._record(status, self._runtime_source, at=now)
+        self._emit(TraceKind.SUBMITTED, source, submission)
+        self._record(status, self._runtime_source)
         if status.state is ExecutionState.PENDING:
+            for old in superseded:
+                self._finish(
+                    old,
+                    ExecutionState.CANCELED,
+                    Diagnostic(code="superseded", message=f"superseded by {execution_id}"),
+                )
             for component in components:
                 self._owners[component] = execution
         return execution
@@ -389,6 +397,8 @@ class RobotContext:
         """
         info = self._require("run_until")
         self._check_own(execution)
+        if execution.done:
+            return execution.status  # no step, poll, or bound needed
         if info.clock_mode is ClockMode.MANUAL:
             if max_ticks is None and execution.deadline is None:
                 raise ValueError("run_until on a manual clock needs max_ticks or a deadline")
@@ -449,11 +459,70 @@ class RobotContext:
         self, stamp: Timestamp, *, earliest: Timestamp, latest: Timestamp | None = None
     ) -> None:
         if stamp.clock != self.info.clock:
-            raise _contract(f"stamp on clock {stamp.clock!r}, not {self.info.clock!r}")
+            raise self._breach(f"stamp on clock {stamp.clock!r}, not {self.info.clock!r}")
         if stamp.time_ns < earliest.time_ns or (
             latest is not None and stamp.time_ns > latest.time_ns
         ):
-            raise _contract(f"stamp {stamp.time_ns} ns is out of causal order")
+            raise self._breach(f"stamp {stamp.time_ns} ns is out of causal order")
+
+    def _accept_direct(self, stamp: Timestamp, *, rollback: str | None = None) -> None:
+        """Place a direct runtime response in causal order.
+
+        It may not precede the latest accepted runtime time. An external runtime's
+        response may advance the context's time; a manual runtime answers at the
+        current tick.
+        """
+        now = self.now
+        if stamp.clock != now.clock:
+            raise self._breach(
+                f"response on clock {stamp.clock!r}, not {now.clock!r}", rollback=rollback
+            )
+        if stamp.time_ns < now.time_ns:
+            raise self._breach(
+                f"response at {stamp.time_ns} ns precedes the current {now.time_ns} ns",
+                rollback=rollback,
+            )
+        if stamp.time_ns > now.time_ns:
+            if self.info.clock_mode is ClockMode.MANUAL:
+                raise self._breach(
+                    f"manual runtime answered at {stamp.time_ns} ns, after the current tick "
+                    f"{now.time_ns} ns",
+                    rollback=rollback,
+                )
+            self._now = stamp
+
+    def _breach(self, message: str, *, rollback: str | None = None) -> ValidationError:
+        """Enter the safe state for a runtime that broke its contract; return the error.
+
+        The runtime is told to stop ``rollback`` (an execution it was just handed) and
+        every unfinished execution, which are recorded as failed. The context becomes
+        ``faulted`` and cannot recover; only close remains.
+        """
+        error = ValidationError("runtime_contract", message)
+        if self._state not in (ContextState.OPEN, ContextState.FAULTED) or self._now is None:
+            return error
+        self._breached = True
+        active = self._active()
+        for execution_id in ([rollback] if rollback else []) + [e.id for e in active]:
+            try:
+                self._runtime.cancel(execution_id)
+            except Exception as cleanup:
+                error.add_note(f"canceling {execution_id} also failed: {cleanup!r}")
+        diagnostic = Diagnostic(code="runtime_contract", message=message)
+        fault = RuntimeHealth(state=HealthState.FAULTED, stamp=self._now, diagnostic=diagnostic)
+        self._state, self._fault = ContextState.FAULTED, fault
+        self._emit(TraceKind.HEALTH, "context", fault, fault.stamp)
+        for execution in active:
+            self._record(
+                ExecutionStatus(
+                    execution=execution.id,
+                    state=ExecutionState.FAILED,
+                    stamp=self._now,
+                    diagnostic=diagnostic,
+                ),
+                "context",
+            )
+        return error
 
     def _process(self, update: RuntimeUpdate, *, stepped: bool) -> None:
         """Validate and apply one runtime update, then enforce deadlines."""
@@ -468,17 +537,21 @@ class RobotContext:
                 continue
             execution = self._executions.get(event.execution)
             if execution is None:
-                raise _contract(f"event for unknown execution {event.execution!r}")
+                raise self._breach(f"event for unknown execution {event.execution!r}")
             current = execution.status.state
             if current.terminal:
-                raise _contract(f"event for finished execution {execution.id} ({current})")
+                raise self._breach(f"event for finished execution {execution.id} ({current})")
             if isinstance(event, AppliedCommand):
                 if event.requested != execution.command:
-                    raise _contract(f"applied record for {execution.id} names another command")
+                    raise self._breach(f"applied record for {execution.id} names another command")
+                try:
+                    check_applied(self._description, execution.command, event.applied)
+                except SsrobotError as e:
+                    raise self._breach(f"{execution.id} applied an invalid command: {e}") from None
                 self._emit(TraceKind.APPLIED, execution.source, event, event.stamp)
             else:
                 if event.state not in RUNTIME_REPORTED or event.state not in NEXT_STATES[current]:
-                    raise _contract(f"{execution.id} cannot go from {current} to {event.state}")
+                    raise self._breach(f"{execution.id} cannot go from {current} to {event.state}")
                 self._record(event, self._runtime_source)
         self._now = update.stamp
         if stepped:
@@ -493,7 +566,7 @@ class RobotContext:
         known = self._description.component_names()
         for name in health.components:
             if name not in known:
-                raise _contract(f"health report names unknown component {name!r}")
+                raise self._breach(f"health report names unknown component {name!r}")
         self._emit(TraceKind.HEALTH, self._runtime_source, health, health.stamp)
         if health.state is HealthState.OK:
             if self._state is ContextState.FAULTED:
@@ -522,9 +595,9 @@ class RobotContext:
             "context",
         )
 
-    def _record(self, status: ExecutionStatus, source: str, *, at: Timestamp | None = None) -> None:
+    def _record(self, status: ExecutionStatus, source: str) -> None:
         self._statuses[status.execution] = status
-        self._emit(TraceKind.STATUS, source, status, at or status.stamp)
+        self._emit(TraceKind.STATUS, source, status, status.stamp)
         if status.state.terminal:
             for component, holder in list(self._owners.items()):
                 if holder.id == status.execution:

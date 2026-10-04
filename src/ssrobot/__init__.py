@@ -60,7 +60,7 @@ from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Q
 from ssrobot.replay import ReplayRuntime, ReplayScript, ReplayTick
 from ssrobot.runtime import Runtime, RuntimeEvent, RuntimeInfo, RuntimeUpdate
 from ssrobot.trace import JsonlTrace, TraceKind, TraceRecord, TraceSink, read_trace
-from ssrobot.validation import check_command, check_observation, check_request
+from ssrobot.validation import check_applied, check_command, check_observation, check_request
 
 __all__ = [
     "ActionChunk",
@@ -123,6 +123,7 @@ __all__ = [
     "TraceSink",
     "ValidationError",
     "Value",
+    "check_applied",
     "check_command",
     "check_observation",
     "check_request",

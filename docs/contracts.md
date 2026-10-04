@@ -49,8 +49,8 @@ trace. It validates everything going into the runtime and everything coming out.
 | `stop(components=None)` | Cancels every unfinished execution touching the components, or all of them (`stopped`). |
 | `step()` | Manual clocks only: advances one control tick, then applies the runtime's update. |
 | `update()` | Applies the runtime's pending update without advancing a manual clock. |
-| `run_until(execution, *, max_ticks=None, timeout_s=None)` | Blocks until the execution finishes or the bound is reached. It steps a manual runtime, needing `max_ticks` or a deadline, and polls an external runtime, needing `timeout_s` of wall-clock time. |
-| `recover()` | Faulted only: asks the runtime to clear its fault, then returns the resulting state. |
+| `run_until(execution, *, max_ticks=None, timeout_s=None)` | Returns a finished execution's status at once, with no step, poll, or bound. Otherwise it blocks until the execution finishes or the bound is reached: it steps a manual runtime, needing `max_ticks` or a deadline, and polls an external runtime, needing `timeout_s` of wall-clock time. A handle from another context fails with `unknown_reference`. |
+| `recover()` | Faulted only: asks the runtime to clear its fault, then returns the resulting state. Fails with `unrecoverable` after a runtime contract breach. |
 | `owner(component)`, `executions` | The execution controlling a component, and every execution in submission order. |
 
 An `Execution` exposes `id`, `command`, `source`, `components`, `deadline`, `status`,
@@ -68,7 +68,7 @@ or task logic.
   capabilities and channels it confirms are available now. The context rejects a
   different fingerprint (`stale_description`) and any capability or channel the
   description does not declare (`undeclared_capability`).
-- `submit(execution, command)` returns `pending` or `rejected`, stamped now. The
+- `submit(execution, command)` returns `pending` or `rejected` for that execution. The
   context assigns the execution identifier.
 - `cancel(execution)` means stop applying it at once and report nothing further about
   it. The context records the terminal state.
@@ -82,11 +82,33 @@ or task logic.
   failed or partial `open`.
 - A runtime must reject (`rejected`) a trajectory whose first waypoint differs from the
   current joint positions.
+- **Direct answers keep causal time.** The stamps on `submit` and `observe` answers may
+  not precede the latest runtime time the context accepted. A manual runtime answers
+  at the current tick. An external runtime's answer may be later, and then advances
+  `now`. Trace records and deadlines use the accepted time.
+- **Applied commands stay inside their execution.** Each `AppliedCommand` must lower
+  its own execution's command:
+  - a joint, gripper, or base command as itself, possibly clipped;
+  - a trajectory as `position` targets for its own group and joints;
+  - a chunk as one of its step commands.
 
-The context treats any runtime output that breaks these rules as a
+  It must stay within the description's limits. Anything else would cross the
+  one-writer boundary, so it is never published.
+
+**Contract breaches.** Any runtime output that breaks these rules raises
 `ValidationError("runtime_contract")`. Examples include a wrong clock, a stamp out of
-causal order, an unknown or finished execution, an illegal transition, or an applied
-record that names another command.
+causal order, an answer for another execution, an unknown or finished execution, an
+illegal transition, or an applied command outside its execution. The context then
+enters a deterministic safe state:
+
+1. It tells the runtime to cancel the execution it was just handed, if any, and then
+   every unfinished execution.
+2. It records those executions as `failed` (`runtime_contract`).
+3. It publishes a `health` record from `context`.
+4. It enters `faulted`, from which `recover()` fails with `unrecoverable`. Only
+   `close` remains useful.
+
+A failure during this cleanup is attached to the original error as a note.
 
 ## Lifecycle, ownership, and execution
 
@@ -96,7 +118,7 @@ record that names another command.
 | --- | --- | --- |
 | `created` | construction | `__enter__`, `close` |
 | `open` | a successful `__enter__`; `recover()` or an `ok` health event while faulted | `observe`, `submit`, `cancel`, `stop`, `step`, `update`, `run_until`, `close` |
-| `faulted` | a `faulted` health event | `observe`, `cancel`, `stop`, `step`, `update`, `run_until`, `recover`, `close` |
+| `faulted` | a `faulted` health event, or a runtime contract breach | `observe`, `cancel`, `stop`, `step`, `update`, `run_until`, `recover`, `close` |
 | `closed` | `close()`, `__exit__`, or a failed `__enter__` | `close` (no-op) |
 
 Anything else fails deterministically with `LifecycleError`. The code is `faulted`
@@ -112,7 +134,7 @@ while faulted, `not_open` otherwise, and `already_opened` for a second `__enter_
 | `active` | `succeeded`, `failed` | runtime |
 | `pending`, `active` | `canceled` (`canceled`, `stopped`, `superseded`, `context_closed`) | context |
 | `pending`, `active` | `timed_out` (`deadline_exceeded`) | context |
-| `pending`, `active` | `failed` (the fault's diagnostic) | context, on a fault |
+| `pending`, `active` | `failed` (the fault's diagnostic, or `runtime_contract`) | context, on a fault or a contract breach |
 
 Terminal states have no successors. When the context ends an execution, it calls
 `runtime.cancel` first.
@@ -124,15 +146,17 @@ Terminal states have no successors. When the context ends an execution, it calls
 - A submission that addresses a component owned by another `source` fails with
   `OwnershipError("ownership_conflict")` and never reaches the runtime.
 - A submission from the same source supersedes and cancels its earlier executions on
-  those components. A source replaces its own commands; it never interleaves with
-  another source's.
+  those components. This happens only once the runtime has accepted the new command;
+  if it rejects it, the earlier executions continue. A source replaces its own
+  commands; it never interleaves with another source's.
 - Commands to disjoint components, such as the left and right arms, run concurrently.
 - Ownership is released when an execution reaches any terminal state. A `rejected`
   execution never takes ownership.
 
 ### Deadlines, staleness, and stop scopes
 
-- `timeout_ns` sets `deadline = now + timeout_ns` on the runtime clock. Deadlines are
+- `timeout_ns` sets `deadline = accepted + timeout_ns` on the runtime clock, where
+  `accepted` is the time of the runtime's `submit` answer. Deadlines are
   checked after each update. A terminal state reported in that update takes
   precedence; otherwise the execution times out at the update's time.
 - An `ActionChunk` whose last step was due before `now` fails with
@@ -344,6 +368,15 @@ Every event becomes one `TraceRecord`, passed synchronously to each sink in orde
 | `source` | The submitter for `submitted` and `applied`, `runtime:<name>` for what the runtime reported, and `context` for the context's own decisions |
 | `payload` | `RuntimeInfo`, `Observation`, `Submission`, `ExecutionStatus`, `AppliedCommand`, or `RuntimeHealth` by kind; none for `stepped` and `closed` |
 
+Within one record, a payload's own stamp equals the record's `clock` and `time_ns`,
+`RuntimeInfo.clock` equals `clock`, and a submission's deadline is on the same clock
+and later than the record.
+
+`read_trace` also checks the trace as a whole: sequence numbers count up from 0 by
+line, one clock throughout, and time never decreasing. Each failure carries the line
+(`trace_sequence`, `clock_mismatch`, `trace_time`, `negative_time`). A trace cut
+short by an interrupted run is still readable; it need not end with `closed`.
+
 On a step, the runtime's events come first, then `stepped` at the new time, then any
 timeouts. Because `applied` records carry the submitter, every applied command can be
 attributed to a planner, policy, or person.
@@ -382,9 +415,12 @@ in this order:
 - `runtime_rejection`
 - `stale_command`
 - `fault`
+- `terminal_short_circuit`
 - `close`
 
-Together they reach every terminal execution state. A check a runtime cannot support
+Together they reach every terminal execution state. `terminal_short_circuit`
+counts calls through a wrapper around the runtime, and shows that `run_until` on
+finished executions makes none. A check a runtime cannot support
 is reported as `not_applicable`, with the reason; `fault` needs the `inject_fault` hook.
 
 ## Errors
@@ -404,6 +440,15 @@ uv run python -m ssrobot.conformance --out out/  # trace.jsonl, conformance-repo
 uv run python scripts/check_core_imports.py      # core dependency gate
 ```
 
+The dependency gate makes three checks:
+
+- **Runtime:** importing `ssrobot` and every submodule must not load a prohibited
+  module.
+- **Source:** no module may name one in an `import`, `from ... import`,
+  `importlib.import_module("...")`, or `__import__("...")` statement, anywhere,
+  including inside functions. Names built at run time are not detected.
+- **Metadata:** the distribution must have no prohibited unconditional requirement.
+
 CI also builds the wheel, installs only that wheel in an empty environment, and runs
 the dependency gate with `--installed` and the conformance scenario from it. That
 conformance trace and report are uploaded as the `installed-conformance` artifact.
@@ -416,6 +461,11 @@ conformance trace and report are uploaded as the `installed-conformance` artifac
 | `artifacts/test_replay_runtime_passes_the_conformance_scenario/run/` | The ReplayRuntime conformance `trace.jsonl` and `conformance-report.json`. The test re-reads them and checks every line against the schema, contiguous sequence numbers, time that never decreases, legal transitions, all five terminal states, and that each applied command is attributed to its submitter. A second run in `rerun/` is byte-identical. |
 | `artifacts/test_replay_faults_on_divergence_and_exhaustion/trace.jsonl` | A replay that diverges from its recording, recovers, then runs out of ticks. |
 | `artifacts/test_core_imports_no_backend/gate.txt` | Where `ssrobot` was imported from, and the gate's verdict. |
+| `artifacts/test_gate_finds_backend_imports_in_every_form/gate-forms.json` | Planted eager, lazy, `from`, aliased, multiline, dotted, and `import_module` backend imports, each failing the gate with its module, line, and dependency. |
+| `artifacts/test_direct_responses_keep_causal_time/` | An external runtime's answers advancing `now`, a deadline counted from acceptance, a regressing answer causing a breach, and a manual runtime answering ahead of its tick being rolled back. |
+| `artifacts/test_applied_commands_stay_within_ownership/` | Applied commands on another source's arm, and beyond limits, both causing a breach. Nothing misleading is published, and every execution fails and releases ownership. |
+| `artifacts/test_invalid_submit_answer_is_rolled_back/rollback-report.json` | A submit answered for the wrong execution: the runtime is told to cancel that exact execution first, nothing stays live, and nothing is committed. |
+| `artifacts/test_read_trace_enforces_whole_trace_invariants/` | Broken traces (gaps, repeats, reordering, time going back, a foreign clock, a mismatched payload stamp, negative time), each rejected with a code and line, and a truncated trace accepted. |
 | `artifacts/test_contexts_share_a_description_but_not_state/contexts-report.json` | Two contexts on one description diverging independently. A cross-clock chunk refused before reaching the runtime. Capability and clock-mode refusals on an externally clocked read-only runtime. Gripper openings at 0, 0.5, and 1 returned, while -0.01 and 1.01 are rejected. Cleanup after a stale open and after an exception. |
 
 Two runs produce byte-identical artifacts. Set `SSROBOT_ARTIFACTS` to write them

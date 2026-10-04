@@ -124,6 +124,42 @@ def _check_limits(
             raise ValidationError("out_of_limits", f"{name}={v} violates {bound}", path=path)
 
 
+def _applied_key(command: InstantCommand) -> tuple[object, ...]:
+    if isinstance(command, JointCommand):
+        return ("joint", command.group, command.joints, command.mode)
+    if isinstance(command, GripperCommand):
+        return ("gripper", command.gripper)
+    return ("base", command.base)
+
+
+def _lowerings(command: Command) -> set[tuple[object, ...]]:
+    """What a runtime may apply, instant by instant, for ``command``."""
+    if isinstance(command, JointTrajectory):
+        return {("joint", command.group, command.joints, JointMode.POSITION)}
+    if isinstance(command, ActionChunk):
+        return {_applied_key(c) for c in command.steps[0]}
+    return {_applied_key(command)}
+
+
+def check_applied(description: RobotDescription, command: Command, applied: InstantCommand) -> None:
+    """Raise unless ``applied`` is a lowering of ``command`` that stays within limits.
+
+    A joint command or chunk step is applied as itself, possibly clipped; a trajectory
+    as position targets for its own group and joints. Either way only the submitted
+    command's components, joints, and modes may appear.
+    """
+    if _applied_key(applied) not in _lowerings(command):
+        raise ValidationError(
+            "applied_mismatch",
+            f"applied {type(applied).__name__} on {_applied_key(applied)[1]!r} is not part of "
+            "the submitted command",
+            path="applied",
+        )
+    if isinstance(applied, JointCommand):
+        group = description.group(applied.group)
+        _check_limits(description, group, applied.mode, applied.values, "applied.values")
+
+
 def check_request(
     description: RobotDescription, request: ObservationRequest, info: RuntimeInfo | None = None
 ) -> None:

@@ -73,12 +73,41 @@ class TraceRecord(Record):
             raise ValidationError("out_of_limits", "sequence must be >= 0", path="sequence")
         check_name(self.clock, path="clock")
         check_name(self.source, path="source")
+        if self.time_ns < 0:
+            raise ValidationError("negative_time", "time_ns must be >= 0", path="time_ns")
         expected = _PAYLOAD[self.kind]
         if (self.payload is None) != (expected is None) or (
             expected is not None and not isinstance(self.payload, expected)
         ):
             want = "no payload" if expected is None else expected.__name__
             raise ValidationError("wrong_type", f"{self.kind} records carry {want}", path="payload")
+        payload = self.payload
+        if isinstance(payload, Observation | ExecutionStatus | AppliedCommand | RuntimeHealth):
+            if payload.stamp.clock != self.clock:
+                raise ValidationError(
+                    "clock_mismatch", "payload stamp uses another clock", path="payload.stamp"
+                )
+            if payload.stamp.time_ns != self.time_ns:
+                raise ValidationError(
+                    "trace_time",
+                    "payload stamp differs from the record time",
+                    path="payload.stamp",
+                )
+        elif isinstance(payload, RuntimeInfo) and payload.clock != self.clock:
+            raise ValidationError(
+                "clock_mismatch", "runtime clock differs from the record", path="payload.clock"
+            )
+        elif isinstance(payload, Submission) and payload.deadline is not None:
+            if payload.deadline.clock != self.clock:
+                raise ValidationError(
+                    "clock_mismatch", "deadline uses another clock", path="payload.deadline"
+                )
+            if payload.deadline.time_ns <= self.time_ns:
+                raise ValidationError(
+                    "trace_time",
+                    "deadline is not after the submission",
+                    path="payload.deadline",
+                )
 
 
 TraceSink = Callable[[TraceRecord], None]
@@ -114,13 +143,38 @@ class JsonlTrace:
 
 
 def read_trace(path: str | os.PathLike[str]) -> list[TraceRecord]:
-    """Strictly decode a JSONL trace written by ``JsonlTrace``."""
+    """Strictly decode a JSONL trace written by ``JsonlTrace``.
+
+    Beyond each record's own validity, the trace must number records 0, 1, 2, ... by
+    line, use one clock, and never go back in time. A trace cut short by an
+    interrupted run is accepted: it need not end with ``closed``.
+    """
     path = Path(path)
     assets = AssetStore(path.parent)
-    records = []
+    records: list[TraceRecord] = []
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         try:
-            records.append(loads(line, TraceRecord, assets))
+            record = loads(line, TraceRecord, assets)
         except ValidationError as e:
             raise ValidationError(e.code, e.message, path=f"line {number}: {e.path}") from None
+        where = f"line {number}"
+        if record.sequence != len(records):
+            raise ValidationError(
+                "trace_sequence",
+                f"expected sequence {len(records)}, found {record.sequence}",
+                path=f"{where}: sequence",
+            )
+        if records and record.clock != records[0].clock:
+            raise ValidationError(
+                "clock_mismatch",
+                f"trace clock is {records[0].clock!r}, found {record.clock!r}",
+                path=f"{where}: clock",
+            )
+        if records and record.time_ns < records[-1].time_ns:
+            raise ValidationError(
+                "trace_time",
+                f"time went back from {records[-1].time_ns} to {record.time_ns} ns",
+                path=f"{where}: time_ns",
+            )
+        records.append(record)
     return records
