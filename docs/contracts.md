@@ -77,6 +77,12 @@ policy, or task logic.
 Every numeric field in a record declares its unit. Schema generation fails if one does
 not, and the unit appears as `x-unit` in the schema.
 
+The unit of `JointCommand.values` depends on `mode`: `joint` for position, `joint/s` for
+velocity, and `joint-effort` for effort. The schema publishes the full mapping as
+`x-unit-by` on `values`, plus one `allOf` `if`/`then` branch per mode that resolves
+`values` to exactly one `x-unit`. `JointMode.unit` gives the same unit in Python. A
+serialized command carries no unit of its own, so it cannot contradict its mode.
+
 ### Poses and frames
 
 - `Pose(position, quat_wxyz)` is the pose of a child frame expressed in a parent frame.
@@ -102,6 +108,10 @@ not, and the unit appears as `x-unit` in the schema.
   groups, grippers, and bases share one namespace), and channels.
 - Names are local to a robot. When several robots share a scene, an entity is qualified
   by the pair (robot name, entity name).
+- Identifiers in execution records follow the same rule, so records can be correlated:
+  `ExecutionStatus.execution`, `AppliedCommand.execution`, `Modification.target`, and
+  `Diagnostic.component` when present. A malformed identifier fails with
+  `invalid_name`, both on construction and on decoding.
 
 ### Joint order
 
@@ -120,6 +130,10 @@ set fails with `joint_mismatch`. Values are never reordered silently.
   freshness is `observation.stamp - reading.stamp`, and a reading cannot be newer than
   its observation.
 - A ROS `builtin_interfaces/Time` converts as `time_ns = sec * 10**9 + nanosec`.
+- A scheduled command is interpreted on the runtime clock. An `ActionChunk` whose
+  `start` uses any clock other than `RuntimeInfo.clock` fails with `clock_mismatch` at
+  `start.clock`, before it reaches the runtime. Without a `RuntimeInfo`, validation
+  checks only the chunk's own structure.
 - `ClockMode.MANUAL` runtimes advance only by `step()`. `ClockMode.EXTERNAL`
   runtimes advance on their own.
 
@@ -184,6 +198,9 @@ inspected before any runtime opens. The runtime confirms which are available in
 | `depth_image` | optical frame | (h, w) | float32 | m along optical z |
 
 Vector quantities are read as tuples of floats. Images are read as `ArrayValue`.
+`RobotContext.observe` rejects a gripper opening outside `[0, 1]` with `out_of_limits`
+at `readings.<channel>`, so an out-of-range value never reaches the caller. Pose
+readings must carry a unit quaternion.
 
 ### Execution states
 
@@ -219,8 +236,9 @@ uv run python scripts/generate_schemas.py --check
 | Artifact | Shows |
 | --- | --- |
 | `artifacts/test_records_round_trip_through_json_and_checked_in_schemas/` | Trajectory, action chunk, multimodal observation, applied command, and description, each in wire form with its out-of-line image and depth assets. Each validates against `schemas/` and decodes to an equal value. |
-| `artifacts/test_conventions_accept_valid_and_reject_ambiguous_input/conventions-report.json` | Every valid and invalid convention case with its expected and actual diagnostic code, including the MuJoCo, URDF, and ROS timestamp conversions. |
-| `artifacts/test_contexts_share_a_description_but_not_state/contexts-report.json` | Two contexts on one description diverging independently, capability and clock-mode refusals on an externally clocked read-only runtime, and cleanup after a stale open and after an exception. |
+| `artifacts/test_joint_command_schema_fixes_the_unit_of_values_by_mode/joint-command-units.json` | For position, velocity, and effort commands: the mode, the single unit the schema resolves for `values`, and the unit after decoding. |
+| `artifacts/test_conventions_accept_valid_and_reject_ambiguous_input/conventions-report.json` | Every valid and invalid convention case with its expected and actual diagnostic code and path. Covers the MuJoCo, URDF, and ROS timestamp conversions, chunk clocks against manual and external runtimes, and execution-record identifiers. |
+| `artifacts/test_contexts_share_a_description_but_not_state/contexts-report.json` | Two contexts on one description diverging independently. A cross-clock chunk refused before reaching the runtime. Capability and clock-mode refusals on an externally clocked read-only runtime. Gripper openings at 0, 0.5, and 1 returned, while -0.01 and 1.01 are rejected. Cleanup after a stale open and after an exception. |
 
 Two runs produce byte-identical artifacts. Set `SSROBOT_ARTIFACTS` to write them
 elsewhere.

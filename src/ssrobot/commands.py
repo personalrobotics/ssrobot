@@ -30,6 +30,19 @@ class JointMode(enum.StrEnum):
     EFFORT = "effort"
     """Target efforts, N*m (revolute) or N (prismatic)."""
 
+    @property
+    def unit(self) -> str:
+        """The unit of ``JointCommand.values`` in this mode."""
+        return JOINT_MODE_UNITS[self]
+
+
+JOINT_MODE_UNITS = {
+    JointMode.POSITION: "joint",
+    JointMode.VELOCITY: "joint/s",
+    JointMode.EFFORT: "joint-effort",
+}
+"""Unit of ``JointCommand.values`` for each mode; published in the schema as ``x-unit-by``."""
+
 
 def _check_joints(joints: tuple[str, ...]) -> None:
     if not joints:
@@ -58,7 +71,10 @@ class JointCommand(Record):
     joints: tuple[str, ...] = field(metadata=meta("Joint names; must equal the group's order."))
     mode: JointMode = field(metadata=meta("How values are interpreted."))
     values: tuple[float, ...] = field(
-        metadata=meta("One value per joint, in joint units for the mode.", unit="joint")
+        metadata=meta(
+            "One value per joint, in the unit fixed by mode.",
+            unit_by=("mode", {m.value: u for m, u in JOINT_MODE_UNITS.items()}),
+        )
     )
 
     def _validate(self) -> None:

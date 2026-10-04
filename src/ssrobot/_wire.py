@@ -19,7 +19,7 @@ import sys
 import tempfile
 import types
 import typing
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
 
@@ -44,11 +44,25 @@ UNITS = frozenset(
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
-def meta(doc: str, *, unit: str | None = None) -> dict[str, str]:
-    """Field metadata: a description and, for numeric fields, a unit from ``UNITS``."""
-    if unit is not None and unit not in UNITS:
-        raise ValueError(f"unknown unit {unit!r}")
-    return {"doc": doc} if unit is None else {"doc": doc, "unit": unit}
+def meta(
+    doc: str, *, unit: str | None = None, unit_by: tuple[str, Mapping[str, str]] | None = None
+) -> dict[str, Any]:
+    """Field metadata: a description and, for numeric fields, a unit from ``UNITS``.
+
+    ``unit_by=(field, units)`` declares a unit that depends on the value of a sibling
+    enum field, e.g. ``("mode", {"position": "joint", "velocity": "joint/s"})``.
+    """
+    if unit is not None and unit_by is not None:
+        raise ValueError("declare unit or unit_by, not both")
+    for u in [unit] if unit_by is None else list(unit_by[1].values()):
+        if u is not None and u not in UNITS:
+            raise ValueError(f"unknown unit {u!r}")
+    out: dict[str, Any] = {"doc": doc}
+    if unit is not None:
+        out["unit"] = unit
+    if unit_by is not None:
+        out["unit_by"] = (unit_by[0], dict(unit_by[1]))
+    return out
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
@@ -164,6 +178,7 @@ class _Field:
     required: bool
     doc: str
     unit: str | None
+    unit_by: tuple[str, dict[str, str]] | None
 
 
 _FIELDS: dict[type[Struct], tuple[_Field, ...]] = {}
@@ -181,6 +196,7 @@ def _fields(cls: type[Struct]) -> tuple[_Field, ...]:
             required=f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING,
             doc=f.metadata.get("doc", ""),
             unit=f.metadata.get("unit"),
+            unit_by=f.metadata.get("unit_by"),
         )
         for f in dataclasses.fields(cls)
     )
@@ -528,14 +544,19 @@ def _schema_struct(cls: type[Struct], defs: dict[str, Any]) -> dict[str, Any]:
         properties["schema"] = {"const": cls.SCHEMA}
         properties["version"] = {"const": cls.VERSION}
         required += ["schema", "version"]
+    conditional_units: list[dict[str, Any]] = []
     for f in _fields(cls):
-        if _is_numeric_hint(f.hint) and f.unit is None:
+        if _is_numeric_hint(f.hint) and f.unit is None and f.unit_by is None:
             raise TypeError(f"{cls.__name__}.{f.name} is numeric but declares no unit")
         prop = _schema_hint(f.hint, defs)
         if f.doc:
             prop["description"] = f.doc
         if f.unit is not None:
             prop["x-unit"] = f.unit
+        if f.unit_by is not None:
+            selector, units = f.unit_by
+            prop["x-unit-by"] = {"field": selector, "units": units}
+            conditional_units += _conditional_units(cls, f.name, selector, units)
         properties[f.name] = prop
         if f.required:
             required.append(f.name)
@@ -545,8 +566,27 @@ def _schema_struct(cls: type[Struct], defs: dict[str, Any]) -> dict[str, Any]:
         "properties": properties,
         "required": required,
         "additionalProperties": False,
+        **({"allOf": conditional_units} if conditional_units else {}),
     }
     return ref
+
+
+def _conditional_units(
+    cls: type[Struct], name: str, selector: str, units: dict[str, str]
+) -> list[dict[str, Any]]:
+    """One ``if``/``then`` per selector value, annotating ``name`` with its unit."""
+    hint = {f.name: f.hint for f in _fields(cls)}.get(selector)
+    if not (isinstance(hint, type) and issubclass(hint, enum.Enum)):
+        raise TypeError(f"{cls.__name__}.{name}: unit selector {selector!r} is not an enum field")
+    if set(units) != {m.value for m in hint}:
+        raise TypeError(f"{cls.__name__}.{name}: units must cover every {hint.__name__} value")
+    return [
+        {
+            "if": {"properties": {selector: {"const": value}}, "required": [selector]},
+            "then": {"properties": {name: {"x-unit": unit}}},
+        }
+        for value, unit in units.items()
+    ]
 
 
 def _schema_hint(hint: Any, defs: dict[str, Any]) -> dict[str, Any]:

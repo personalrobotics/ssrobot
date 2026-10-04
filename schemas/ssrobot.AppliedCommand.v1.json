@@ -230,8 +230,15 @@
           "items": {
             "type": "number"
           },
-          "description": "One value per joint, in joint units for the mode.",
-          "x-unit": "joint"
+          "description": "One value per joint, in the unit fixed by mode.",
+          "x-unit-by": {
+            "field": "mode",
+            "units": {
+              "position": "joint",
+              "velocity": "joint/s",
+              "effort": "joint-effort"
+            }
+          }
         }
       },
       "required": [
@@ -242,7 +249,66 @@
         "mode",
         "values"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "position"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "x-unit": "joint"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "velocity"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "x-unit": "joint/s"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "effort"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "x-unit": "joint-effort"
+              }
+            }
+          }
+        }
+      ]
     },
     "JointTrajectory": {
       "type": "object",

@@ -23,6 +23,8 @@ from ssrobot import (
     ArrayValue,
     AssetStore,
     CapabilityError,
+    ClockMode,
+    Diagnostic,
     DType,
     ExecutionState,
     ExecutionStatus,
@@ -45,9 +47,11 @@ from ssrobot import (
     Record,
     RobotContext,
     RobotDescription,
+    RuntimeInfo,
     SsrobotError,
     StaleRevisionError,
     Timestamp,
+    ValidationError,
     check_command,
     check_request,
     dumps,
@@ -136,7 +140,15 @@ def _examples() -> dict[str, Record]:
             Modification(kind=ModificationKind.CLIPPED, target="right_j3", detail="upper limit"),
         ),
     )
+    left = ("left_j1", "left_j2", "left_j3")
+    joint_commands = {
+        f"joint_{mode.value}_command": JointCommand(
+            group="left_arm", joints=left, mode=mode, values=(0.5, -1.0, 1.5)
+        )
+        for mode in JointMode
+    }
     return {
+        **joint_commands,
         "trajectory": trajectory,
         "action_chunk": chunk,
         "multimodal_observation": observation,
@@ -161,6 +173,37 @@ def test_records_round_trip_through_json_and_checked_in_schemas(artifacts: Path)
 
     # Image and depth payloads are stored once, by content, outside the JSON.
     assert len(list((artifacts / "assets").iterdir())) == 2
+
+
+# The convention table in docs/contracts.md, restated as the oracle for the schemas.
+JOINT_VALUE_UNITS = {"position": "joint", "velocity": "joint/s", "effort": "joint-effort"}
+
+
+def test_joint_command_schema_fixes_the_unit_of_values_by_mode(artifacts: Path) -> None:
+    """Each serialized mode resolves to exactly one unit for ``values`` in the schema."""
+    schema = _schema(JointCommand(group="g", joints=("j",), mode=JointMode.POSITION, values=(0,)))
+    branches = schema["$defs"]["JointCommand"]["allOf"]
+    report = {}
+    for name, record in _examples().items():
+        if not isinstance(record, JointCommand):
+            continue
+        wire = json.loads(dumps(record))
+        units = [
+            b["then"]["properties"]["values"]["x-unit"]
+            for b in branches
+            if jsonschema.Draft202012Validator(b["if"]).is_valid(wire)
+        ]
+        decoded = loads(json.dumps(wire), JointCommand)
+        report[name] = {
+            "mode": wire["mode"],
+            "schema_units": units,
+            "decoded_unit": decoded.mode.unit,
+        }
+    _write_json(artifacts / "joint-command-units.json", report)
+    assert {r["mode"] for r in report.values()} == set(JOINT_VALUE_UNITS)
+    for r in report.values():
+        assert r["schema_units"] == [JOINT_VALUE_UNITS[r["mode"]]]
+        assert r["decoded_unit"] == JOINT_VALUE_UNITS[r["mode"]]
 
 
 def _tamper(artifacts: Path, mutate: Callable[[dict[str, Any]], None]) -> str:
@@ -222,6 +265,47 @@ def test_conventions_accept_valid_and_reject_ambiguous_input(artifacts: Path) ->
 
     def version(d: dict[str, Any]) -> None:
         d["version"] = 2
+
+    def runtime_info(mode: ClockMode, clock: str) -> RuntimeInfo:
+        return RuntimeInfo(
+            runtime="reference",
+            version="0",
+            clock_mode=mode,
+            clock=clock,
+            description=robot.fingerprint(),
+            commands=robot.commands,
+            channels=(),
+        )
+
+    def chunk_on(clock: str) -> ActionChunk:
+        step = JointCommand(
+            group="right_arm", joints=RIGHT, mode=JointMode.POSITION, values=(0.1, 0.0, 0.0)
+        )
+        return ActionChunk(
+            start=Timestamp(clock=clock, time_ns=0), period_ns=10_000_000, steps=((step,), (step,))
+        )
+
+    def applied_with(execution: str = "exec-7", target: str = "right_j3") -> AppliedCommand:
+        command = JointCommand(
+            group="right_arm", joints=RIGHT, mode=JointMode.POSITION, values=(0.0,) * 3
+        )
+        return AppliedCommand(
+            execution=execution,
+            stamp=Timestamp(clock=SIM, time_ns=0),
+            requested=command,
+            applied=command,
+            modifications=(Modification(kind=ModificationKind.CLIPPED, target=target),),
+        )
+
+    applied_json = dumps(applied_with())
+    failed_json = dumps(
+        ExecutionStatus(
+            execution="exec-8",
+            state=ExecutionState.FAILED,
+            stamp=Timestamp(clock=SIM, time_ns=0),
+            diagnostic=Diagnostic(code="fault", message="driver fault", component="right_arm"),
+        )
+    )
 
     cases: list[tuple[str, Callable[[], object], str | None]] = [
         # Names and frames
@@ -368,6 +452,62 @@ def test_conventions_accept_valid_and_reject_ambiguous_input(artifacts: Path) ->
             ),
             "missing_field",
         ),
+        # Scheduled commands are interpreted on the runtime clock (#43)
+        (
+            "chunk on the manual runtime clock",
+            lambda: check_command(robot, chunk_on(SIM), runtime_info(ClockMode.MANUAL, SIM)),
+            None,
+        ),
+        (
+            "chunk on the external runtime clock",
+            lambda: check_command(
+                robot, chunk_on("ros:/clock"), runtime_info(ClockMode.EXTERNAL, "ros:/clock")
+            ),
+            None,
+        ),
+        (
+            "chunk on another clock than the runtime",
+            lambda: check_command(
+                robot, chunk_on("ros:/clock"), runtime_info(ClockMode.MANUAL, SIM)
+            ),
+            "clock_mismatch",
+        ),
+        (
+            "chunk checked without a runtime",
+            lambda: check_command(robot, chunk_on("ros:/clock")),
+            None,
+        ),
+        # Execution records correlate by valid identifiers (#46)
+        ("applied command with identifiers", lambda: applied_with(), None),
+        (
+            "applied command with empty execution",
+            lambda: applied_with(execution=""),
+            "invalid_name",
+        ),
+        (
+            "modification target with whitespace",
+            lambda: applied_with(target=" right_j3"),
+            "invalid_name",
+        ),
+        (
+            "diagnostic component with a control character",
+            lambda: Diagnostic(code="fault", message="m", component="arm\x00"),
+            "invalid_name",
+        ),
+        (
+            "decoded applied command with empty execution",
+            lambda: loads(
+                applied_json.replace('"execution":"exec-7"', '"execution":""'), AppliedCommand
+            ),
+            "invalid_name",
+        ),
+        (
+            "decoded status with blank diagnostic component",
+            lambda: loads(
+                failed_json.replace('"component":"right_arm"', '"component":""'), ExecutionStatus
+            ),
+            "invalid_name",
+        ),
         # Observations
         (
             "request an undeclared channel",
@@ -427,12 +567,13 @@ def test_conventions_accept_valid_and_reject_ambiguous_input(artifacts: Path) ->
 
     report = []
     for name, run, expected in cases:
+        path = None
         try:
             run()
             outcome = None
         except SsrobotError as e:
-            outcome = e.code
-        report.append({"case": name, "expected": expected, "outcome": outcome})
+            outcome, path = e.code, e.path
+        report.append({"case": name, "expected": expected, "outcome": outcome, "path": path})
     _write_json(artifacts / "conventions-report.json", report)
     assert [r for r in report if r["expected"] != r["outcome"]] == []
 
@@ -472,6 +613,24 @@ def test_contexts_share_a_description_but_not_state(artifacts: Path) -> None:
         assert b.cancel(cancelled.execution).state is ExecutionState.CANCELED
         b.step()
         assert b.observe(q).reading("right_arm_q").value == (0.0, 0.0, 0.0)
+
+        # A chunk scheduled on another clock is refused before the runtime sees it (#43).
+        submitted_before = len(a_runtime.submitted)
+        cross = ActionChunk(
+            start=Timestamp(clock="ros:/clock", time_ns=0), period_ns=10_000_000, steps=((target,),)
+        )
+        with pytest.raises(ValidationError) as cross_clock:
+            a.submit(cross)
+        report["cross_clock_chunk"] = {
+            "code": cross_clock.value.code,
+            "path": cross_clock.value.path,
+            "reached_runtime": len(a_runtime.submitted) != submitted_before,
+        }
+        assert report["cross_clock_chunk"] == {
+            "code": "clock_mismatch",
+            "path": "start.clock",
+            "reached_runtime": False,
+        }
     assert a_runtime.closed and b_runtime.closed
     assert robot.fingerprint() == fingerprint
 
@@ -503,6 +662,31 @@ def test_contexts_share_a_description_but_not_state(artifacts: Path) -> None:
             "manual_clock_required",
             "unavailable_channel",
         ]
+
+    # Gripper openings outside [0, 1] never reach the caller (#45).
+    openings: dict[str, Any] = {}
+    for value in (0.0, 0.5, 1.0, -0.01, 1.01):
+        runtime = ObserveOnlyRuntime(
+            clock="host:monotonic",
+            device_clock="ros:/geodude",
+            now_ns=5_000_000_000,
+            gripper_opening=value,
+        )
+        with RobotContext(robot, runtime) as g:
+            try:
+                obs = g.observe(ObservationRequest(channels=("right_gripper_opening",)))
+                openings[repr(value)] = {"returned": list(obs.readings[0].value)}  # type: ignore[arg-type]
+            except ValidationError as e:
+                openings[repr(value)] = {"error": e.code, "path": e.path}
+    report["gripper_opening"] = openings
+    rejected = {"error": "out_of_limits", "path": "readings.right_gripper_opening"}
+    assert openings == {
+        "0.0": {"returned": [0.0]},
+        "0.5": {"returned": [0.5]},
+        "1.0": {"returned": [1.0]},
+        "-0.01": rejected,
+        "1.01": rejected,
+    }
 
     # A runtime bound to a different description is stale; the partly opened runtime is closed.
     class MisboundRuntime(KinematicRuntime):

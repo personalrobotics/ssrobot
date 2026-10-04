@@ -62,6 +62,10 @@ def bimanual_robot() -> RobotDescription:
             CommandCapability(component=f"{a}_arm", kind=CommandKind.JOINT_TRAJECTORY),
             CommandCapability(component=f"{a}_gripper", kind=CommandKind.GRIPPER),
         ]
+    commands += [
+        CommandCapability(component="left_arm", kind=CommandKind.JOINT, mode=mode)
+        for mode in (JointMode.VELOCITY, JointMode.EFFORT)
+    ]
     commands.append(CommandCapability(component="base", kind=CommandKind.BASE_TWIST))
     channels = [
         ChannelSpec(
@@ -152,6 +156,7 @@ class KinematicRuntime:
         self._time_ns = 0
         self._pending: dict[str, JointCommand] = {}
         self._status: dict[str, ExecutionStatus] = {}
+        self.submitted: list[Command] = []
 
     def open(self, description: RobotDescription) -> RuntimeInfo:
         self._description = description
@@ -189,6 +194,7 @@ class KinematicRuntime:
         return Observation(stamp=self._stamp(), readings=tuple(readings))
 
     def submit(self, command: Command) -> ExecutionStatus:
+        self.submitted.append(command)
         execution = f"exec-{len(self._status) + 1}"
         if not isinstance(command, JointCommand):
             status = ExecutionStatus(
@@ -230,10 +236,13 @@ class KinematicRuntime:
 class ObserveOnlyRuntime:
     """Externally clocked and read-only, like a robot observed without command authority."""
 
-    def __init__(self, *, clock: str, device_clock: str, now_ns: int) -> None:
+    def __init__(
+        self, *, clock: str, device_clock: str, now_ns: int, gripper_opening: float = 0.5
+    ) -> None:
         self.clock = clock
         self.device_clock = device_clock
         self.now_ns = now_ns
+        self.gripper_opening = gripper_opening
         self.closed = False
         self._description: RobotDescription | None = None
 
@@ -246,7 +255,10 @@ class ObserveOnlyRuntime:
             clock=self.clock,
             description=description.fingerprint(),
             commands=(),
-            channels=_joint_channels(description),
+            channels=(
+                *_joint_channels(description),
+                *(c.name for c in description.channels if c.quantity is Quantity.GRIPPER_OPENING),
+            ),
         )
 
     def close(self) -> None:
@@ -258,10 +270,13 @@ class ObserveOnlyRuntime:
         device = Timestamp(clock=self.device_clock, time_ns=self.now_ns - 1_500_000)
         readings = []
         for name in request.channels:
-            n = self._description.channel(name).shape[0]
-            readings.append(
-                Reading(channel=name, stamp=stamp, value=(0.25,) * n, source_stamp=device)
+            spec = self._description.channel(name)
+            value = (
+                (self.gripper_opening,)
+                if spec.quantity is Quantity.GRIPPER_OPENING
+                else (0.25,) * spec.shape[0]
             )
+            readings.append(Reading(channel=name, stamp=stamp, value=value, source_stamp=device))
         return Observation(stamp=stamp, readings=tuple(readings))
 
     def submit(self, command: Command) -> ExecutionStatus:

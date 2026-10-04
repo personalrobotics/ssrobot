@@ -42,6 +42,8 @@ class Diagnostic(Value):
 
     def _validate(self) -> None:
         check_name(self.code, path="code")
+        if self.component is not None:
+            check_name(self.component, path="component")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -86,6 +88,9 @@ class Modification(Value):
     target: str = field(metadata=meta("Affected joint, component, or field."))
     detail: str = field(default="", metadata=meta("Human-readable detail."))
 
+    def _validate(self) -> None:
+        check_name(self.target, path="target")
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AppliedCommand(Record):
@@ -101,3 +106,6 @@ class AppliedCommand(Record):
     modifications: tuple[Modification, ...] = field(
         default=(), metadata=meta("Every change between requested and applied; empty if none.")
     )
+
+    def _validate(self) -> None:
+        check_name(self.execution, path="execution")

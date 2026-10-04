@@ -33,6 +33,12 @@ def check_command(
 ) -> None:
     """Raise unless ``command`` is meaningful for the robot and supported by the runtime."""
     if isinstance(command, ActionChunk):
+        if info is not None and command.start.clock != info.clock:
+            raise ValidationError(
+                "clock_mismatch",
+                f"chunk starts on clock {command.start.clock!r}; the runtime uses {info.clock!r}",
+                path="start.clock",
+            )
         for i, step in enumerate(command.steps):
             for k, c in enumerate(step):
                 _check_instant(description, c, info, f"steps[{i}][{k}]")
@@ -154,6 +160,10 @@ def check_observation(
         if spec.quantity in VECTOR_QUANTITIES:
             if not isinstance(r.value, tuple) or len(r.value) != math.prod(spec.shape):
                 raise ValidationError("shape_mismatch", f"expected {spec.shape} floats", path=path)
+            if spec.quantity is Quantity.GRIPPER_OPENING and not 0.0 <= r.value[0] <= 1.0:
+                raise ValidationError(
+                    "out_of_limits", f"opening {r.value[0]} is outside [0, 1]", path=path
+                )
             if spec.quantity is Quantity.POSE:
                 try:
                     Pose(position=r.value[:3], quat_wxyz=r.value[3:])  # type: ignore[arg-type]
