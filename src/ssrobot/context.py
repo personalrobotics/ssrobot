@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import time
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from types import TracebackType
 
 from ssrobot.commands import ActionChunk, Command, command_components
@@ -122,6 +123,21 @@ class Execution:
         return f"Execution({self.id!r}, {self.source!r}, {self.status.state.value})"
 
 
+@dataclass(frozen=True)
+class Ownership:
+    """An execution's hold on (some of) a component's resources."""
+
+    execution: Execution
+    resources: tuple[str, ...]
+    """The component's resources this execution holds, sorted."""
+    complete: bool
+    """Whether it holds every resource of the component."""
+
+
+def _order(execution_id: str) -> int:
+    return int(execution_id.removeprefix("e"))
+
+
 class RobotContext:
     """Binds one immutable description to one injected runtime for one session.
 
@@ -183,24 +199,31 @@ class RobotContext:
         """The fault that put the context in ``faulted``, if any."""
         return self._fault
 
-    def owner(self, component: str) -> Execution | None:
-        """The unfinished execution controlling any of ``component``'s joints, if any."""
-        for resource in sorted(self._resources((component,))):
+    def owners(self, component: str) -> tuple[Ownership, ...]:
+        """Every unfinished execution holding any of ``component``'s resources.
+
+        One entry per execution, in submission order, with the resources of
+        ``component`` it holds. Empty means unowned; one ``complete`` entry means a
+        single execution controls the whole component; anything else is partial or
+        shared ownership.
+        """
+        wanted = self._resources((component,))
+        held: dict[str, set[str]] = {}
+        for resource in wanted:
             holder = self._owners.get(resource)
             if holder is not None:
-                return holder
-        return None
+                held.setdefault(holder.id, set()).add(resource)
+        return tuple(
+            Ownership(
+                execution=self._executions[execution_id],
+                resources=tuple(sorted(resources)),
+                complete=resources == wanted,
+            )
+            for execution_id, resources in sorted(held.items(), key=lambda kv: _order(kv[0]))
+        )
 
     def _resources(self, components: Iterable[str]) -> frozenset[str]:
-        """What ownership is held on: each component's joints, or the component itself
-        when it declares none. Overlapping groups therefore conflict."""
-        out: set[str] = set()
-        for component in components:
-            joints = self._description.component_joints(component)
-            out.update(f"joint:{j}" for j in joints)
-            if not joints:
-                out.add(f"component:{component}")
-        return frozenset(out)
+        return self._description.resources(components)
 
     @property
     def executions(self) -> tuple[Execution, ...]:
@@ -597,7 +620,8 @@ class RobotContext:
         held = self._resources(health.components) if health.components else None
         for execution in self._active():
             if held is None or held & execution.resources:
-                # The runtime has already stopped it; record the outcome.
+                # The runtime should already have stopped it; make sure, then record it.
+                self._runtime.cancel(execution.id)
                 self._record(
                     ExecutionStatus(
                         execution=execution.id,

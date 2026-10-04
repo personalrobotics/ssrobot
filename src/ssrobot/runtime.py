@@ -102,8 +102,8 @@ class Runtime(Protocol):
         """Current time and the events since the previous poll.
 
         Executions may move to ``active``, ``succeeded``, or ``failed``. A ``faulted``
-        health event means the runtime has already stopped every execution touching
-        the faulted components.
+        health event means the runtime has already stopped every execution whose
+        resources (``RobotDescription.resources``) overlap the faulted components'.
         """
         ...
 

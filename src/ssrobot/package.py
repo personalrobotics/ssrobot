@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import enum
 import hashlib
-import importlib.util
+import importlib.machinery
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +24,8 @@ from ssrobot.description import ROBOT_NAME, KinematicModel, RobotDescription, Se
 from ssrobot.errors import ValidationError
 
 MANIFEST = "ssrobot.toml"
+
+_MODULE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
 class ModelFormat(enum.StrEnum):
@@ -198,12 +201,48 @@ class Resolver:
 
 
 def _digest(target: Path) -> str:
-    if target.is_file():
-        return hashlib.sha256(target.read_bytes()).hexdigest()
+    """SHA-256 of a file that has already been resolved inside the root."""
+    return hashlib.sha256(target.read_bytes()).hexdigest()
+
+
+def _digest_directory(resolver: Resolver, directory: Path) -> str:
+    """SHA-256 over a contained directory's files, checking each before reading it.
+
+    File symlinks are followed if they resolve inside the root. Directory symlinks are
+    never traversed: one leading outside fails with ``path_escape``, any other with
+    ``unsupported_symlink``. Broken links fail with ``missing_file`` and special files,
+    such as FIFOs, with ``wrong_type``.
+    """
+    entries = []
+    for current, dirnames, filenames in os.walk(directory, followlinks=False):
+        here = Path(current)
+        for name in sorted(dirnames):
+            link = here / name
+            if link.is_symlink():
+                inside = link.resolve().is_relative_to(resolver.root)
+                raise ValidationError(
+                    "unsupported_symlink" if inside else "path_escape",
+                    "directory symlinks are not followed inside packages"
+                    if inside
+                    else "directory symlink resolves outside the package root",
+                    path=link.relative_to(resolver.root).as_posix(),
+                )
+        for name in filenames:
+            link = here / name
+            where = link.relative_to(resolver.root).as_posix()
+            target = link.resolve()
+            if not target.is_relative_to(resolver.root):
+                raise ValidationError(
+                    "path_escape", "file resolves outside the package root", path=where
+                )
+            if not target.exists():
+                raise ValidationError("missing_file", "broken symlink", path=where)
+            if not target.is_file():
+                raise ValidationError("wrong_type", "not a regular file", path=where)
+            entries.append(f"{link.relative_to(directory).as_posix()}\0{_digest(target)}\n")
     listing = hashlib.sha256()
-    for item in sorted(p for p in target.rglob("*") if p.is_file()):
-        line = f"{item.relative_to(target).as_posix()}\0{_digest(item)}\n"
-        listing.update(line.encode())
+    for entry in sorted(entries):
+        listing.update(entry.encode())
     return listing.hexdigest()
 
 
@@ -217,9 +256,7 @@ def _load_model(entry: ModelEntry, path: Path) -> KinematicModel:
 def load_package(directory: str | os.PathLike[str]) -> RobotPackage:
     """Load the package rooted at ``directory``. Deterministic for identical content."""
     root = Path(directory)
-    manifest_path = Resolver(root, "").root / MANIFEST
-    if not manifest_path.is_file():
-        raise ValidationError("missing_file", f"{root} has no {MANIFEST}")
+    manifest_path = Resolver(root, "").resolve(MANIFEST)
     try:
         data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as e:
@@ -244,7 +281,11 @@ def load_package(directory: str | os.PathLike[str]) -> RobotPackage:
     for directory_ref in manifest.assets:
         target = resolver.resolve(directory_ref, directory=True)
         files.append(
-            ResolvedFile(role="assets", path=resolver.relative(target), sha256=_digest(target))
+            ResolvedFile(
+                role="assets",
+                path=resolver.relative(target),
+                sha256=_digest_directory(resolver, target),
+            )
         )
     for kind, entries in (("profile", manifest.profiles), ("calibration", manifest.calibrations)):
         for item in entries:
@@ -269,17 +310,29 @@ def load_package(directory: str | os.PathLike[str]) -> RobotPackage:
 def load_installed_package(module: str) -> RobotPackage:
     """Load the package shipped as the installed Python package ``module``.
 
-    The module's directory must contain ``ssrobot.toml``. The module is located but
-    not imported, so none of its code runs.
+    ``module`` is a dotted name of regular or namespace packages found on ``sys.path``;
+    its directory must contain ``ssrobot.toml``. Each part is located with
+    ``importlib.machinery.PathFinder``, so neither the package nor any parent is
+    imported and none of their code runs. Packages reachable only through custom import
+    hooks are not found.
     """
-    try:
-        spec = importlib.util.find_spec(module)
-    except (ImportError, ValueError):
-        spec = None
-    locations = None if spec is None else spec.submodule_search_locations
-    if not locations:
-        raise ValidationError("package_not_found", f"no installed Python package {module!r}")
-    root = Path(next(iter(locations)))
+    if not _MODULE.fullmatch(module):
+        raise ValidationError(
+            "invalid_name", f"{module!r} is not a dotted module name", path=module
+        )
+    search: list[str] | None = None
+    parts = module.split(".")
+    for i in range(1, len(parts) + 1):
+        name = ".".join(parts[:i])
+        spec = importlib.machinery.PathFinder.find_spec(name, search)
+        locations = None if spec is None else spec.submodule_search_locations
+        if not locations:
+            raise ValidationError(
+                "package_not_found", f"no installed Python package {name!r}", path=module
+            )
+        search = list(locations)
+    assert search is not None
+    root = Path(search[0])
     if not (root / MANIFEST).is_file():
-        raise ValidationError("package_not_found", f"{module!r} has no {MANIFEST}")
+        raise ValidationError("package_not_found", f"{module!r} has no {MANIFEST}", path=module)
     return load_package(root)

@@ -43,8 +43,8 @@ them separately, and `RobotDescription.compose(model, semantics)` joins them.
 | `JointGroup` | Joints commanded and observed together, in canonical order | The joints exist and are distinct |
 | Composite `JointGroup` | A group whose `subgroups` are other groups | Its joints equal the subgroups' joints in order; subgroups are not themselves composite |
 | `Manipulator` | A serial arm: `group`, `base_frame`, `tool_frame`, optional `end_effector`, optional `kinematics` adapter id | Every group joint moves a frame on the path from base to tool, in base-to-tool order; the end effector's frame is at or below the tool frame |
-| `EndEffector` | The tool center point `frame`, and the `gripper` that actuates it if any; one without a gripper is a tool | Frame and gripper exist |
-| `Gripper` | A component commanded by opening, mounted at `frame`, moving `joints` (including passive linkage joints) | Frame and joints exist |
+| `EndEffector` | The tool center point `frame`, and the `gripper` that actuates it if any; one without a gripper is a tool | Frame and gripper exist; the gripper's frame is the TCP frame or one of its ancestors. For a manipulator naming the end effector, the gripper's frame is also at or below the tool frame, so it lies on that arm's tool-to-TCP branch. Several manipulators may share one end effector. |
+| `Gripper` | A component commanded by opening, mounted at `frame`, moving `joints` (including passive linkage joints) | Frame and joints exist; every joint moves a frame below the gripper's frame |
 | `MobileBase` | A component commanded by planar twist in `frame`, optionally modeled by `joints` | Frame and joints exist |
 | `Sensor` | A `camera` or `force_torque` sensor measuring in `frame` | Frame exists |
 | `NamedConfiguration` | Named positions for a group, such as `home` | One position per joint, within limits |
@@ -89,7 +89,7 @@ trace. It validates everything going into the runtime and everything coming out.
 | `update()` | Applies the runtime's pending update without advancing a manual clock. |
 | `run_until(execution, *, max_ticks=None, timeout_s=None)` | Returns a finished execution's status at once, with no step, poll, or bound. Otherwise it blocks until the execution finishes or the bound is reached: it steps a manual runtime, needing `max_ticks` or a deadline, and polls an external runtime, needing `timeout_s` of wall-clock time. A handle from another context fails with `unknown_reference`. |
 | `recover()` | Faulted only: asks the runtime to clear its fault, then returns the resulting state. Fails with `unrecoverable` after a runtime contract breach. |
-| `owner(component)`, `executions` | The execution controlling a component, and every execution in submission order. |
+| `owners(component)`, `executions` | Every unfinished execution holding any of the component's resources, as `Ownership` entries; and every execution in submission order. |
 
 An `Execution` exposes `id`, `command`, `source`, `components`, `deadline`, `status`,
 and `done`. It owns no thread, event loop, or clock. Its status changes only when the
@@ -113,8 +113,10 @@ or task logic.
 - `poll()` returns a `RuntimeUpdate`: the current time and, in causal order, the
   `ExecutionStatus`, `AppliedCommand`, and `RuntimeHealth` events since the last poll.
   A runtime may report only `active`, `succeeded`, or `failed` after submission. A
-  `faulted` health event means the runtime has already stopped every execution
-  touching the faulted components.
+  `faulted` health event means the runtime has already stopped every execution whose
+  resources overlap the faulted components' resources, as given by
+  `RobotDescription.resources`. That is the same overlap rule as ownership and
+  `stop()`.
 - `recover()` attempts to clear a fault. Success arrives as a later `ok` health event.
 - `step()` is called only on manual runtimes. `close()` is idempotent and safe after a
   failed or partial `open`.
@@ -192,8 +194,18 @@ Terminal states have no successors. When the context ends an execution, it calls
   if it rejects it, the earlier executions continue. A source replaces its own
   commands; it never interleaves with another source's.
 - Commands to disjoint components, such as the left and right arms, run concurrently.
-- `owner(component)`, `stop(components)`, and fault scopes all work through the same
-  joints.
+- `RobotDescription.resources(components)` defines the resources: `joint:<name>` for
+  each joint, or `component:<name>` for a component with none. Submission,
+  `owners()`, `stop()`, and fault scopes, in both the context and `ReplayRuntime`, all
+  use it.
+- `owners(component)` returns one `Ownership(execution, resources, complete)` per
+  unfinished execution holding any of the component's resources, in submission order.
+  `resources` lists, sorted, which of the component's resources it holds, and
+  `complete` says whether that is all of them. The four cases:
+  - `()`: unowned.
+  - One `complete` entry: a single execution controls the whole component.
+  - One entry that is not `complete`: partial ownership.
+  - Several entries: the component is shared by disjoint executions.
 - Ownership is released when an execution reaches any terminal state. A `rejected`
   execution never takes ownership.
 
@@ -206,7 +218,7 @@ Terminal states have no successors. When the context ends an execution, it calls
 - An `ActionChunk` whose last step was due before `now` fails with
   `ValidationError("stale_command")` before the runtime sees it. A chunk on another
   clock fails with `clock_mismatch`.
-- `stop(components)` cancels every unfinished execution touching those components;
+- `stop(components)` cancels every unfinished execution whose resources overlap them;
   `stop()` cancels everything. Unknown components fail with `unknown_reference`.
 
 ### Faults and communication loss
@@ -215,8 +227,11 @@ A runtime reports a fault, including loss of communication with hardware, as a
 `faulted` `RuntimeHealth` event naming the affected components. An empty list means
 the whole robot. The context then:
 
-- records `failed` for every unfinished execution touching those components, with the
-  fault's diagnostic, and releases their ownership;
+- records `failed` for every unfinished execution whose resources overlap the faulted
+  components' resources, with the fault's diagnostic, and releases their ownership. A
+  fault on `left_arm` therefore stops a running `left_arm_with_lift`. The context also
+  calls `runtime.cancel` for each one, so a runtime that scoped the fault differently
+  still stops it;
 - enters `faulted`, refusing new commands until an `ok` health event (via `recover()`)
   or close. Executions on unaffected components continue.
 
@@ -508,7 +523,10 @@ conformance trace and report are uploaded as the `installed-conformance` artifac
 | `artifacts/test_replay_runtime_passes_the_conformance_scenario/run/` | The ReplayRuntime conformance `trace.jsonl` and `conformance-report.json`. The test re-reads them and checks every line against the schema, contiguous sequence numbers, time that never decreases, legal transitions, all five terminal states, and that each applied command is attributed to its submitter. A second run in `rerun/` is byte-identical. |
 | `artifacts/test_replay_faults_on_divergence_and_exhaustion/trace.jsonl` | A replay that diverges from its recording, recovers, then runs out of ticks. |
 | `artifacts/test_example_package_loads_identically_wherever_it_lives[<name>]/` | For each example package: its description, a semantic summary (manipulators, their joints, frames, end effectors and grippers, composite groups, sensors, qualified names), and its package report. Each validates against `schemas/`. The same content loads identically from a copy and as an installed Python package. |
-| `artifacts/test_overlapping_groups_share_ownership/ownership-report.json` | A composite arm-with-lift trajectory owning the arm's joints, so a different source commanding the arm is refused, while the other arm is free. |
+| `artifacts/test_overlapping_groups_share_ownership/ownership-report.json` | `owners("left_arm_with_lift")` when unowned, completely owned, partially owned, and shared, plus a different source refused on the composite's joints. |
+| `artifacts/test_subgroup_fault_stops_the_composite_everywhere/` | A fault on `left_arm` failing a running `left_arm_with_lift` while `right_arm` continues, then recovery and three clean steps with no further event for the failed execution. |
+| `artifacts/test_end_effector_attachment_is_validated/attachment-report.json` | A hand shared by an arm and its arm-with-lift, and a passive tool, both accepted. A hand naming the other arm's gripper, a gripper mounted on the other arm, and a gripper on a disconnected frame, all rejected with `invalid_chain`. |
+| `artifacts/test_installed_discovery_runs_no_package_code/discovery-report.json` | Dotted and namespace installed packages loading with raising initializers that never run. Bad and missing names fail with stable codes. |
 | `artifacts/test_package_ingress_rejects_bad_packages/ingress-report.json` | Manifest, path, symlink, and semantic mistakes, each rejected with its code and path before any description exists. |
 | `artifacts/test_core_imports_no_backend/gate.txt` | Where `ssrobot` was imported from, and the gate's verdict. |
 | `artifacts/test_gate_finds_backend_imports_in_every_form/gate-forms.json` | Planted eager, lazy, `from`, aliased, multiline, dotted, and `import_module` backend imports, each failing the gate with its module, line, and dependency. |

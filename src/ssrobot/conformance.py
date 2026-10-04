@@ -123,14 +123,24 @@ def reference_robot() -> RobotDescription:
             for a in arms
             for i in (1, 2)
         ),
-        groups=tuple(JointGroup(name=f"{a}_arm", joints=(f"{a}_j1", f"{a}_j2")) for a in arms),
-        commands=tuple(
-            CommandCapability(component=f"{a}_arm", kind=kind, mode=mode)
-            for a in arms
-            for kind, mode in (
-                (CommandKind.JOINT, JointMode.POSITION),
-                (CommandKind.JOINT_TRAJECTORY, None),
-            )
+        groups=(
+            *(JointGroup(name=f"{a}_arm", joints=(f"{a}_j1", f"{a}_j2")) for a in arms),
+            JointGroup(
+                name="both_arms",
+                joints=tuple(f"{a}_j{i}" for a in arms for i in (1, 2)),
+                subgroups=tuple(f"{a}_arm" for a in arms),
+            ),
+        ),
+        commands=(
+            *(
+                CommandCapability(component=f"{a}_arm", kind=kind, mode=mode)
+                for a in arms
+                for kind, mode in (
+                    (CommandKind.JOINT, JointMode.POSITION),
+                    (CommandKind.JOINT_TRAJECTORY, None),
+                )
+            ),
+            CommandCapability(component="both_arms", kind=CommandKind.JOINT_TRAJECTORY),
         ),
         channels=tuple(
             ChannelSpec(
@@ -229,10 +239,20 @@ def run_conformance(
                 skip(name, why)
         if not applicable:
             skip("fault", why)
+            skip("composite_fault", why)
         elif not isinstance(runtime, FaultInjector):
             skip("fault", "the runtime cannot inject faults")
+            skip("composite_fault", "the runtime cannot inject faults")
         else:
             record("fault", functools.partial(_check_fault, context, arms, runtime))
+            composite = _composite_over(context, arms)
+            if composite is None:
+                skip("composite_fault", "no available composite group spans both arms")
+            else:
+                record(
+                    "composite_fault",
+                    functools.partial(_check_composite_fault, context, arms, runtime, composite),
+                )
         if applicable:
             record(
                 "terminal_short_circuit",
@@ -358,7 +378,11 @@ def _check_ownership(context: RobotContext, arms: list[_Arm]) -> str:
         and status.diagnostic.code == "superseded",
         f"superseded execution is {status.state}",
     )
-    _expect(context.owner(arms[0].group) is replaced, "the replacement does not own the component")
+    owners = context.owners(arms[0].group)
+    _expect(
+        [(o.execution, o.complete) for o in owners] == [(replaced, True)],
+        "the replacement does not own the whole component",
+    )
     context.cancel(replaced)
     context.run_until(other, max_ticks=10)
     return "another source was refused; the same source superseded; an independent arm was free"
@@ -371,7 +395,7 @@ def _check_cancel(context: RobotContext, arms: list[_Arm]) -> str:
     context.step()
     status = context.cancel(execution)
     _expect(status.state is ExecutionState.CANCELED, f"cancel gave {status.state}")
-    _expect(context.owner(arms[0].group) is None, "cancel did not release ownership")
+    _expect(context.owners(arms[0].group) == (), "cancel did not release ownership")
     follow = context.submit(arms[0].hold(context.description), source="policy")
     context.run_until(follow, max_ticks=10)
     _expect(follow.status.state is ExecutionState.SUCCEEDED, "released component not commandable")
@@ -469,7 +493,7 @@ def _check_rejection(context: RobotContext, arms: list[_Arm]) -> str:
     )
     status = execution.status
     _expect(status.state is ExecutionState.REJECTED, f"far start gave {status.state}")
-    _expect(context.owner(arms[0].group) is None, "a rejected command took ownership")
+    _expect(context.owners(arms[0].group) == (), "a rejected command took ownership")
     return f"rejected with {status.diagnostic.code if status.diagnostic else None}"
 
 
@@ -518,6 +542,52 @@ def _check_fault(context: RobotContext, arms: list[_Arm], runtime: FaultInjector
     context.run_until(after, max_ticks=10)
     _expect(after.status.state is ExecutionState.SUCCEEDED, "not commandable after recovery")
     return "fault failed only the affected arm, blocked submissions, and cleared on recovery"
+
+
+def _composite_over(context: RobotContext, arms: list[_Arm]) -> str | None:
+    """An available composite trajectory group made of the two arms' groups."""
+    wanted = {arms[0].group, arms[1].group}
+    available = {
+        c.component for c in context.info.commands if c.kind is CommandKind.JOINT_TRAJECTORY
+    }
+    for group in context.description.groups:
+        if set(group.subgroups) == wanted and group.name in available:
+            return group.name
+    return None
+
+
+def _check_composite_fault(
+    context: RobotContext, arms: list[_Arm], runtime: FaultInjector, composite: str
+) -> str:
+    group = context.description.group(composite)
+    starts = {arm.group: arm.start for arm in arms}
+    start = tuple(q for sub in group.subgroups for q in starts[sub])
+    execution = context.submit(
+        JointTrajectory(
+            group=composite,
+            joints=group.joints,
+            time_from_start_ns=(0, 1_000_000_000),
+            positions=(start, start),
+        ),
+        source="planner",
+    )
+    context.step()
+    _expect(
+        execution.status.state is ExecutionState.ACTIVE, f"composite is {execution.status.state}"
+    )
+    runtime.inject_fault("controller_fault", "injected on one subgroup", (arms[0].group,))
+    context.update()
+    _expect(
+        execution.status.state is ExecutionState.FAILED, "a subgroup fault spared the composite"
+    )
+    _expect(context.recover() is ContextState.OPEN, "recovery failed")
+    for _ in range(3):
+        context.step()  # a runtime still running it would now break the contract
+    _expect(context.state is ContextState.OPEN, f"state is {context.state} after stepping")
+    return (
+        f"a fault on {arms[0].group} failed the running {composite} in the context and the "
+        "runtime; three steps after recovery stayed clean"
+    )
 
 
 def _check_close(context: RobotContext, arms: list[_Arm]) -> str:

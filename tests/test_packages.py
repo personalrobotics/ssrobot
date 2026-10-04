@@ -8,7 +8,9 @@ Reproduce with ``uv run pytest tests/test_packages.py``.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ from ssrobot import (
     JointCommand,
     JointMode,
     JointTrajectory,
+    JsonlTrace,
     OwnershipError,
     ReplayRuntime,
     ReplayScript,
@@ -30,6 +33,7 @@ from ssrobot import (
     dumps,
     load_installed_package,
     load_package,
+    read_trace,
 )
 from ssrobot.package import Resolver
 from tests.conftest import ROOT
@@ -121,54 +125,145 @@ def test_semantics_identify_each_part_of_the_robot() -> None:
     assert (len(single.grippers), len(single.bases), len(single.sensors)) == (0, 0, 0)
 
 
+def _middle(robot: RobotDescription, group: str) -> tuple[float, ...]:
+    out = []
+    for name in robot.group(group).joints:
+        limits = robot.joint(name).limits
+        assert limits.lower is not None and limits.upper is not None
+        out.append((limits.lower + limits.upper) / 2)
+    return tuple(out)
+
+
+def _hold_trajectory(robot: RobotDescription, group: str) -> JointTrajectory:
+    start = _middle(robot, group)
+    return JointTrajectory(
+        group=group,
+        joints=robot.group(group).joints,
+        time_from_start_ns=(0, 1_000_000_000),
+        positions=(start, start),
+    )
+
+
+def _ownership(ctx: RobotContext, component: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "execution": o.execution.id,
+            "source": o.execution.source,
+            "resources": list(o.resources),
+            "complete": o.complete,
+        }
+        for o in ctx.owners(component)
+    ]
+
+
 def test_overlapping_groups_share_ownership(artifacts: Path) -> None:
-    """A composite group and its subgroups command the same joints, so they conflict."""
+    """Ownership is held on joints: overlapping groups conflict, and owners() shows
+    unowned, complete, partial, and shared ownership of a composite group."""
     robot = load_package(EXAMPLES / "bimanual_lift").description
     script = ReplayScript.hold(robot, clock="replay:packages", tick_ns=10_000_000, ticks=20)
-    lifted = robot.group("left_arm_with_lift").joints
-    start = tuple((robot.joint(j).limits.lower + robot.joint(j).limits.upper) / 2 for j in lifted)  # type: ignore[operator]
     report: dict[str, Any] = {}
     with RobotContext(robot, ReplayRuntime(script)) as ctx:
-        planner = ctx.submit(
-            JointTrajectory(
-                group="left_arm_with_lift",
-                joints=lifted,
-                time_from_start_ns=(0, 1_000_000_000),
-                positions=(start, start),
-            ),
-            source="planner",
-        )
-        left_arm = robot.group("left_arm").joints
+        report["unowned"] = _ownership(ctx, "left_arm_with_lift")
+        composite = ctx.submit(_hold_trajectory(robot, "left_arm_with_lift"), source="planner")
+        report["complete"] = _ownership(ctx, "left_arm_with_lift")
+        report["subgroup_seen_from_composite_owner"] = _ownership(ctx, "left_arm")
         with pytest.raises(OwnershipError) as conflict:
             ctx.submit(
                 JointCommand(
-                    group="left_arm", joints=left_arm, mode=JointMode.POSITION, values=start[1:]
+                    group="left_arm",
+                    joints=robot.group("left_arm").joints,
+                    mode=JointMode.POSITION,
+                    values=_middle(robot, "left_arm"),
                 ),
                 source="policy",
             )
-        right_arm = robot.group("right_arm").joints
-        right = ctx.submit(
+        report["conflict"] = {"code": conflict.value.code, "resource": conflict.value.path}
+        ctx.cancel(composite)
+        ctx.submit(
             JointCommand(
-                group="right_arm",
-                joints=right_arm,
+                group="left_lift",
+                joints=("left_lift",),
                 mode=JointMode.POSITION,
-                values=(0.0, -1.57, 1.57, -1.57, -1.57, 0.0),
+                values=(0.25,),
             ),
-            source="policy",
+            source="lift_controller",
         )
-        report = {
-            "conflict": {"code": conflict.value.code, "resource": conflict.value.path},
-            "owner_of_left_arm": ctx.owner("left_arm").id,  # type: ignore[union-attr]
-            "planner": planner.id,
-            "right_arm_accepted": right.status.state.value,
-            "state": ctx.state.value,
-        }
+        report["partial"] = _ownership(ctx, "left_arm_with_lift")
+        ctx.submit(_hold_trajectory(robot, "left_arm"), source="planner")
+        report["shared"] = _ownership(ctx, "left_arm_with_lift")
+        report["state"] = ctx.state.value
     (artifacts / "ownership-report.json").write_text(json.dumps(report, indent=2) + "\n")
+
+    lifted = [f"joint:{j}" for j in sorted(robot.group("left_arm_with_lift").joints)]
+    arm = [f"joint:{j}" for j in sorted(robot.group("left_arm").joints)]
+    assert report["unowned"] == []
+    assert report["complete"] == [
+        {"execution": "e1", "source": "planner", "resources": lifted, "complete": True}
+    ]
+    assert report["subgroup_seen_from_composite_owner"] == [
+        {"execution": "e1", "source": "planner", "resources": arm, "complete": True}
+    ]
     assert report["conflict"]["code"] == "ownership_conflict"
     assert report["conflict"]["resource"].startswith("joint:left_")
-    assert report["owner_of_left_arm"] == report["planner"]
-    assert report["right_arm_accepted"] == "pending"
+    assert report["partial"] == [
+        {
+            "execution": "e2",
+            "source": "lift_controller",
+            "resources": ["joint:left_lift"],
+            "complete": False,
+        }
+    ]
+    assert report["shared"] == [
+        {
+            "execution": "e2",
+            "source": "lift_controller",
+            "resources": ["joint:left_lift"],
+            "complete": False,
+        },
+        {"execution": "e3", "source": "planner", "resources": arm, "complete": False},
+    ]
     assert report["state"] == ContextState.OPEN.value
+
+
+def test_subgroup_fault_stops_the_composite_everywhere(artifacts: Path) -> None:
+    """#56: a fault on left_arm stops a running left_arm_with_lift in the context and
+    the runtime, spares the right arm, and leaves later steps clean."""
+    robot = load_package(EXAMPLES / "bimanual_lift").description
+    script = ReplayScript.hold(robot, clock="replay:packages", tick_ns=10_000_000, ticks=20)
+    runtime = ReplayRuntime(script)
+    trace_path = artifacts / "trace.jsonl"
+    with JsonlTrace(trace_path) as trace, RobotContext(robot, runtime, sinks=[trace]) as ctx:
+        composite = ctx.submit(_hold_trajectory(robot, "left_arm_with_lift"), source="planner")
+        right = ctx.submit(_hold_trajectory(robot, "right_arm"), source="policy")
+        ctx.step()
+        runtime.inject_fault("controller_fault", "left arm driver fault", ("left_arm",))
+        ctx.update()
+        after_fault = {
+            "composite": composite.status.state.value,
+            "right_arm": right.status.state.value,
+        }
+        recovered = ctx.recover().value
+        for _ in range(3):
+            ctx.step()
+        report: dict[str, Any] = {
+            "after_fault": after_fault,
+            "fault_diagnostic": composite.status.diagnostic.code,  # type: ignore[union-attr]
+            "recovered": recovered,
+            "after_steps": {"state": ctx.state.value, "right_arm": right.status.state.value},
+        }
+    rows: list[list[Any]] = [
+        [r.kind.value, getattr(r.payload, "execution", None), getattr(r.payload, "state", None)]
+        for r in read_trace(trace_path)
+    ]
+    report["trace"] = rows
+    (artifacts / "composite-fault-report.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert report["after_fault"] == {"composite": "failed", "right_arm": "active"}
+    assert report["fault_diagnostic"] == "controller_fault"
+    assert report["recovered"] == "open"
+    assert report["after_steps"] == {"state": "open", "right_arm": "active"}
+    recovery = rows.index(["health", None, "ok"])
+    applied_after = [row for row in rows[recovery:] if row[0] == "applied" and row[1] == "e1"]
+    assert applied_after == []
 
 
 def _edit_manifest(old: str, new: str) -> Callable[[Path], None]:
@@ -188,6 +283,36 @@ def _escape_by_symlink(root: Path) -> None:
     (root / "kinematics.json").symlink_to(outside)
 
 
+def _with_assets(setup: Callable[[Path], None]) -> Callable[[Path], None]:
+    """Declare a meshes/ asset directory holding one file, then apply ``setup``."""
+
+    def mutate(root: Path) -> None:
+        _edit_manifest(
+            'canonical_model = "kinematics"', 'canonical_model = "kinematics"\nassets = ["meshes"]'
+        )(root)
+        (root / "meshes").mkdir()
+        (root / "meshes" / "arm.stl").write_text("solid arm\n")
+        setup(root)
+
+    return mutate
+
+
+def _outside(root: Path, name: str, *, directory: bool = False) -> Path:
+    target = root.parent / name
+    if directory:
+        target.mkdir()
+        (target / "secret.txt").write_text("outside\n")
+    else:
+        target.write_text("outside\n")
+    return target
+
+
+def _manifest_outside(root: Path) -> None:
+    outside = root.parent / "ssrobot.toml"
+    shutil.move(root / "ssrobot.toml", outside)
+    (root / "ssrobot.toml").symlink_to(outside)
+
+
 def _resolve(reference: str) -> Callable[[Path], None]:
     def resolve(root: Path) -> None:
         Resolver(root, "minimal_arm").resolve(reference)
@@ -197,6 +322,34 @@ def _resolve(reference: str) -> Callable[[Path], None]:
 
 CASES: dict[str, tuple[Callable[[Path], None], str | None]] = {
     "unchanged": (lambda root: None, None),
+    # Containment of every file read (#58)
+    "manifest symlink leaving the root": (_manifest_outside, "path_escape"),
+    "asset file symlink inside the root": (
+        _with_assets(lambda r: (r / "meshes" / "alias.stl").symlink_to(r / "kinematics.json")),
+        None,
+    ),
+    "asset file symlink leaving the root": (
+        _with_assets(lambda r: (r / "meshes" / "hosts").symlink_to(_outside(r, "hosts"))),
+        "path_escape",
+    ),
+    "asset directory symlink inside the root": (
+        _with_assets(lambda r: (r / "meshes" / "again").symlink_to(r / "meshes")),
+        "unsupported_symlink",
+    ),
+    "asset directory symlink leaving the root": (
+        _with_assets(
+            lambda r: (r / "meshes" / "etc").symlink_to(_outside(r, "etc", directory=True))
+        ),
+        "path_escape",
+    ),
+    "broken asset symlink": (
+        _with_assets(lambda r: (r / "meshes" / "gone.stl").symlink_to(r / "meshes" / "nothing")),
+        "missing_file",
+    ),
+    "special file among assets": (
+        _with_assets(lambda r: os.mkfifo(r / "meshes" / "pipe")),
+        "wrong_type",
+    ),
     "unknown manifest field": (
         _edit_manifest('robot = "minimal_arm"', 'robot = "minimal_arm"\ncolour = "red"'),
         "unknown_field",
@@ -261,6 +414,107 @@ CASES: dict[str, tuple[Callable[[Path], None], str | None]] = {
 }
 
 
+ATTACHMENT_CASES: dict[str, tuple[str, Callable[[Path], None], str | None]] = {
+    "arm and arm-with-lift share a hand": ("bimanual_lift", lambda root: None, None),
+    "passive tool": ("minimal_arm", lambda root: None, None),
+    "hand on the other arm's gripper": (
+        "bimanual_lift",
+        _edit_manifest('gripper = "left_gripper"', 'gripper = "right_gripper"'),
+        "invalid_chain",
+    ),
+    "gripper mounted on the other arm": (
+        "bimanual_lift",
+        _edit_manifest('frame = "left_gripper_base"', 'frame = "right_gripper_base"'),
+        "invalid_chain",
+    ),
+    "gripper on a disconnected frame with no joints": (
+        "bimanual_lift",
+        _edit_manifest(
+            'frame = "left_gripper_base"\n'
+            'joints = ["left_left_driver_joint", "left_right_driver_joint"]',
+            'frame = "head_camera_optical"',
+        ),
+        "invalid_chain",
+    ),
+}
+
+
+def test_end_effector_attachment_is_validated(artifacts: Path, tmp_path: Path) -> None:
+    """#59: a hand's gripper must sit on its own arm's branch, at or above its TCP."""
+    report = {}
+    for name, (base, mutate, expected) in ATTACHMENT_CASES.items():
+        root = shutil.copytree(EXAMPLES / base, tmp_path / name.replace(" ", "_") / "pkg")
+        try:
+            mutate(root)
+            load_package(root)
+            outcome: dict[str, Any] = {"code": None}
+        except SsrobotError as e:
+            outcome = {"code": e.code, "path": e.path}
+        report[name] = {"package": base, "expected": expected, **outcome}
+    (artifacts / "attachment-report.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert {name: r["code"] for name, r in report.items()} == {
+        name: expected for name, (_, _, expected) in ATTACHMENT_CASES.items()
+    }
+
+
+def _package_module(root: Path, name: str, *, initializer: bool) -> None:
+    """Lay out ``name`` (dotted) under ``root``; initializers record that they ran, then raise."""
+    directory = root
+    for part in name.split("."):
+        directory = directory / part
+        directory.mkdir(exist_ok=True)
+        if initializer:
+            (directory / "__init__.py").write_text(
+                "import pathlib\n"
+                f"pathlib.Path({str(root)!r}, {part + '.ran'!r}).write_text('ran')\n"
+                "raise RuntimeError('package code must not run')\n"
+            )
+    for item in (EXAMPLES / "minimal_arm").iterdir():
+        shutil.copy(item, directory / item.name)
+
+
+def test_installed_discovery_runs_no_package_code(
+    artifacts: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#57: locating an installed package imports neither it nor its parents."""
+    site = tmp_path / "site"
+    site.mkdir()
+    _package_module(site, "outer.robot", initializer=True)
+    _package_module(site, "spaced.robot", initializer=False)  # namespace parent
+    (site / "spaced" / "robot" / "__init__.py").write_text("raise RuntimeError('no')\n")
+    monkeypatch.syspath_prepend(str(site))
+    expected = {
+        "outer.robot": None,
+        "spaced.robot": None,
+        "outer": "package_not_found",
+        "outer.missing": "package_not_found",
+        "outer..robot": "invalid_name",
+        "../outer": "invalid_name",
+    }
+    report = {}
+    for name in expected:
+        try:
+            package = load_installed_package(name)
+            outcome: dict[str, Any] = {
+                "code": None,
+                "fingerprint": package.description.fingerprint(),
+            }
+        except SsrobotError as e:
+            outcome = {"code": e.code}
+        outcome["initializers_ran"] = sorted(p.name for p in site.glob("*.ran"))
+        outcome["imported"] = sorted(
+            m for m in ("outer", "outer.robot", "spaced.robot") if m in sys.modules
+        )
+        report[name] = outcome
+    (artifacts / "discovery-report.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert {name: r["code"] for name, r in report.items()} == expected
+    assert all(r["initializers_ran"] == [] and r["imported"] == [] for r in report.values())
+    assert (
+        report["outer.robot"]["fingerprint"]
+        == load_package(EXAMPLES / "minimal_arm").description.fingerprint()
+    )
+
+
 def test_package_ingress_rejects_bad_packages(artifacts: Path, tmp_path: Path) -> None:
     """#10: manifests, paths, and semantics are validated before a description exists."""
     report = {}
@@ -277,3 +531,13 @@ def test_package_ingress_rejects_bad_packages(artifacts: Path, tmp_path: Path) -
     assert {name: r["code"] for name, r in report.items()} == {
         name: expected for name, (_, expected) in CASES.items()
     }
+
+
+def test_contained_symlinks_load_identically_at_two_locations(tmp_path: Path) -> None:
+    """#58: a package with an internal file symlink reports the same bytes wherever it is."""
+    source = shutil.copytree(EXAMPLES / "minimal_arm", tmp_path / "source")
+    _with_assets(lambda r: (r / "meshes" / "alias.stl").symlink_to("arm.stl"))(source)
+    first = shutil.copytree(source, tmp_path / "a" / "pkg", symlinks=True)
+    second = shutil.copytree(source, tmp_path / "b" / "pkg", symlinks=True)
+    assert (first / "meshes" / "alias.stl").is_symlink()
+    assert dumps(load_package(first).report()) == dumps(load_package(second).report())

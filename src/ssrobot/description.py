@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import enum
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, TypeVar
 
@@ -484,18 +484,36 @@ class RobotDescription(Record):
     def _validate_semantics(self, parents: dict[str, str | None]) -> None:
         groups = {g.name: g for g in self.groups}
         joints = {j.name: j for j in self.joints}
-        grippers = {g.name for g in self.grippers}
+        grippers = {g.name: g for g in self.grippers}
         end_effectors = {e.name: e for e in self.end_effectors}
+        for g in self.grippers:
+            for j in g.joints:
+                if not _at_or_below(parents, g.frame, joints[j].child):
+                    raise ValidationError(
+                        "invalid_chain",
+                        f"joint {j!r} does not move a frame below the gripper frame {g.frame!r}",
+                        path=f"components.{g.name}.joints",
+                    )
         for e in self.end_effectors:
             self._require_frame(e.frame, f"end_effectors.{e.name}.frame")
-            if e.gripper is not None and e.gripper not in grippers:
+            if e.gripper is None:
+                continue
+            gripper = grippers.get(e.gripper)
+            if gripper is None:
                 raise ValidationError(
                     "unknown_reference",
                     f"unknown gripper {e.gripper!r}",
-                    path=f"end_effectors.{e.name}",
+                    path=f"end_effectors.{e.name}.gripper",
+                )
+            if not _at_or_below(parents, gripper.frame, e.frame):
+                raise ValidationError(
+                    "invalid_chain",
+                    f"gripper {e.gripper!r} at {gripper.frame!r} is not mounted at or above "
+                    f"the tool center point {e.frame!r}",
+                    path=f"end_effectors.{e.name}.gripper",
                 )
         for m in self.manipulators:
-            self._validate_manipulator(m, parents, groups, joints, end_effectors)
+            self._validate_manipulator(m, parents, groups, joints, end_effectors, grippers)
         for s in self.sensors:
             self._require_frame(s.frame, f"sensors.{s.name}.frame")
         for c in self.configurations:
@@ -524,6 +542,7 @@ class RobotDescription(Record):
         groups: dict[str, JointGroup],
         joints: dict[str, Joint],
         end_effectors: dict[str, EndEffector],
+        grippers: dict[str, Gripper],
     ) -> None:
         path = f"manipulators.{m.name}"
         group = groups.get(m.group)
@@ -559,13 +578,18 @@ class RobotDescription(Record):
                 f"unknown end effector {m.end_effector!r}",
                 path=f"{path}.end_effector",
             )
-        if (
-            effector.frame != m.tool_frame
-            and _path_between(parents, m.tool_frame, effector.frame) is None
-        ):
+        if not _at_or_below(parents, m.tool_frame, effector.frame):
             raise ValidationError(
                 "invalid_chain",
                 f"end effector frame {effector.frame!r} is not at or below the tool frame",
+                path=f"{path}.end_effector",
+            )
+        if effector.gripper is not None and not _at_or_below(
+            parents, m.tool_frame, grippers[effector.gripper].frame
+        ):
+            raise ValidationError(
+                "invalid_chain",
+                f"gripper {effector.gripper!r} is not mounted at or below the tool frame",
                 path=f"{path}.end_effector",
             )
 
@@ -651,6 +675,21 @@ class RobotDescription(Record):
                 return c.joints
         raise ValidationError("unknown_reference", f"unknown component {component!r}")
 
+    def resources(self, components: Iterable[str]) -> frozenset[str]:
+        """What the components occupy, for ownership, stop scopes, and fault scopes.
+
+        Each component contributes ``joint:<name>`` for every joint it moves, or
+        ``component:<name>`` when it declares none. Components conflict exactly when
+        their resources overlap, so a composite group overlaps its subgroups.
+        """
+        out: set[str] = set()
+        for component in components:
+            joints = self.component_joints(component)
+            out.update(f"joint:{j}" for j in joints)
+            if not joints:
+                out.add(f"component:{component}")
+        return frozenset(out)
+
     def joint(self, name: str) -> Joint:
         return _lookup(self.joints, name, "joint")
 
@@ -689,6 +728,10 @@ def _path_between(
         path.append(frame)
         frame = parents[frame]
     return None if frame is None else path[::-1]
+
+
+def _at_or_below(parents: dict[str, str | None], ancestor: str, frame: str) -> bool:
+    return frame == ancestor or _path_between(parents, ancestor, frame) is not None
 
 
 def _unique(path: str, items: list[object]) -> None:

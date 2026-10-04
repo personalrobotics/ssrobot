@@ -24,7 +24,7 @@ from ssrobot.commands import (
     JointMode,
     JointTrajectory,
 )
-from ssrobot.context import ContextState, Execution, RobotContext
+from ssrobot.context import ContextState, Execution, Ownership, RobotContext
 from ssrobot.conventions import ClockMode, Pose, Timestamp
 from ssrobot.description import (
     CommandCapability,
@@ -117,6 +117,7 @@ __all__ = [
     "NamedConfiguration",
     "Observation",
     "ObservationRequest",
+    "Ownership",
     "OwnershipError",
     "PackageManifest",
     "PackageReport",

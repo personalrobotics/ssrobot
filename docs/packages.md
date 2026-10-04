@@ -14,8 +14,15 @@ package.description            # the RobotDescription
 package.report()               # a PackageReport: resolved files and their hashes
 ```
 
-`load_installed_package` locates the module's directory without importing it, so none
-of the module's code runs, and loads the `ssrobot.toml` there.
+`load_installed_package(name)` takes a dotted name of regular or namespace packages on
+`sys.path`, such as `my_robot_assets` or `lab.robots.geodude`. It locates each part
+with `importlib.machinery.PathFinder` and imports nothing, so neither the package nor
+any parent `__init__.py` runs. It then loads the `ssrobot.toml` in that directory.
+
+- A malformed name fails with `invalid_name`.
+- A missing package, a module that is not a package, or a package without a
+  manifest fails with `package_not_found`.
+- Packages reachable only through custom import hooks are not found.
 
 ## Manifest
 
@@ -74,8 +81,15 @@ semantic layer and everything after it are unchanged by the choice of format.
 - Every manifest path is a plain relative POSIX path: not absolute, no `\`, and no
   empty, `.`, or `..` segments (`invalid_path`).
 - A path resolves against the package root after following symlinks, and must stay
-  inside the root (`path_escape`). It must exist (`missing_file`) and be a file, or a
-  directory for `assets` (`wrong_type`).
+  inside the root (`path_escape`). This includes `ssrobot.toml` itself. It must exist
+  (`missing_file`) and be a file, or a directory for `assets` (`wrong_type`).
+- Every file inside an asset directory is checked the same way before it is read:
+  - A file symlink is followed only if it resolves inside the root, and is hashed
+    under the link's own path. Otherwise it fails with `path_escape`.
+  - Directory symlinks are never traversed. One leading outside the root fails with
+    `path_escape`; any other fails with `unsupported_symlink`.
+  - Broken links fail with `missing_file`, and special files such as FIFOs fail with
+    `wrong_type`.
 - Model loaders resolve their own references through the same `Resolver`. They accept
   `package://<robot>/<path>` only for this package's own robot name
   (`unknown_package` otherwise).
