@@ -27,6 +27,7 @@ from ssrobot.commands import (
 from ssrobot.context import ContextState, Execution, Ownership, RobotContext
 from ssrobot.conventions import ClockMode, Pose, Timestamp
 from ssrobot.description import (
+    CollisionAllowance,
     CommandCapability,
     EndEffector,
     Frame,
@@ -72,6 +73,7 @@ from ssrobot.package import (
     load_package,
 )
 from ssrobot.replay import ReplayRuntime, ReplayScript, ReplayTick
+from ssrobot.resources import SourceItem
 from ssrobot.runtime import Runtime, RuntimeEvent, RuntimeInfo, RuntimeUpdate
 from ssrobot.trace import JsonlTrace, TraceKind, TraceRecord, TraceSink, read_trace
 from ssrobot.validation import check_applied, check_command, check_observation, check_request
@@ -85,6 +87,7 @@ __all__ = [
     "CapabilityError",
     "ChannelSpec",
     "ClockMode",
+    "CollisionAllowance",
     "Command",
     "CommandCapability",
     "CommandKind",
@@ -139,6 +142,7 @@ __all__ = [
     "Semantics",
     "Sensor",
     "SensorKind",
+    "SourceItem",
     "SsrobotError",
     "StaleRevisionError",
     "Submission",

@@ -48,6 +48,7 @@ them separately, and `RobotDescription.compose(model, semantics)` joins them.
 | `MobileBase` | A component commanded by planar twist in `frame`, optionally modeled by `joints` | Frame and joints exist |
 | `Sensor` | A `camera` or `force_torque` sensor measuring in `frame` | Frame exists |
 | `NamedConfiguration` | Named positions for a group, such as `home` | One position per joint, within limits |
+| `CollisionAllowance` | A static default self-collision exclusion between two frames, such as adjacent links, with an opaque `reason` | Two distinct existing frames, in canonical order `frame_a < frame_b` (build with `CollisionAllowance.between`); no pair repeats. Scoped and attachment-time allowances are runtime state, not part of the description. |
 | `CommandCapability`, `ChannelSpec` | Declared commands and observation channels | See *Capabilities* |
 
 A single-arm robot needs only frames, joints, one group, and one manipulator; every
@@ -528,6 +529,10 @@ conformance trace and report are uploaded as the `installed-conformance` artifac
 | `artifacts/test_end_effector_attachment_is_validated/attachment-report.json` | A hand shared by an arm and its arm-with-lift, and a passive tool, both accepted. A hand naming the other arm's gripper, a gripper mounted on the other arm, and a gripper on a disconnected frame, all rejected with `invalid_chain`. |
 | `artifacts/test_installed_discovery_runs_no_package_code/discovery-report.json` | Dotted and namespace installed packages loading with raising initializers that never run. Bad and missing names fail with stable codes. |
 | `artifacts/test_package_ingress_rejects_bad_packages/ingress-report.json` | Manifest, path, symlink, and semantic mistakes, each rejected with its code and path before any description exists. |
+| `artifacts/test_menagerie_franka_loads_from_its_scene/` | The pinned Menagerie Franka loaded from `scene.xml` through its include. Joint limits match Franka's published values, which needs default classes and `childclass`. The report lists 67 resolved meshes, 8 actuators, the tendon, equality, and keyframe, and the `link0`/`link1` exclude as a collision allowance. |
+| `artifacts/test_mjcf_constructs/mjcf-constructs.json` | 23 MJCF cases: degrees, classes, `<frame>`, merged unnamed bodies, continuous hinges, and includes resolved; every unsupported construct and bad reference rejected with its code. |
+| `artifacts/test_urdf_with_and_without_srdf/` | The URDF/SRDF arm: chain, explicit-joint, link, and composite groups, group states, collision allowances, and the world virtual joint. URDF alone gives the same kinematics with no semantics. The SRDF gives exactly the semantics a package could write by hand. An SRDF end effector without a package TCP becomes an `ambiguous_end_effector` diagnostic, and a TCP outside its parent link fails. |
+| `artifacts/test_urdf_and_srdf_ingress/urdf-srdf-ingress.json` | 19 URDF, SRDF, and manifest mistakes, each rejected with its code and path. |
 | `artifacts/test_core_imports_no_backend/gate.txt` | Where `ssrobot` was imported from, and the gate's verdict. |
 | `artifacts/test_gate_finds_backend_imports_in_every_form/gate-forms.json` | Planted eager, lazy, `from`, aliased, multiline, dotted, and `import_module` backend imports, each failing the gate with its module, line, and dependency. |
 | `artifacts/test_direct_responses_keep_causal_time/` | An external runtime's answers advancing `now`, a deadline counted from acceptance, a regressing answer causing a breach, and a manual runtime answering ahead of its tick being rolled back. |

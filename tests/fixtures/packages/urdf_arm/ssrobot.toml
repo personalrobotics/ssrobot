@@ -1,0 +1,30 @@
+# A URDF arm with SRDF semantics. The SRDF supplies groups, states, and collision
+# allowances. Its end effector names no tool center point, so this package declares one.
+schema = "ssrobot.package"
+version = 1
+robot = "urdf_arm"
+canonical_model = "urdf"
+assets = ["meshes"]
+
+[[models]]
+name = "urdf"
+format = "urdf"
+path = "arm.urdf"
+srdf = "arm.srdf"
+
+[[semantics.grippers]]
+name = "fingers"
+frame = "hand"
+joints = ["left_finger_joint", "right_finger_joint"]
+
+[[semantics.end_effectors]]
+name = "gripper"  # the SRDF end effector of the same name, with its TCP
+frame = "tcp"
+gripper = "fingers"
+
+[[semantics.manipulators]]
+name = "arm"
+group = "arm"
+base_frame = "base_link"
+tool_frame = "flange"
+end_effector = "gripper"

@@ -69,6 +69,36 @@
       ],
       "additionalProperties": false
     },
+    "CollisionAllowance": {
+      "type": "object",
+      "description": "A pair of frames whose geometry is never checked against each other by default.",
+      "properties": {
+        "frame_a": {
+          "type": "string",
+          "description": "The lexicographically smaller frame."
+        },
+        "frame_b": {
+          "type": "string",
+          "description": "The lexicographically larger frame."
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Opaque provenance, e.g. SRDF's 'Adjacent'."
+        }
+      },
+      "required": [
+        "frame_a",
+        "frame_b"
+      ],
+      "additionalProperties": false
+    },
     "CommandCapability": {
       "type": "object",
       "description": "A command a component accepts.",
@@ -497,6 +527,13 @@
             "$ref": "#/$defs/NamedConfiguration"
           },
           "description": "Named configurations."
+        },
+        "collision_allowances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CollisionAllowance"
+          },
+          "description": "Static default self-collision exclusions."
         },
         "commands": {
           "type": "array",
