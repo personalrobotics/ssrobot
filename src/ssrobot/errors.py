@@ -29,5 +29,9 @@ class StaleRevisionError(SsrobotError):
     """A value refers to a robot description or scene revision that no longer applies."""
 
 
+class OwnershipError(SsrobotError):
+    """A command addresses a component that another source currently controls."""
+
+
 class LifecycleError(SsrobotError):
     """An operation is not allowed in the current lifecycle state."""

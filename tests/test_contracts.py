@@ -603,10 +603,11 @@ def test_contexts_share_a_description_but_not_state(artifacts: Path) -> None:
     b_runtime = KinematicRuntime(clock="sim:b")
     with RobotContext(robot, a_runtime) as a, RobotContext(robot, b_runtime) as b:
         submitted = a.submit(target)
-        assert submitted.state is ExecutionState.PENDING
+        assert submitted.status.state is ExecutionState.PENDING
         before_step = a.observe(q).reading("right_arm_q").value  # submit does not advance time
         a.step()
-        assert a.status(submitted.execution).state is ExecutionState.SUCCEEDED
+        after_step = submitted.status  # a fresh read; the handle is updated by step()
+        assert after_step.state is ExecutionState.SUCCEEDED
         a_obs, b_obs = a.observe(q), b.observe(q)
         report["two_contexts"] = {
             "a_before_step": before_step,
@@ -621,7 +622,7 @@ def test_contexts_share_a_description_but_not_state(artifacts: Path) -> None:
         assert (a_obs.stamp.time_ns, b_obs.stamp.time_ns) == (a_runtime.tick_ns, 0)
         assert a.info.runtime == b.info.runtime == "kinematic"
         cancelled = b.submit(target)
-        assert b.cancel(cancelled.execution).state is ExecutionState.CANCELED
+        assert b.cancel(cancelled).state is ExecutionState.CANCELED
         b.step()
         assert b.observe(q).reading("right_arm_q").value == (0.0, 0.0, 0.0)
 

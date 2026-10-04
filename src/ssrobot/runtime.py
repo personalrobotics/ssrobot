@@ -11,12 +11,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from ssrobot._wire import Record, meta
+from ssrobot._wire import Record, Value, meta
 from ssrobot.commands import Command
-from ssrobot.conventions import ClockMode, check_name
+from ssrobot.conventions import ClockMode, Timestamp, check_name
 from ssrobot.description import CommandCapability, RobotDescription
 from ssrobot.errors import ValidationError
-from ssrobot.execution import ExecutionStatus
+from ssrobot.execution import AppliedCommand, ExecutionStatus, RuntimeHealth
 from ssrobot.observations import Observation, ObservationRequest
 
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -50,11 +50,25 @@ class RuntimeInfo(Record):
             )
 
 
+RuntimeEvent = ExecutionStatus | AppliedCommand | RuntimeHealth
+"""What a runtime reports between polls."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RuntimeUpdate(Value):
+    """A runtime's current time and the events since its previous update, in causal order."""
+
+    stamp: Timestamp = field(metadata=meta("Current runtime time."))
+    events: tuple[RuntimeEvent, ...] = field(default=(), metadata=meta("Events since last poll."))
+
+
 class Runtime(Protocol):
     """Backend mechanics behind a ``RobotContext``.
 
-    ``RobotContext`` validates every command and request before calling a runtime and
-    validates every observation a runtime returns.
+    The context validates every command and request before calling a runtime and every
+    value a runtime returns. The context decides cancellation, timeouts, and the effect
+    of faults; a runtime reports progress, completion, rejection, and health. See
+    docs/contracts.md.
     """
 
     def open(self, description: RobotDescription) -> RuntimeInfo:
@@ -69,18 +83,30 @@ class Runtime(Protocol):
         """Readings for exactly the requested channels, stamped on the runtime clock."""
         ...
 
-    def submit(self, command: Command) -> ExecutionStatus:
-        """Accept or reject a validated command without advancing time."""
+    def submit(self, execution: str, command: Command) -> ExecutionStatus:
+        """Accept (``pending``) or refuse (``rejected``) a validated command.
+
+        Does not advance time. ``execution`` is assigned by the context.
+        """
         ...
 
-    def status(self, execution: str) -> ExecutionStatus:
-        """Current status of a submitted command."""
-        ...
-
-    def cancel(self, execution: str) -> ExecutionStatus:
-        """Request cancellation; returns the resulting status."""
+    def cancel(self, execution: str) -> None:
+        """Stop applying an execution at once. Report nothing further about it."""
         ...
 
     def step(self) -> None:
         """Advance one control tick. Only called on ``ClockMode.MANUAL`` runtimes."""
+        ...
+
+    def poll(self) -> RuntimeUpdate:
+        """Current time and the events since the previous poll.
+
+        Executions may move to ``active``, ``succeeded``, or ``failed``. A ``faulted``
+        health event means the runtime has already stopped every execution touching
+        the faulted components.
+        """
+        ...
+
+    def recover(self) -> None:
+        """Try to clear a fault. Success is reported by a later ``ok`` health event."""
         ...

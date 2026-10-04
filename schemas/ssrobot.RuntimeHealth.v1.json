@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.RuntimeHealth v1",
+  "$ref": "#/$defs/RuntimeHealth",
+  "$defs": {
+    "Diagnostic": {
+      "type": "object",
+      "description": "Why something was rejected, failed, or modified.",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Stable machine-readable code."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable explanation."
+        },
+        "component": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Affected component, if any."
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "RuntimeHealth": {
+      "type": "object",
+      "description": "A runtime's report that it faulted or recovered.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.RuntimeHealth"
+        },
+        "version": {
+          "const": 1
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "faulted"
+          ],
+          "description": "Health after this report."
+        },
+        "stamp": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the change happened, on the runtime clock."
+        },
+        "diagnostic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Diagnostic"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required when faulted."
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Affected components; empty means the whole robot."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "state",
+        "stamp"
+      ],
+      "additionalProperties": false
+    },
+    "Timestamp": {
+      "type": "object",
+      "description": "A point in time on a named clock.",
+      "properties": {
+        "clock": {
+          "type": "string",
+          "description": "Clock identity, e.g. 'sim:geodude-1' or 'ros:/clock'."
+        },
+        "time_ns": {
+          "type": "integer",
+          "description": "Nanoseconds since the clock's epoch.",
+          "x-unit": "ns"
+        }
+      },
+      "required": [
+        "clock",
+        "time_ns"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

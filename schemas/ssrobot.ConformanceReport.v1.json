@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.ConformanceReport v1",
+  "$ref": "#/$defs/ConformanceReport",
+  "$defs": {
+    "ConformanceCheck": {
+      "type": "object",
+      "description": "ConformanceCheck(*, name: 'str', outcome: 'CheckOutcome', detail: 'str')",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Check name."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "not_applicable"
+          ],
+          "description": "Result."
+        },
+        "detail": {
+          "type": "string",
+          "description": "What was observed, or why it does not apply."
+        }
+      },
+      "required": [
+        "name",
+        "outcome",
+        "detail"
+      ],
+      "additionalProperties": false
+    },
+    "ConformanceReport": {
+      "type": "object",
+      "description": "The result of one conformance run.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.ConformanceReport"
+        },
+        "version": {
+          "const": 1
+        },
+        "runtime": {
+          "type": "string",
+          "description": "Runtime implementation name."
+        },
+        "runtime_version": {
+          "type": "string",
+          "description": "Runtime implementation and backend versions."
+        },
+        "description": {
+          "type": "string",
+          "description": "Fingerprint of the robot description used."
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConformanceCheck"
+          },
+          "description": "Every check, in run order."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "runtime",
+        "runtime_version",
+        "description",
+        "checks"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

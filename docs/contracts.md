@@ -1,12 +1,14 @@
 # ssrobot contracts
 
-The normative reference for ssrobot's public boundary (#2), conventions (#3), and typed
-records (#4). The JSON Schemas in [`schemas/`](../schemas) are the authoritative wire
-forms and are generated from the same dataclasses described here. See
-[architecture.md](architecture.md) for scope and ownership.
 
-Lifecycle states, command ownership, deadlines, and the passive `Execution` handle are
-specified with #5. Snapshots and planning scenes come with #18.
+The normative reference for ssrobot's public boundary (#2), conventions (#3), typed
+records (#4), and lifecycle, ownership, and execution semantics (#5), with the replay
+runtime and conformance scenario that exercise them (#6). The JSON Schemas in
+[`schemas/`](../schemas) are the authoritative wire forms and are generated from the
+same dataclasses described here. See [architecture.md](architecture.md) for scope and
+ownership.
+
+Snapshots and planning scenes come with #18.
 
 ## Boundary
 
@@ -32,33 +34,133 @@ effectors, tools, and kinematics come with #7.
 
 ### RobotContext
 
+`RobotContext(description, runtime, *, sinks=())` is the command gateway. It owns
+lifecycle, command ownership, deadlines, cancellation, the effect of faults, and the
+trace. It validates everything going into the runtime and everything coming out.
+
 | Member | Behavior |
 | --- | --- |
-| `RobotContext(description, runtime)` | Binds one description to one injected runtime. Does not open it. |
-| `with ctx:` / `__enter__` | Opens the runtime once and checks the `RuntimeInfo` it returns. If open or the check fails, it closes the runtime and re-raises. |
-| `__exit__`, `close()` | Closes the runtime. Idempotent. Runs on normal exit and on exceptions. |
-| `info` | The `RuntimeInfo` reported at open. |
-| `observe(request)` | Checks the request against declared and available channels, calls the runtime, and checks that the observation answers the request on the runtime clock. |
-| `submit(command)` | Checks the command against the description and the available capabilities, then passes it to the runtime. Does not advance time. |
-| `status(id)`, `cancel(id)` | Delegate to the runtime. |
-| `step()` | Advances one control tick on a `ClockMode.MANUAL` runtime. Fails with `manual_clock_required` otherwise. |
+| `with ctx:` / `__enter__` | Opens the runtime once, checks its `RuntimeInfo`, and polls it for the current time. If anything fails, it closes the runtime and re-raises. |
+| `__exit__`, `close()` | Cancels unfinished executions (`context_closed`) and closes the runtime. Idempotent. Runs on normal exit and on exceptions. |
+| `state`, `info`, `now`, `fault` | Lifecycle state, the opened runtime's `RuntimeInfo`, the latest runtime time, and the fault that put the context in `faulted`, if any. |
+| `observe(request)` | Checks the request against declared and available channels, then checks that the observation answers it on the runtime clock. |
+| `submit(command, *, source="client", timeout_ns=None)` | Validates, takes ownership, and returns a passive `Execution`. Does not advance time. |
+| `cancel(execution)` | Cancels one unfinished execution (`canceled`). |
+| `stop(components=None)` | Cancels every unfinished execution touching the components, or all of them (`stopped`). |
+| `step()` | Manual clocks only: advances one control tick, then applies the runtime's update. |
+| `update()` | Applies the runtime's pending update without advancing a manual clock. |
+| `run_until(execution, *, max_ticks=None, timeout_s=None)` | Blocks until the execution finishes or the bound is reached. It steps a manual runtime, needing `max_ticks` or a deadline, and polls an external runtime, needing `timeout_s` of wall-clock time. |
+| `recover()` | Faulted only: asks the runtime to clear its fault, then returns the resulting state. |
+| `owner(component)`, `executions` | The execution controlling a component, and every execution in submission order. |
 
-Every call except `close` fails with `LifecycleError("not_open")` outside the open
-state. A context holds no backend types and has no global or implicit counterpart.
+An `Execution` exposes `id`, `command`, `source`, `components`, `deadline`, `status`,
+and `done`. It owns no thread, event loop, or clock. Its status changes only when the
+context steps or updates.
 
 ### Runtime
 
-A `typing.Protocol` with `open`, `close`, `observe`, `submit`, `status`, `cancel`, and
-`step`. It owns backend I/O, time, and capability reporting, and contains no planning,
-policy, or task logic.
+A `typing.Protocol` with `open`, `close`, `observe`, `submit`, `cancel`, `step`,
+`poll`, and `recover`. It owns backend I/O and time, and contains no planning, policy,
+or task logic.
 
 - `open(description)` returns a `RuntimeInfo`: implementation name and version, clock
   mode, clock identity, the fingerprint of the description it bound, and the command
-  capabilities and channels it confirms are available now.
-- The context rejects a `RuntimeInfo` whose fingerprint differs (`stale_description`)
-  or that offers anything the description does not declare (`undeclared_capability`).
-- `close()` must be idempotent and safe after a failed or partial `open`.
-- `step()` is called only on manual runtimes.
+  capabilities and channels it confirms are available now. The context rejects a
+  different fingerprint (`stale_description`) and any capability or channel the
+  description does not declare (`undeclared_capability`).
+- `submit(execution, command)` returns `pending` or `rejected`, stamped now. The
+  context assigns the execution identifier.
+- `cancel(execution)` means stop applying it at once and report nothing further about
+  it. The context records the terminal state.
+- `poll()` returns a `RuntimeUpdate`: the current time and, in causal order, the
+  `ExecutionStatus`, `AppliedCommand`, and `RuntimeHealth` events since the last poll.
+  A runtime may report only `active`, `succeeded`, or `failed` after submission. A
+  `faulted` health event means the runtime has already stopped every execution
+  touching the faulted components.
+- `recover()` attempts to clear a fault. Success arrives as a later `ok` health event.
+- `step()` is called only on manual runtimes. `close()` is idempotent and safe after a
+  failed or partial `open`.
+- A runtime must reject (`rejected`) a trajectory whose first waypoint differs from the
+  current joint positions.
+
+The context treats any runtime output that breaks these rules as a
+`ValidationError("runtime_contract")`. Examples include a wrong clock, a stamp out of
+causal order, an unknown or finished execution, an illegal transition, or an applied
+record that names another command.
+
+## Lifecycle, ownership, and execution
+
+### Context states
+
+| State | Entered by | Allowed operations |
+| --- | --- | --- |
+| `created` | construction | `__enter__`, `close` |
+| `open` | a successful `__enter__`; `recover()` or an `ok` health event while faulted | `observe`, `submit`, `cancel`, `stop`, `step`, `update`, `run_until`, `close` |
+| `faulted` | a `faulted` health event | `observe`, `cancel`, `stop`, `step`, `update`, `run_until`, `recover`, `close` |
+| `closed` | `close()`, `__exit__`, or a failed `__enter__` | `close` (no-op) |
+
+Anything else fails deterministically with `LifecycleError`. The code is `faulted`
+while faulted, `not_open` otherwise, and `already_opened` for a second `__enter__`. A
+`created` context that is closed never opens its runtime.
+
+### Execution states
+
+| From | To | Decided by |
+| --- | --- | --- |
+| (submit) | `pending`, `rejected` | runtime |
+| `pending` | `active`, `succeeded`, `failed` | runtime |
+| `active` | `succeeded`, `failed` | runtime |
+| `pending`, `active` | `canceled` (`canceled`, `stopped`, `superseded`, `context_closed`) | context |
+| `pending`, `active` | `timed_out` (`deadline_exceeded`) | context |
+| `pending`, `active` | `failed` (the fault's diagnostic) | context, on a fault |
+
+Terminal states have no successors. When the context ends an execution, it calls
+`runtime.cancel` first.
+
+### Ownership
+
+- An unfinished execution owns every component its command addresses. A chunk owns all
+  the components in its steps.
+- A submission that addresses a component owned by another `source` fails with
+  `OwnershipError("ownership_conflict")` and never reaches the runtime.
+- A submission from the same source supersedes and cancels its earlier executions on
+  those components. A source replaces its own commands; it never interleaves with
+  another source's.
+- Commands to disjoint components, such as the left and right arms, run concurrently.
+- Ownership is released when an execution reaches any terminal state. A `rejected`
+  execution never takes ownership.
+
+### Deadlines, staleness, and stop scopes
+
+- `timeout_ns` sets `deadline = now + timeout_ns` on the runtime clock. Deadlines are
+  checked after each update. A terminal state reported in that update takes
+  precedence; otherwise the execution times out at the update's time.
+- An `ActionChunk` whose last step was due before `now` fails with
+  `ValidationError("stale_command")` before the runtime sees it. A chunk on another
+  clock fails with `clock_mismatch`.
+- `stop(components)` cancels every unfinished execution touching those components;
+  `stop()` cancels everything. Unknown components fail with `unknown_reference`.
+
+### Faults and communication loss
+
+A runtime reports a fault, including loss of communication with hardware, as a
+`faulted` `RuntimeHealth` event naming the affected components. An empty list means
+the whole robot. The context then:
+
+- records `failed` for every unfinished execution touching those components, with the
+  fault's diagnostic, and releases their ownership;
+- enters `faulted`, refusing new commands until an `ok` health event (via `recover()`)
+  or close. Executions on unaffected components continue.
+
+ssrobot coordinates with hardware safety systems; it never replaces e-stops,
+watchdogs, or controllers.
+
+### Expected errors and defects
+
+Expected operational and input failures raise `SsrobotError` subclasses with stable
+codes. Every other exception, from a runtime, a sink, or ssrobot itself, is a
+programming defect. The context never catches it as an ordinary failure: it
+propagates, and leaving the `with` block still closes the runtime.
 
 ## Conventions
 
@@ -177,6 +279,11 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`Observation`](../schemas/ssrobot.Observation.v1.json) | Timestamped readings, one per requested channel. |
 | [`ExecutionStatus`](../schemas/ssrobot.ExecutionStatus.v1.json) | The state of a submitted command. |
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v1.json) | What was requested, what was applied, and every modification between them. |
+| [`Submission`](../schemas/ssrobot.Submission.v1.json) | A command accepted for execution, with its identifier, source, and deadline. |
+| [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
+| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v1.json) | One event in a trace. |
+| [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
+| [`ConformanceReport`](../schemas/ssrobot.ConformanceReport.v1.json) | The result of a conformance run. |
 
 ### Capabilities
 
@@ -206,7 +313,7 @@ Vector quantities are read as tuples of floats. Images are read as `ArrayValue`.
 at `readings.<channel>`, so an out-of-range value never reaches the caller. Pose
 readings must carry a unit quaternion.
 
-### Execution states
+### Execution records
 
 | State | Terminal | Diagnostic |
 | --- | --- | --- |
@@ -222,11 +329,69 @@ readings must carry a unit quaternion.
 runtime actually applied. Every clip, rate limit, or safety override is listed as a
 `Modification`.
 
+## Traces
+
+Every event becomes one `TraceRecord`, passed synchronously to each sink in order.
+`JsonlTrace(path)` writes one JSON object per line, with arrays in `assets/` beside it.
+`read_trace(path)` decodes a trace strictly.
+
+| Field | Meaning |
+| --- | --- |
+| `schema`, `version` | `ssrobot.TraceRecord`, 1 |
+| `sequence` | 0, 1, 2, … with no gaps |
+| `kind` | `opened`, `observed`, `submitted`, `status`, `applied`, `health`, `stepped`, `closed` |
+| `clock`, `time_ns` | Runtime time of the event. Runtime events use their own stamps, and everything else uses the context's `now`. Never decreases along a trace. |
+| `source` | The submitter for `submitted` and `applied`, `runtime:<name>` for what the runtime reported, and `context` for the context's own decisions |
+| `payload` | `RuntimeInfo`, `Observation`, `Submission`, `ExecutionStatus`, `AppliedCommand`, or `RuntimeHealth` by kind; none for `stepped` and `closed` |
+
+On a step, the runtime's events come first, then `stepped` at the new time, then any
+timeouts. Because `applied` records carry the submitter, every applied command can be
+attributed to a planner, policy, or person.
+
+## ReplayRuntime and conformance
+
+`ReplayRuntime(script)` is a manually clocked runtime with no dynamics, and the
+reference implementation of the runtime contract.
+
+- **Script.** A `ReplayScript` (`ssrobot.ReplayScript` on the wire) lists ticks of
+  recorded readings. `ReplayScript.hold(...)` builds a still robot.
+- **Instantaneous commands** are applied and succeed on the next tick.
+- **Trajectories** start on the next tick, are sampled by linear interpolation, and
+  succeed when their last waypoint is applied. A trajectory whose first waypoint is
+  more than `START_TOLERANCE` from the observed positions is rejected
+  (`start_mismatch`).
+- **Chunks** apply their latest due step on each tick.
+- **Faults.** If a tick lists `expected_applied` and the applied commands differ, the
+  runtime faults with `replay_divergence`. Stepping past the last tick faults with
+  `replay_exhausted`, which cannot be recovered. `inject_fault(code, message,
+  components)` faults it on demand.
+
+`ssrobot.conformance.run_conformance(description, make_runtime, sinks=...)` runs one
+scenario through the public API. It is reusable for any runtime that offers a manual
+clock and two joint groups with position and trajectory commands and joint-position
+channels. It produces a `ConformanceReport` (`ssrobot.ConformanceReport`) with checks
+in this order:
+
+- `open`
+- `observe`
+- `no_progress_before_step`
+- `independent_components`
+- `ownership`
+- `cancel`
+- `timeout`
+- `runtime_rejection`
+- `stale_command`
+- `fault`
+- `close`
+
+Together they reach every terminal execution state. A check a runtime cannot support
+is reported as `not_applicable`, with the reason; `fault` needs the `inject_fault` hook.
+
 ## Errors
 
 Every expected failure is an `SsrobotError` subclass with a stable `code`:
-`ValidationError` for malformed or inconsistent input, `CapabilityError`,
-`StaleRevisionError`, and `LifecycleError`. Code that handles errors should branch on the
+`ValidationError` for malformed or inconsistent input (including `runtime_contract`),
+`CapabilityError`, `OwnershipError`, `StaleRevisionError`, and `LifecycleError`. Code that handles errors should branch on the
 code, not on the message.
 
 ## Reproducing the evidence
@@ -235,13 +400,22 @@ code, not on the message.
 uv sync --locked
 uv run pytest                                    # writes artifacts/<test>/...
 uv run python scripts/generate_schemas.py --check
+uv run python -m ssrobot.conformance --out out/  # trace.jsonl, conformance-report.json
+uv run python scripts/check_core_imports.py      # core dependency gate
 ```
+
+CI also builds the wheel, installs only that wheel in an empty environment, and runs
+the dependency gate with `--installed` and the conformance scenario from it. That
+conformance trace and report are uploaded as the `installed-conformance` artifact.
 
 | Artifact | Shows |
 | --- | --- |
 | `artifacts/test_records_round_trip_through_json_and_checked_in_schemas/` | Joint commands in all three modes, runtime info, trajectory, action chunk, multimodal observation, applied command, and description, each in wire form with its out-of-line image and depth assets. Each validates against `schemas/` and decodes to an equal value. |
 | `artifacts/test_joint_command_schema_fixes_the_unit_of_values_by_mode/joint-command-units.json` | For position, velocity, and effort commands: the mode, the single unit the schema resolves for `values`, and the unit after decoding. |
 | `artifacts/test_conventions_accept_valid_and_reject_ambiguous_input/conventions-report.json` | Every valid and invalid convention case with its expected and actual diagnostic code and path. Covers the MuJoCo, URDF, and ROS timestamp conversions, chunk clocks against manual and external runtimes, and execution-record identifiers. |
+| `artifacts/test_replay_runtime_passes_the_conformance_scenario/run/` | The ReplayRuntime conformance `trace.jsonl` and `conformance-report.json`. The test re-reads them and checks every line against the schema, contiguous sequence numbers, time that never decreases, legal transitions, all five terminal states, and that each applied command is attributed to its submitter. A second run in `rerun/` is byte-identical. |
+| `artifacts/test_replay_faults_on_divergence_and_exhaustion/trace.jsonl` | A replay that diverges from its recording, recovers, then runs out of ticks. |
+| `artifacts/test_core_imports_no_backend/gate.txt` | Where `ssrobot` was imported from, and the gate's verdict. |
 | `artifacts/test_contexts_share_a_description_but_not_state/contexts-report.json` | Two contexts on one description diverging independently. A cross-clock chunk refused before reaching the runtime. Capability and clock-mode refusals on an externally clocked read-only runtime. Gripper openings at 0, 0.5, and 1 returned, while -0.01 and 1.01 are rejected. Cleanup after a stale open and after an exception. |
 
 Two runs produce byte-identical artifacts. Set `SSROBOT_ARTIFACTS` to write them

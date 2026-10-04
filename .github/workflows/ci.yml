@@ -32,3 +32,27 @@ jobs:
           name: m0-evidence-py${{ matrix.python }}
           path: artifacts/
           if-no-files-found: error
+
+  installed:
+    # Verifies the built wheel in an environment that has nothing else installed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.11"
+      - run: uv build --out-dir dist
+      - run: uv venv --no-project clean
+      - run: uv pip install --python clean dist/*.whl
+      - run: uv pip list --python clean
+      - name: Dependency gate on the installed wheel
+        run: clean/bin/python scripts/check_core_imports.py --installed
+      - name: Conformance from the installed wheel
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/clean/bin/python -m ssrobot.conformance --out $GITHUB_WORKSPACE/artifacts/installed-conformance
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: installed-conformance
+          path: artifacts/installed-conformance/
+          if-no-files-found: error

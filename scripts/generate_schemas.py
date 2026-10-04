@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import ssrobot
+import ssrobot.conformance
 
 SCHEMAS = Path(__file__).resolve().parents[1] / "schemas"
 

@@ -221,3 +221,10 @@ class ActionChunk(Record):
 
 Command = JointCommand | GripperCommand | BaseTwistCommand | JointTrajectory | ActionChunk
 """Anything a client may submit."""
+
+
+def command_components(command: Command) -> tuple[str, ...]:
+    """Every component a command addresses, in order."""
+    if isinstance(command, ActionChunk):
+        return tuple(command_component(c) for c in command.steps[0])
+    return (command_component(command),)

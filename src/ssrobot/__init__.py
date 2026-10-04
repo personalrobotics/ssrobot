@@ -24,7 +24,7 @@ from ssrobot.commands import (
     JointMode,
     JointTrajectory,
 )
-from ssrobot.context import RobotContext
+from ssrobot.context import ContextState, Execution, RobotContext
 from ssrobot.conventions import ClockMode, Pose, Timestamp
 from ssrobot.description import (
     CommandCapability,
@@ -40,6 +40,7 @@ from ssrobot.description import (
 from ssrobot.errors import (
     CapabilityError,
     LifecycleError,
+    OwnershipError,
     SsrobotError,
     StaleRevisionError,
     ValidationError,
@@ -49,11 +50,16 @@ from ssrobot.execution import (
     Diagnostic,
     ExecutionState,
     ExecutionStatus,
+    HealthState,
     Modification,
     ModificationKind,
+    RuntimeHealth,
+    Submission,
 )
 from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
-from ssrobot.runtime import Runtime, RuntimeInfo
+from ssrobot.replay import ReplayRuntime, ReplayScript, ReplayTick
+from ssrobot.runtime import Runtime, RuntimeEvent, RuntimeInfo, RuntimeUpdate
+from ssrobot.trace import JsonlTrace, TraceKind, TraceRecord, TraceSink, read_trace
 from ssrobot.validation import check_command, check_observation, check_request
 
 __all__ = [
@@ -68,13 +74,16 @@ __all__ = [
     "Command",
     "CommandCapability",
     "CommandKind",
+    "ContextState",
     "DType",
     "Diagnostic",
+    "Execution",
     "ExecutionState",
     "ExecutionStatus",
     "Frame",
     "Gripper",
     "GripperCommand",
+    "HealthState",
     "InstantCommand",
     "Joint",
     "JointCommand",
@@ -83,23 +92,35 @@ __all__ = [
     "JointLimits",
     "JointMode",
     "JointTrajectory",
+    "JsonlTrace",
     "LifecycleError",
     "MobileBase",
     "Modification",
     "ModificationKind",
     "Observation",
     "ObservationRequest",
+    "OwnershipError",
     "Pose",
     "Quantity",
     "Reading",
     "Record",
+    "ReplayRuntime",
+    "ReplayScript",
+    "ReplayTick",
     "RobotContext",
     "RobotDescription",
     "Runtime",
+    "RuntimeEvent",
+    "RuntimeHealth",
     "RuntimeInfo",
+    "RuntimeUpdate",
     "SsrobotError",
     "StaleRevisionError",
+    "Submission",
     "Timestamp",
+    "TraceKind",
+    "TraceRecord",
+    "TraceSink",
     "ValidationError",
     "Value",
     "check_command",
@@ -110,5 +131,6 @@ __all__ = [
     "encode",
     "json_schema",
     "loads",
+    "read_trace",
     "record_types",
 ]
