@@ -257,9 +257,11 @@ class ReplayRuntime:
         self._events.append(ExecutionStatus(execution=execution, state=state, stamp=self._now()))
 
     def _raise_fault(self, code: str, message: str, components: tuple[str, ...]) -> None:
-        scope = set(components)
+        assert self._description is not None
+        held = self._description.resources(components) if components else None
         for execution, running in list(self._running.items()):
-            if not scope or scope.intersection(command_components(running.command)):
+            occupied = self._description.resources(command_components(running.command))
+            if held is None or held & occupied:
                 del self._running[execution]
         self._fault = RuntimeHealth(
             state=HealthState.FAULTED,

@@ -21,6 +21,7 @@ class Quantity(enum.StrEnum):
     JOINT_EFFORT = "joint_effort"
     GRIPPER_OPENING = "gripper_opening"
     POSE = "pose"
+    WRENCH = "wrench"
     RGB_IMAGE = "rgb_image"
     DEPTH_IMAGE = "depth_image"
 
@@ -32,6 +33,7 @@ VECTOR_QUANTITIES = frozenset(
         Quantity.JOINT_EFFORT,
         Quantity.GRIPPER_OPENING,
         Quantity.POSE,
+        Quantity.WRENCH,
     }
 )
 """Quantities whose readings are tuples of float64; the rest are ``ArrayValue``."""
@@ -46,7 +48,7 @@ class ChannelSpec(Value):
     source: str = field(
         metadata=meta(
             "Observed entity: a joint group (joint quantities), a gripper (opening), "
-            "or a frame (pose target, camera optical frame)."
+            "a frame (pose), a force-torque sensor (wrench), or a camera (images)."
         )
     )
     frame: str | None = field(
@@ -73,6 +75,7 @@ class ChannelSpec(Value):
         ok = {
             Quantity.GRIPPER_OPENING: shape == (1,),
             Quantity.POSE: shape == (7,),
+            Quantity.WRENCH: shape == (6,),
             Quantity.RGB_IMAGE: len(shape) == 3 and shape[2] == 3,
             Quantity.DEPTH_IMAGE: len(shape) == 2,
         }.get(q, len(shape) == 1)

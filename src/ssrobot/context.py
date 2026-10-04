@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import time
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from types import TracebackType
 
 from ssrobot.commands import ActionChunk, Command, command_components
@@ -79,14 +80,19 @@ class Execution:
     Its status changes only when the context steps or updates.
     """
 
-    __slots__ = ("_context", "components", "submission")
+    __slots__ = ("_context", "components", "resources", "submission")
 
     def __init__(
-        self, context: RobotContext, submission: Submission, components: tuple[str, ...]
+        self,
+        context: RobotContext,
+        submission: Submission,
+        components: tuple[str, ...],
+        resources: frozenset[str],
     ) -> None:
         self._context = context
         self.submission = submission
         self.components = components
+        self.resources = resources
 
     @property
     def id(self) -> str:
@@ -115,6 +121,21 @@ class Execution:
 
     def __repr__(self) -> str:
         return f"Execution({self.id!r}, {self.source!r}, {self.status.state.value})"
+
+
+@dataclass(frozen=True)
+class Ownership:
+    """An execution's hold on (some of) a component's resources."""
+
+    execution: Execution
+    resources: tuple[str, ...]
+    """The component's resources this execution holds, sorted."""
+    complete: bool
+    """Whether it holds every resource of the component."""
+
+
+def _order(execution_id: str) -> int:
+    return int(execution_id.removeprefix("e"))
 
 
 class RobotContext:
@@ -178,9 +199,31 @@ class RobotContext:
         """The fault that put the context in ``faulted``, if any."""
         return self._fault
 
-    def owner(self, component: str) -> Execution | None:
-        """The unfinished execution controlling ``component``, if any."""
-        return self._owners.get(component)
+    def owners(self, component: str) -> tuple[Ownership, ...]:
+        """Every unfinished execution holding any of ``component``'s resources.
+
+        One entry per execution, in submission order, with the resources of
+        ``component`` it holds. Empty means unowned; one ``complete`` entry means a
+        single execution controls the whole component; anything else is partial or
+        shared ownership.
+        """
+        wanted = self._resources((component,))
+        held: dict[str, set[str]] = {}
+        for resource in wanted:
+            holder = self._owners.get(resource)
+            if holder is not None:
+                held.setdefault(holder.id, set()).add(resource)
+        return tuple(
+            Ownership(
+                execution=self._executions[execution_id],
+                resources=tuple(sorted(resources)),
+                complete=resources == wanted,
+            )
+            for execution_id, resources in sorted(held.items(), key=lambda kv: _order(kv[0]))
+        )
+
+    def _resources(self, components: Iterable[str]) -> frozenset[str]:
+        return self._description.resources(components)
 
     @property
     def executions(self) -> tuple[Execution, ...]:
@@ -285,16 +328,18 @@ class RobotContext:
         if timeout_ns is not None and timeout_ns <= 0:
             raise ValidationError("out_of_limits", "timeout_ns must be positive", path="timeout_ns")
         components = command_components(command)
+        resources = self._resources(components)
         superseded: list[Execution] = []
-        for component in components:
-            holder = self._owners.get(component)
+        for resource in sorted(resources):
+            holder = self._owners.get(resource)
             if holder is None:
                 continue
             if holder.source != source:
                 raise OwnershipError(
                     "ownership_conflict",
-                    f"{component!r} is controlled by {holder.source!r} ({holder.id})",
-                    path=component,
+                    f"{resource} is controlled by {holder.source!r} ({holder.id}, "
+                    f"{', '.join(holder.components)})",
+                    path=resource,
                 )
             if holder not in superseded:
                 superseded.append(holder)
@@ -322,7 +367,7 @@ class RobotContext:
         submission = Submission(
             execution=execution_id, source=source, command=command, deadline=deadline
         )
-        execution = Execution(self, submission, components)
+        execution = Execution(self, submission, components, resources)
         self._executions[execution_id] = execution
         self._emit(TraceKind.SUBMITTED, source, submission)
         self._record(status, self._runtime_source)
@@ -333,8 +378,8 @@ class RobotContext:
                     ExecutionState.CANCELED,
                     Diagnostic(code="superseded", message=f"superseded by {execution_id}"),
                 )
-            for component in components:
-                self._owners[component] = execution
+            for resource in resources:
+                self._owners[resource] = execution
         return execution
 
     def cancel(self, execution: Execution) -> ExecutionStatus:
@@ -357,9 +402,8 @@ class RobotContext:
         for name in sorted(scope or ()):
             if name not in known:
                 raise ValidationError("unknown_reference", f"unknown component {name!r}")
-        stopped = tuple(
-            e for e in self._active() if scope is None or scope.intersection(e.components)
-        )
+        held = None if scope is None else self._resources(scope)
+        stopped = tuple(e for e in self._active() if held is None or held & e.resources)
         reason = Diagnostic(code="stopped", message="stopped by request")
         for execution in stopped:
             self._finish(execution, ExecutionState.CANCELED, reason)
@@ -573,10 +617,11 @@ class RobotContext:
                 self._state, self._fault = ContextState.OPEN, None
             return
         self._state, self._fault = ContextState.FAULTED, health
-        scope = set(health.components)
+        held = self._resources(health.components) if health.components else None
         for execution in self._active():
-            if not scope or scope.intersection(execution.components):
-                # The runtime has already stopped it; record the outcome.
+            if held is None or held & execution.resources:
+                # The runtime should already have stopped it; make sure, then record it.
+                self._runtime.cancel(execution.id)
                 self._record(
                     ExecutionStatus(
                         execution=execution.id,
@@ -599,9 +644,9 @@ class RobotContext:
         self._statuses[status.execution] = status
         self._emit(TraceKind.STATUS, source, status, status.stamp)
         if status.state.terminal:
-            for component, holder in list(self._owners.items()):
+            for resource, holder in list(self._owners.items()):
                 if holder.id == status.execution:
-                    del self._owners[component]
+                    del self._owners[resource]
 
     def _emit(
         self,

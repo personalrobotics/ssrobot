@@ -1,0 +1,2 @@
+# Interpreted by the MuJoCo runtime integration (M2), not by the core.
+control_period_ns = 10_000_000

@@ -133,7 +133,7 @@ def test_applied_commands_stay_within_ownership(artifacts: Path) -> None:
                 "state": ctx.state.value,
                 "left": left.status.state.value,
                 "right": right.status.state.value,
-                "owners": [ctx.owner(c) is not None for c in ("left_arm", "right_arm")],
+                "owners": [len(ctx.owners(c)) for c in ("left_arm", "right_arm")],
                 "runtime_live": list(runtime.live),
             }
         report[name]["trace_kinds"] = _kinds(trace_path)
@@ -142,7 +142,7 @@ def test_applied_commands_stay_within_ownership(artifacts: Path) -> None:
         assert outcome["error"] == "runtime_contract"
         assert outcome["state"] == "faulted"
         assert outcome["left"] == outcome["right"] == "failed"
-        assert outcome["owners"] == [False, False]
+        assert outcome["owners"] == [0, 0]
         assert outcome["runtime_live"] == []
         assert "applied" not in outcome["trace_kinds"]  # nothing misleading was published
 
@@ -166,7 +166,7 @@ def test_invalid_submit_answer_is_rolled_back(artifacts: Path) -> None:
             "runtime_live": list(runtime.live),
             "context_executions": [e.id for e in ctx.executions],
             "first": [first.status.state.value, first.status.diagnostic.code],  # type: ignore[union-attr]
-            "left_owner": None if ctx.owner("left_arm") is None else ctx.owner("left_arm").id,  # type: ignore[union-attr]
+            "left_owners": [o.execution.id for o in ctx.owners("left_arm")],
         }
     report["submitted"] = [
         r.payload.execution  # type: ignore[union-attr]
@@ -180,7 +180,7 @@ def test_invalid_submit_answer_is_rolled_back(artifacts: Path) -> None:
     assert report["runtime_live"] == []
     assert report["context_executions"] == ["e1"]
     assert report["first"] == ["failed", "runtime_contract"]  # failed, not superseded
-    assert report["left_owner"] is None
+    assert report["left_owners"] == []
     assert report["submitted"] == ["e1"]
 
 

@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.KinematicModel v1",
+  "$ref": "#/$defs/KinematicModel",
+  "$defs": {
+    "Frame": {
+      "type": "object",
+      "description": "A named coordinate frame: a link, site, or other attachment point.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Frame name, unique within the robot."
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Parent frame; None only for the root."
+        }
+      },
+      "required": [
+        "name",
+        "parent"
+      ],
+      "additionalProperties": false
+    },
+    "Joint": {
+      "type": "object",
+      "description": "A joint that moves ``child`` relative to its parent frame ``parent``.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Joint name, unique within the robot."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "revolute",
+            "continuous",
+            "prismatic"
+          ],
+          "description": "Joint type; fixes the joint unit."
+        },
+        "parent": {
+          "type": "string",
+          "description": "Frame the joint is mounted on."
+        },
+        "child": {
+          "type": "string",
+          "description": "Frame the joint moves; its parent must be `parent`."
+        },
+        "limits": {
+          "$ref": "#/$defs/JointLimits",
+          "description": "Joint limits."
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "parent",
+        "child",
+        "limits"
+      ],
+      "additionalProperties": false
+    },
+    "JointLimits": {
+      "type": "object",
+      "description": "Joint limits. Absent position bounds mean unbounded; absent rates mean undeclared.",
+      "properties": {
+        "lower": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Lower position.",
+          "x-unit": "joint"
+        },
+        "upper": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Upper position.",
+          "x-unit": "joint"
+        },
+        "velocity": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum absolute velocity.",
+          "x-unit": "joint/s"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum absolute effort.",
+          "x-unit": "joint-effort"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "KinematicModel": {
+      "type": "object",
+      "description": "A robot's frame tree and joints, as loaded from a model file.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.KinematicModel"
+        },
+        "version": {
+          "const": 1
+        },
+        "name": {
+          "type": "string",
+          "description": "Model name."
+        },
+        "frames": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Frame"
+          },
+          "description": "Frame tree with exactly one root."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Joint"
+          },
+          "description": "Joints."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "name",
+        "frames",
+        "joints"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

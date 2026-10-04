@@ -1,0 +1,238 @@
+# A Geodude-like robot: two six-joint arms, each on its own vertical lift, with
+# parallel grippers, wrist force-torque sensors, and a head camera.
+schema = "ssrobot.package"
+version = 1
+robot = "bimanual_lift"
+canonical_model = "kinematics"
+assets = ["meshes"]
+
+[[models]]
+name = "kinematics"
+format = "ssrobot"
+path = "kinematics.json"
+
+[[profiles]]
+name = "sim"
+runtime = "mujoco"
+path = "profiles/sim.toml"
+
+[[calibrations]]
+name = "nominal"
+path = "calibration/nominal.toml"
+
+[[semantics.groups]]
+name = "left_lift"
+joints = ["left_lift"]
+
+[[semantics.groups]]
+name = "left_arm"
+joints = ["left_shoulder_pan", "left_shoulder_lift", "left_elbow", "left_wrist_1", "left_wrist_2", "left_wrist_3"]
+
+[[semantics.groups]]
+name = "left_arm_with_lift"
+joints = ["left_lift", "left_shoulder_pan", "left_shoulder_lift", "left_elbow", "left_wrist_1", "left_wrist_2", "left_wrist_3"]
+subgroups = ["left_lift", "left_arm"]
+
+[[semantics.groups]]
+name = "right_lift"
+joints = ["right_lift"]
+
+[[semantics.groups]]
+name = "right_arm"
+joints = ["right_shoulder_pan", "right_shoulder_lift", "right_elbow", "right_wrist_1", "right_wrist_2", "right_wrist_3"]
+
+[[semantics.groups]]
+name = "right_arm_with_lift"
+joints = ["right_lift", "right_shoulder_pan", "right_shoulder_lift", "right_elbow", "right_wrist_1", "right_wrist_2", "right_wrist_3"]
+subgroups = ["right_lift", "right_arm"]
+
+[[semantics.groups]]
+name = "both_arms"
+joints = ["left_shoulder_pan", "left_shoulder_lift", "left_elbow", "left_wrist_1", "left_wrist_2", "left_wrist_3", "right_shoulder_pan", "right_shoulder_lift", "right_elbow", "right_wrist_1", "right_wrist_2", "right_wrist_3"]
+subgroups = ["left_arm", "right_arm"]
+
+[[semantics.grippers]]
+name = "left_gripper"
+frame = "left_gripper_base"
+joints = ["left_left_driver_joint", "left_right_driver_joint"]
+
+[[semantics.end_effectors]]
+name = "left_hand"
+frame = "left_tcp"
+gripper = "left_gripper"
+
+[[semantics.manipulators]]
+name = "left_arm"
+group = "left_arm"
+base_frame = "left_arm_mount"
+tool_frame = "left_flange"
+end_effector = "left_hand"
+kinematics = "ssik:ur5e"
+
+[[semantics.manipulators]]
+name = "left_arm_with_lift"
+group = "left_arm_with_lift"
+base_frame = "base"
+tool_frame = "left_flange"
+end_effector = "left_hand"
+
+[[semantics.sensors]]
+name = "left_wrist_ft"
+kind = "force_torque"
+frame = "left_ft_sensor"
+
+[[semantics.configurations]]
+name = "left_arm_home"
+group = "left_arm"
+positions = [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
+
+[[semantics.grippers]]
+name = "right_gripper"
+frame = "right_gripper_base"
+joints = ["right_left_driver_joint", "right_right_driver_joint"]
+
+[[semantics.end_effectors]]
+name = "right_hand"
+frame = "right_tcp"
+gripper = "right_gripper"
+
+[[semantics.manipulators]]
+name = "right_arm"
+group = "right_arm"
+base_frame = "right_arm_mount"
+tool_frame = "right_flange"
+end_effector = "right_hand"
+kinematics = "ssik:ur5e"
+
+[[semantics.manipulators]]
+name = "right_arm_with_lift"
+group = "right_arm_with_lift"
+base_frame = "base"
+tool_frame = "right_flange"
+end_effector = "right_hand"
+
+[[semantics.sensors]]
+name = "right_wrist_ft"
+kind = "force_torque"
+frame = "right_ft_sensor"
+
+[[semantics.configurations]]
+name = "right_arm_home"
+group = "right_arm"
+positions = [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
+
+[[semantics.sensors]]
+name = "head_camera"
+kind = "camera"
+frame = "head_camera_optical"
+
+[[semantics.commands]]
+component = "left_lift"
+kind = "joint"
+mode = "position"
+
+[[semantics.commands]]
+component = "left_arm"
+kind = "joint"
+mode = "position"
+
+[[semantics.commands]]
+component = "left_arm"
+kind = "joint_trajectory"
+
+[[semantics.commands]]
+component = "left_arm_with_lift"
+kind = "joint_trajectory"
+
+[[semantics.commands]]
+component = "left_gripper"
+kind = "gripper"
+
+[[semantics.commands]]
+component = "right_lift"
+kind = "joint"
+mode = "position"
+
+[[semantics.commands]]
+component = "right_arm"
+kind = "joint"
+mode = "position"
+
+[[semantics.commands]]
+component = "right_arm"
+kind = "joint_trajectory"
+
+[[semantics.commands]]
+component = "right_arm_with_lift"
+kind = "joint_trajectory"
+
+[[semantics.commands]]
+component = "right_gripper"
+kind = "gripper"
+
+[[semantics.commands]]
+component = "both_arms"
+kind = "joint_trajectory"
+
+[[semantics.channels]]
+name = "left_arm_q"
+quantity = "joint_position"
+source = "left_arm"
+shape = [6]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "left_lift_q"
+quantity = "joint_position"
+source = "left_lift"
+shape = [1]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "left_gripper_opening"
+quantity = "gripper_opening"
+source = "left_gripper"
+shape = [1]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "left_wrist_wrench"
+quantity = "wrench"
+source = "left_wrist_ft"
+shape = [6]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "right_arm_q"
+quantity = "joint_position"
+source = "right_arm"
+shape = [6]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "right_lift_q"
+quantity = "joint_position"
+source = "right_lift"
+shape = [1]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "right_gripper_opening"
+quantity = "gripper_opening"
+source = "right_gripper"
+shape = [1]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "right_wrist_wrench"
+quantity = "wrench"
+source = "right_wrist_ft"
+shape = [6]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "head_rgb"
+quantity = "rgb_image"
+source = "head_camera"
+shape = [480, 640, 3]
+dtype = "uint8"

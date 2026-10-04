@@ -36,6 +36,8 @@ from ssrobot import (
     RuntimeEvent,
     RuntimeInfo,
     RuntimeUpdate,
+    Sensor,
+    SensorKind,
     Timestamp,
 )
 
@@ -45,10 +47,22 @@ ARM = JointLimits(lower=-math.pi, upper=math.pi, velocity=2.0, effort=50.0)
 def bimanual_robot() -> RobotDescription:
     arms = ("left", "right")
     joints = [
-        Joint(name="lift", kind=JointKind.PRISMATIC, limits=JointLimits(lower=0.0, upper=0.5))
+        Joint(
+            name="lift",
+            kind=JointKind.PRISMATIC,
+            parent="base_link",
+            child="lift_link",
+            limits=JointLimits(lower=0.0, upper=0.5),
+        )
     ]
     joints += [
-        Joint(name=f"{a}_j{i}", kind=JointKind.REVOLUTE, limits=ARM)
+        Joint(
+            name=f"{a}_j{i}",
+            kind=JointKind.REVOLUTE,
+            parent="lift_link" if i == 1 else f"{a}_link{i - 1}",
+            child=f"{a}_link{i}",
+            limits=ARM,
+        )
         for a in arms
         for i in (1, 2, 3)
     ]
@@ -122,8 +136,10 @@ def bimanual_robot() -> RobotDescription:
             Frame(name="world", parent=None),
             Frame(name="base_link", parent="world"),
             Frame(name="lift_link", parent="base_link"),
-            Frame(name="left_tool", parent="lift_link"),
-            Frame(name="right_tool", parent="lift_link"),
+            *(Frame(name=f"{a}_link1", parent="lift_link") for a in arms),
+            *(Frame(name=f"{a}_link2", parent=f"{a}_link1") for a in arms),
+            *(Frame(name=f"{a}_link3", parent=f"{a}_link2") for a in arms),
+            *(Frame(name=f"{a}_tool", parent=f"{a}_link3") for a in arms),
             Frame(name="head_camera", parent="lift_link"),
         ),
         joints=tuple(joints),
@@ -136,6 +152,7 @@ def bimanual_robot() -> RobotDescription:
         ),
         grippers=tuple(Gripper(name=f"{a}_gripper", frame=f"{a}_tool") for a in arms),
         bases=(MobileBase(name="base", frame="base_link"),),
+        sensors=(Sensor(name="head_camera", kind=SensorKind.CAMERA, frame="head_camera"),),
         commands=tuple(commands),
         channels=tuple(channels),
     )
