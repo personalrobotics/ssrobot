@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.JointTrajectory v1",
+  "$ref": "#/$defs/JointTrajectory",
+  "$defs": {
+    "JointTrajectory": {
+      "type": "object",
+      "description": "Timed joint positions for a group, executed from the time it starts.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.JointTrajectory"
+        },
+        "version": {
+          "const": 1
+        },
+        "group": {
+          "type": "string",
+          "description": "Joint group name."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joint names; must equal the group's order."
+        },
+        "time_from_start_ns": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Waypoint times; start at 0 and strictly increase.",
+          "x-unit": "ns"
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "description": "One row of joint positions per waypoint.",
+          "x-unit": "joint"
+        },
+        "velocities": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional row of joint velocities per waypoint.",
+          "x-unit": "joint/s"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "group",
+        "joints",
+        "time_from_start_ns",
+        "positions"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

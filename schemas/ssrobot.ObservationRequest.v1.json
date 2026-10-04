@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.ObservationRequest v1",
+  "$ref": "#/$defs/ObservationRequest",
+  "$defs": {
+    "ObservationRequest": {
+      "type": "object",
+      "description": "Channels a client wants in each observation.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.ObservationRequest"
+        },
+        "version": {
+          "const": 1
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Requested channel names."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "channels"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

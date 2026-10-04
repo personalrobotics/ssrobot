@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.Observation v1",
+  "$ref": "#/$defs/Observation",
+  "$defs": {
+    "ArrayValue": {
+      "type": "object",
+      "description": "Dense array such as an image. Stored out of line as a content-addressed asset.",
+      "properties": {
+        "dtype": {
+          "type": "string",
+          "enum": [
+            "uint8",
+            "uint16",
+            "int32",
+            "float32",
+            "float64"
+          ]
+        },
+        "shape": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^assets/[0-9a-f]{64}\\.bin$"
+        }
+      },
+      "required": [
+        "dtype",
+        "shape",
+        "sha256",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "Observation": {
+      "type": "object",
+      "description": "A set of readings assembled at one runtime time.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.Observation"
+        },
+        "version": {
+          "const": 1
+        },
+        "stamp": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the observation was assembled."
+        },
+        "readings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Reading"
+          },
+          "description": "One reading per requested channel."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "stamp",
+        "readings"
+      ],
+      "additionalProperties": false
+    },
+    "Reading": {
+      "type": "object",
+      "description": "One channel's value with its own freshness.",
+      "properties": {
+        "channel": {
+          "type": "string",
+          "description": "Channel name."
+        },
+        "stamp": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the value was valid, on the runtime clock."
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            {
+              "$ref": "#/$defs/ArrayValue"
+            }
+          ],
+          "description": "Flat float64 values for vector quantities, else an array.",
+          "x-unit": "channel"
+        },
+        "source_stamp": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Original device timestamp, when it differs from stamp."
+        }
+      },
+      "required": [
+        "channel",
+        "stamp",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "Timestamp": {
+      "type": "object",
+      "description": "A point in time on a named clock.",
+      "properties": {
+        "clock": {
+          "type": "string",
+          "description": "Clock identity, e.g. 'sim:geodude-1' or 'ros:/clock'."
+        },
+        "time_ns": {
+          "type": "integer",
+          "description": "Nanoseconds since the clock's epoch.",
+          "x-unit": "ns"
+        }
+      },
+      "required": [
+        "clock",
+        "time_ns"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

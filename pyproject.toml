@@ -1,0 +1,44 @@
+[project]
+name = "ssrobot"
+version = "0.0.0"
+description = "A small simulator-neutral robot interface for planning, policies, and real-world execution."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Siddhartha Srinivasa" }]
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "jsonschema>=4.23",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ssrobot"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["*.md"]  # illustrative snippets in docs keep their own layout
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["src", "tests", "scripts"]
+
+[[tool.mypy.overrides]]
+module = ["jsonschema", "jsonschema.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers"]

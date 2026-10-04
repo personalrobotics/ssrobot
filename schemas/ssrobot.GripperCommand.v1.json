@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.GripperCommand v1",
+  "$ref": "#/$defs/GripperCommand",
+  "$defs": {
+    "GripperCommand": {
+      "type": "object",
+      "description": "Target opening for a gripper.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.GripperCommand"
+        },
+        "version": {
+          "const": 1
+        },
+        "gripper": {
+          "type": "string",
+          "description": "Gripper name."
+        },
+        "opening": {
+          "type": "number",
+          "description": "0 is fully closed, 1 is fully open.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "gripper",
+        "opening"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

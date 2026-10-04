@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.JointCommand v1",
+  "$ref": "#/$defs/JointCommand",
+  "$defs": {
+    "JointCommand": {
+      "type": "object",
+      "description": "Instantaneous targets for every joint of a group, in the group's declared order.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.JointCommand"
+        },
+        "version": {
+          "const": 1
+        },
+        "group": {
+          "type": "string",
+          "description": "Joint group name."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joint names; must equal the group's order."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "position",
+            "velocity",
+            "effort"
+          ],
+          "description": "How values are interpreted."
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "One value per joint, in the unit fixed by mode.",
+          "x-unit-by": {
+            "field": "mode",
+            "units": {
+              "position": "joint",
+              "velocity": "joint/s",
+              "effort": "joint-effort"
+            }
+          }
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "group",
+        "joints",
+        "mode",
+        "values"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "position"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "x-unit": "joint"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "velocity"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "x-unit": "joint/s"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "effort"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "values": {
+                "x-unit": "joint-effort"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

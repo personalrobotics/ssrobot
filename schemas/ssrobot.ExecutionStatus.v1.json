@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.ExecutionStatus v1",
+  "$ref": "#/$defs/ExecutionStatus",
+  "$defs": {
+    "Diagnostic": {
+      "type": "object",
+      "description": "Why something was rejected, failed, or modified.",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Stable machine-readable code."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable explanation."
+        },
+        "component": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Affected component, if any."
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "ExecutionStatus": {
+      "type": "object",
+      "description": "The state of one submitted command at a point in runtime time.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.ExecutionStatus"
+        },
+        "version": {
+          "const": 1
+        },
+        "execution": {
+          "type": "string",
+          "description": "Execution identifier, unique within a context."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "active",
+            "succeeded",
+            "canceled",
+            "timed_out",
+            "rejected",
+            "failed"
+          ],
+          "description": "Current state."
+        },
+        "stamp": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When this state was observed."
+        },
+        "diagnostic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Diagnostic"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required for rejected, timed-out, and failed states."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "execution",
+        "state",
+        "stamp"
+      ],
+      "additionalProperties": false
+    },
+    "Timestamp": {
+      "type": "object",
+      "description": "A point in time on a named clock.",
+      "properties": {
+        "clock": {
+          "type": "string",
+          "description": "Clock identity, e.g. 'sim:geodude-1' or 'ros:/clock'."
+        },
+        "time_ns": {
+          "type": "integer",
+          "description": "Nanoseconds since the clock's epoch.",
+          "x-unit": "ns"
+        }
+      },
+      "required": [
+        "clock",
+        "time_ns"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
