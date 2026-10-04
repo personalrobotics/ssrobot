@@ -147,7 +147,11 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 ### Wire form
 
 - Each record encodes as one JSON object that starts with `schema` and `version`.
-  Embedded values carry neither, and are versioned by their record.
+  Embedded values carry neither, and are versioned by their record. A record may not
+  declare a field with either name; the class is rejected when it is first used or
+  when its schema is generated. For example, the runtime's own version is
+  `RuntimeInfo.runtime_version`.
+- Every checked-in schema is valid under the Draft 2020-12 meta-schema.
 - Decoding is strict, and none of the following is ever coerced:
   - unknown fields, missing required fields, or wrong types (integers are accepted
     where numbers are expected);
@@ -235,7 +239,7 @@ uv run python scripts/generate_schemas.py --check
 
 | Artifact | Shows |
 | --- | --- |
-| `artifacts/test_records_round_trip_through_json_and_checked_in_schemas/` | Trajectory, action chunk, multimodal observation, applied command, and description, each in wire form with its out-of-line image and depth assets. Each validates against `schemas/` and decodes to an equal value. |
+| `artifacts/test_records_round_trip_through_json_and_checked_in_schemas/` | Joint commands in all three modes, runtime info, trajectory, action chunk, multimodal observation, applied command, and description, each in wire form with its out-of-line image and depth assets. Each validates against `schemas/` and decodes to an equal value. |
 | `artifacts/test_joint_command_schema_fixes_the_unit_of_values_by_mode/joint-command-units.json` | For position, velocity, and effort commands: the mode, the single unit the schema resolves for `values`, and the unit after decoding. |
 | `artifacts/test_conventions_accept_valid_and_reject_ambiguous_input/conventions-report.json` | Every valid and invalid convention case with its expected and actual diagnostic code and path. Covers the MuJoCo, URDF, and ROS timestamp conversions, chunk clocks against manual and external runtimes, and execution-record identifiers. |
 | `artifacts/test_contexts_share_a_description_but_not_state/contexts-report.json` | Two contexts on one description diverging independently. A cross-clock chunk refused before reaching the runtime. Capability and clock-mode refusals on an externally clocked read-only runtime. Gripper openings at 0, 0.5, and 1 returned, while -0.01 and 1.01 are rejected. Cleanup after a stale open and after an exception. |

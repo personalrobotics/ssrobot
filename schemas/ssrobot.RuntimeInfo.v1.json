@@ -52,12 +52,15 @@
           "const": "ssrobot.RuntimeInfo"
         },
         "version": {
-          "type": "string",
-          "description": "Runtime implementation and backend versions."
+          "const": 1
         },
         "runtime": {
           "type": "string",
           "description": "Runtime implementation name."
+        },
+        "runtime_version": {
+          "type": "string",
+          "description": "Runtime implementation and backend versions."
         },
         "clock_mode": {
           "type": "string",
@@ -94,7 +97,7 @@
         "schema",
         "version",
         "runtime",
-        "version",
+        "runtime_version",
         "clock_mode",
         "clock",
         "description",

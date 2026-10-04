@@ -163,7 +163,7 @@ class KinematicRuntime:
         self._q = {j.name: 0.0 for j in description.joints}
         return RuntimeInfo(
             runtime="kinematic",
-            version="0",
+            runtime_version="0",
             clock_mode=ClockMode.MANUAL,
             clock=self.clock,
             description=description.fingerprint(),
@@ -250,7 +250,7 @@ class ObserveOnlyRuntime:
         self._description = description
         return RuntimeInfo(
             runtime="observe_only",
-            version="0",
+            runtime_version="0",
             clock_mode=ClockMode.EXTERNAL,
             clock=self.clock,
             description=description.fingerprint(),

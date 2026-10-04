@@ -43,6 +43,9 @@ UNITS = frozenset(
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
+ENVELOPE_FIELDS = frozenset({"schema", "version"})
+"""Keys every encoded ``Record`` reserves; no record field may use them."""
+
 
 def meta(
     doc: str, *, unit: str | None = None, unit_by: tuple[str, Mapping[str, str]] | None = None
@@ -188,6 +191,13 @@ def _fields(cls: type[Struct]) -> tuple[_Field, ...]:
     cached = _FIELDS.get(cls)
     if cached is not None:
         return cached
+    if issubclass(cls, Record):
+        collisions = sorted(ENVELOPE_FIELDS & {f.name for f in dataclasses.fields(cls)})
+        if collisions:
+            raise TypeError(
+                f"{cls.__name__} field(s) {collisions} collide with the reserved record "
+                f"envelope fields {sorted(ENVELOPE_FIELDS)}"
+            )
     hints = typing.get_type_hints(cls)
     _FIELDS[cls] = result = tuple(
         _Field(

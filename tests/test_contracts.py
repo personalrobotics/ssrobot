@@ -147,8 +147,19 @@ def _examples() -> dict[str, Record]:
         )
         for mode in JointMode
     }
+    robot = bimanual_robot()
+    runtime_info = RuntimeInfo(
+        runtime="mujoco",
+        runtime_version="ssrobot 0.0.0; mujoco 3.14.0",
+        clock_mode=ClockMode.MANUAL,
+        clock=SIM,
+        description=robot.fingerprint(),
+        commands=robot.commands[:3],
+        channels=("right_arm_q", "head_rgb"),
+    )
     return {
         **joint_commands,
+        "runtime_info": runtime_info,
         "trajectory": trajectory,
         "action_chunk": chunk,
         "multimodal_observation": observation,
@@ -168,7 +179,7 @@ def test_records_round_trip_through_json_and_checked_in_schemas(artifacts: Path)
         decoded = loads(text, type(record), assets)
         assert decoded == record
         assert dumps(decoded, assets) == text
-        if not isinstance(record, RobotDescription | AppliedCommand | Observation):
+        if not isinstance(record, RobotDescription | AppliedCommand | Observation | RuntimeInfo):
             check_command(robot, record)  # type: ignore[arg-type]
 
     # Image and depth payloads are stored once, by content, outside the JSON.
@@ -269,7 +280,7 @@ def test_conventions_accept_valid_and_reject_ambiguous_input(artifacts: Path) ->
     def runtime_info(mode: ClockMode, clock: str) -> RuntimeInfo:
         return RuntimeInfo(
             runtime="reference",
-            version="0",
+            runtime_version="0",
             clock_mode=mode,
             clock=clock,
             description=robot.fingerprint(),

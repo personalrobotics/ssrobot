@@ -30,7 +30,7 @@ class RuntimeInfo(Record):
     VERSION = 1
 
     runtime: str = field(metadata=meta("Runtime implementation name."))
-    version: str = field(metadata=meta("Runtime implementation and backend versions."))
+    runtime_version: str = field(metadata=meta("Runtime implementation and backend versions."))
     clock_mode: ClockMode = field(metadata=meta("Who advances time."))
     clock: str = field(metadata=meta("Clock identity used by every timestamp it produces."))
     description: str = field(metadata=meta("Fingerprint of the bound robot description."))
