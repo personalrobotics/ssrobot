@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.RobotDescription v1",
-  "$ref": "#/$defs/RobotDescription",
+  "title": "ssrobot.package v1",
+  "$ref": "#/$defs/PackageManifest",
   "$defs": {
     "ChannelSpec": {
       "type": "object",
@@ -140,29 +140,22 @@
       ],
       "additionalProperties": false
     },
-    "Frame": {
+    "FileEntry": {
       "type": "object",
-      "description": "A named coordinate frame: a link, site, or other attachment point.",
+      "description": "FileEntry(*, name: 'str', path: 'str')",
       "properties": {
         "name": {
           "type": "string",
-          "description": "Frame name, unique within the robot."
+          "description": "Entry name, unique within its list."
         },
-        "parent": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Parent frame; None only for the root."
+        "path": {
+          "type": "string",
+          "description": "File path relative to the package root."
         }
       },
       "required": [
         "name",
-        "parent"
+        "path"
       ],
       "additionalProperties": false
     },
@@ -189,45 +182,6 @@
       "required": [
         "name",
         "frame"
-      ],
-      "additionalProperties": false
-    },
-    "Joint": {
-      "type": "object",
-      "description": "A joint that moves ``child`` relative to its parent frame ``parent``.",
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "Joint name, unique within the robot."
-        },
-        "kind": {
-          "type": "string",
-          "enum": [
-            "revolute",
-            "continuous",
-            "prismatic"
-          ],
-          "description": "Joint type; fixes the joint unit."
-        },
-        "parent": {
-          "type": "string",
-          "description": "Frame the joint is mounted on."
-        },
-        "child": {
-          "type": "string",
-          "description": "Frame the joint moves; its parent must be `parent`."
-        },
-        "limits": {
-          "$ref": "#/$defs/JointLimits",
-          "description": "Joint limits."
-        }
-      },
-      "required": [
-        "name",
-        "kind",
-        "parent",
-        "child",
-        "limits"
       ],
       "additionalProperties": false
     },
@@ -258,62 +212,6 @@
         "name",
         "joints"
       ],
-      "additionalProperties": false
-    },
-    "JointLimits": {
-      "type": "object",
-      "description": "Joint limits. Absent position bounds mean unbounded; absent rates mean undeclared.",
-      "properties": {
-        "lower": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Lower position.",
-          "x-unit": "joint"
-        },
-        "upper": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Upper position.",
-          "x-unit": "joint"
-        },
-        "velocity": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Maximum absolute velocity.",
-          "x-unit": "joint/s"
-        },
-        "effort": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Maximum absolute effort.",
-          "x-unit": "joint-effort"
-        }
-      },
-      "required": [],
       "additionalProperties": false
     },
     "Manipulator": {
@@ -393,6 +291,33 @@
       ],
       "additionalProperties": false
     },
+    "ModelEntry": {
+      "type": "object",
+      "description": "ModelEntry(*, name: 'str', format: 'ModelFormat', path: 'str')",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Model name, unique within the package."
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "ssrobot"
+          ],
+          "description": "File format."
+        },
+        "path": {
+          "type": "string",
+          "description": "File path relative to the package root."
+        }
+      },
+      "required": [
+        "name",
+        "format",
+        "path"
+      ],
+      "additionalProperties": false
+    },
     "NamedConfiguration": {
       "type": "object",
       "description": "Named joint positions for a group, such as 'home' or 'stow'.",
@@ -421,34 +346,94 @@
       ],
       "additionalProperties": false
     },
-    "RobotDescription": {
+    "PackageManifest": {
       "type": "object",
-      "description": "Immutable semantic description of one robot. Safe to share between contexts.",
+      "description": "The ``ssrobot.toml`` at a package root.",
       "properties": {
         "schema": {
-          "const": "ssrobot.RobotDescription"
+          "const": "ssrobot.package"
         },
         "version": {
           "const": 1
         },
+        "robot": {
+          "type": "string",
+          "description": "Robot name; becomes the description's name."
+        },
+        "canonical_model": {
+          "type": "string",
+          "description": "Name of the model the description is built from."
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelEntry"
+          },
+          "description": "Model files, canonical and alternate."
+        },
+        "semantics": {
+          "$ref": "#/$defs/Semantics",
+          "description": "The semantic layer."
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Asset directories models refer to, relative to the root."
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProfileEntry"
+          },
+          "description": "Runtime profiles."
+        },
+        "calibrations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileEntry"
+          },
+          "description": "Portable calibration files; machine-local ones stay outside."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "robot",
+        "canonical_model",
+        "models"
+      ],
+      "additionalProperties": false
+    },
+    "ProfileEntry": {
+      "type": "object",
+      "description": "A runtime profile, interpreted by the runtime integration it names.",
+      "properties": {
         "name": {
           "type": "string",
-          "description": "Robot name: letters, digits, '_', '.', and '-'."
+          "description": "Profile name, unique within the package."
         },
-        "frames": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Frame"
-          },
-          "description": "Frame tree with exactly one root."
+        "runtime": {
+          "type": "string",
+          "description": "Runtime it configures, e.g. 'mujoco'."
         },
-        "joints": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Joint"
-          },
-          "description": "Joints."
-        },
+        "path": {
+          "type": "string",
+          "description": "File path relative to the package root."
+        }
+      },
+      "required": [
+        "name",
+        "runtime",
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "Semantics": {
+      "type": "object",
+      "description": "The semantic layer of a description, as a package declares it.",
+      "properties": {
         "groups": {
           "type": "array",
           "items": {
@@ -513,13 +498,7 @@
           "description": "Declared observation channels."
         }
       },
-      "required": [
-        "schema",
-        "version",
-        "name",
-        "frames",
-        "joints"
-      ],
+      "required": [],
       "additionalProperties": false
     },
     "Sensor": {

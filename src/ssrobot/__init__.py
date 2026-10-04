@@ -28,14 +28,21 @@ from ssrobot.context import ContextState, Execution, RobotContext
 from ssrobot.conventions import ClockMode, Pose, Timestamp
 from ssrobot.description import (
     CommandCapability,
+    EndEffector,
     Frame,
     Gripper,
     Joint,
     JointGroup,
     JointKind,
     JointLimits,
+    KinematicModel,
+    Manipulator,
     MobileBase,
+    NamedConfiguration,
     RobotDescription,
+    Semantics,
+    Sensor,
+    SensorKind,
 )
 from ssrobot.errors import (
     CapabilityError,
@@ -57,6 +64,13 @@ from ssrobot.execution import (
     Submission,
 )
 from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
+from ssrobot.package import (
+    PackageManifest,
+    PackageReport,
+    RobotPackage,
+    load_installed_package,
+    load_package,
+)
 from ssrobot.replay import ReplayRuntime, ReplayScript, ReplayTick
 from ssrobot.runtime import Runtime, RuntimeEvent, RuntimeInfo, RuntimeUpdate
 from ssrobot.trace import JsonlTrace, TraceKind, TraceRecord, TraceSink, read_trace
@@ -77,6 +91,7 @@ __all__ = [
     "ContextState",
     "DType",
     "Diagnostic",
+    "EndEffector",
     "Execution",
     "ExecutionState",
     "ExecutionStatus",
@@ -93,13 +108,18 @@ __all__ = [
     "JointMode",
     "JointTrajectory",
     "JsonlTrace",
+    "KinematicModel",
     "LifecycleError",
+    "Manipulator",
     "MobileBase",
     "Modification",
     "ModificationKind",
+    "NamedConfiguration",
     "Observation",
     "ObservationRequest",
     "OwnershipError",
+    "PackageManifest",
+    "PackageReport",
     "Pose",
     "Quantity",
     "Reading",
@@ -109,11 +129,15 @@ __all__ = [
     "ReplayTick",
     "RobotContext",
     "RobotDescription",
+    "RobotPackage",
     "Runtime",
     "RuntimeEvent",
     "RuntimeHealth",
     "RuntimeInfo",
     "RuntimeUpdate",
+    "Semantics",
+    "Sensor",
+    "SensorKind",
     "SsrobotError",
     "StaleRevisionError",
     "Submission",
@@ -131,6 +155,8 @@ __all__ = [
     "dumps",
     "encode",
     "json_schema",
+    "load_installed_package",
+    "load_package",
     "loads",
     "read_trace",
     "record_types",

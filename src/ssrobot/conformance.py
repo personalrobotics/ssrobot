@@ -107,9 +107,19 @@ def reference_robot() -> RobotDescription:
     arms = ("left", "right")
     return RobotDescription(
         name="conformance_bimanual",
-        frames=(Frame(name="world", parent=None),),
+        frames=(
+            Frame(name="world", parent=None),
+            *(Frame(name=f"{a}_link1", parent="world") for a in arms),
+            *(Frame(name=f"{a}_link2", parent=f"{a}_link1") for a in arms),
+        ),
         joints=tuple(
-            Joint(name=f"{a}_j{i}", kind=JointKind.REVOLUTE, limits=limits)
+            Joint(
+                name=f"{a}_j{i}",
+                kind=JointKind.REVOLUTE,
+                parent="world" if i == 1 else f"{a}_link1",
+                child=f"{a}_link{i}",
+                limits=limits,
+            )
             for a in arms
             for i in (1, 2)
         ),

@@ -1,0 +1,73 @@
+{
+  "schema": "ssrobot.KinematicModel",
+  "version": 1,
+  "name": "minimal_arm",
+  "frames": [
+    {
+      "name": "world",
+      "parent": null
+    },
+    {
+      "name": "base",
+      "parent": "world"
+    },
+    {
+      "name": "upper_arm",
+      "parent": "base"
+    },
+    {
+      "name": "forearm",
+      "parent": "upper_arm"
+    },
+    {
+      "name": "wrist_link",
+      "parent": "forearm"
+    },
+    {
+      "name": "flange",
+      "parent": "wrist_link"
+    },
+    {
+      "name": "tool_tip",
+      "parent": "flange"
+    }
+  ],
+  "joints": [
+    {
+      "name": "shoulder",
+      "kind": "revolute",
+      "parent": "base",
+      "child": "upper_arm",
+      "limits": {
+        "lower": -3.14,
+        "upper": 3.14,
+        "velocity": 1.5,
+        "effort": 40.0
+      }
+    },
+    {
+      "name": "elbow",
+      "kind": "revolute",
+      "parent": "upper_arm",
+      "child": "forearm",
+      "limits": {
+        "lower": -3.14,
+        "upper": 3.14,
+        "velocity": 1.5,
+        "effort": 40.0
+      }
+    },
+    {
+      "name": "wrist",
+      "kind": "revolute",
+      "parent": "forearm",
+      "child": "wrist_link",
+      "limits": {
+        "lower": -3.14,
+        "upper": 3.14,
+        "velocity": 1.5,
+        "effort": 40.0
+      }
+    }
+  ]
+}

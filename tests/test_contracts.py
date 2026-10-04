@@ -348,7 +348,9 @@ def test_conventions_accept_valid_and_reject_ambiguous_input(artifacts: Path) ->
         ),
         (
             "revolute joint without bounds",
-            lambda: Joint(name="j", kind=JointKind.REVOLUTE, limits=JointLimits()),
+            lambda: Joint(
+                name="j", kind=JointKind.REVOLUTE, parent="a", child="b", limits=JointLimits()
+            ),
             "invalid_limits",
         ),
         # Poses and conversions

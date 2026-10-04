@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.PackageReport v1",
+  "$ref": "#/$defs/PackageReport",
+  "$defs": {
+    "PackageReport": {
+      "type": "object",
+      "description": "What loading a package resolved: an inspection artifact.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.PackageReport"
+        },
+        "version": {
+          "const": 1
+        },
+        "robot": {
+          "type": "string",
+          "description": "Robot name."
+        },
+        "canonical_model": {
+          "type": "string",
+          "description": "Model the description was built from."
+        },
+        "description": {
+          "type": "string",
+          "description": "Fingerprint of the loaded description."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResolvedFile"
+          },
+          "description": "Every resolved file, by role."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "robot",
+        "canonical_model",
+        "description",
+        "files"
+      ],
+      "additionalProperties": false
+    },
+    "ResolvedFile": {
+      "type": "object",
+      "description": "ResolvedFile(*, role: 'str', path: 'str', sha256: 'str')",
+      "properties": {
+        "role": {
+          "type": "string",
+          "description": "What the file is, e.g. 'model:mjcf' or 'profile:sim'."
+        },
+        "path": {
+          "type": "string",
+          "description": "Resolved path relative to the package root."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "SHA-256 of the content; for a directory, of its listing."
+        }
+      },
+      "required": [
+        "role",
+        "path",
+        "sha256"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -28,9 +28,47 @@ that exists is consistent. `fingerprint()` is the SHA-256 of its canonical JSON.
 the description's identity: equal content gives an equal fingerprint. Contexts can share
 one description because it has no mutable state.
 
-The M0 form holds frames, joints with limits, joint groups, grippers, mobile bases,
-declared command capabilities, and declared observation channels. Manipulators, end
-effectors, tools, and kinematics come with #7.
+A description has two layers. Robot packages ([packages.md](packages.md)) supply
+them separately, and `RobotDescription.compose(model, semantics)` joins them.
+
+- **Kinematic layer:** a `KinematicModel` with frames forming one tree, and joints.
+  Each joint names the `parent` frame it is mounted on and the `child` frame it moves,
+  whose parent must be `parent`. At most one joint moves any frame. Model loaders
+  produce this layer.
+- **Semantic layer:** a `Semantics` value with the entities below. Entities are
+  declared only by a package or a loader, never guessed.
+
+| Entity | Meaning | Validated |
+| --- | --- | --- |
+| `JointGroup` | Joints commanded and observed together, in canonical order | The joints exist and are distinct |
+| Composite `JointGroup` | A group whose `subgroups` are other groups | Its joints equal the subgroups' joints in order; subgroups are not themselves composite |
+| `Manipulator` | A serial arm: `group`, `base_frame`, `tool_frame`, optional `end_effector`, optional `kinematics` adapter id | Every group joint moves a frame on the path from base to tool, in base-to-tool order; the end effector's frame is at or below the tool frame |
+| `EndEffector` | The tool center point `frame`, and the `gripper` that actuates it if any; one without a gripper is a tool | Frame and gripper exist |
+| `Gripper` | A component commanded by opening, mounted at `frame`, moving `joints` (including passive linkage joints) | Frame and joints exist |
+| `MobileBase` | A component commanded by planar twist in `frame`, optionally modeled by `joints` | Frame and joints exist |
+| `Sensor` | A `camera` or `force_torque` sensor measuring in `frame` | Frame exists |
+| `NamedConfiguration` | Named positions for a group, such as `home` | One position per joint, within limits |
+| `CommandCapability`, `ChannelSpec` | Declared commands and observation channels | See *Capabilities* |
+
+A single-arm robot needs only frames, joints, one group, and one manipulator; every
+other tuple is empty. Descriptions are frozen and hashable.
+
+**Qualified identifiers.** Names are unique within each namespace:
+
+- `frame`
+- `joint`
+- `component` (joint groups, grippers, and mobile bases share it)
+- `manipulator`
+- `end_effector`
+- `sensor`
+- `configuration`
+- `channel`
+
+An entity's stable identifier is `<robot>:<namespace>:<name>`. For example,
+`bimanual_lift:component:left_arm_with_lift`. Robot names use only letters, digits,
+`_`, `.`, and `-`, so the identifier always parses. Entity names may contain `/`, as
+MJCF prefixes do. `qualified(namespace, name)` returns one identifier, and
+`qualified_names()` returns all of them.
 
 ### RobotContext
 
@@ -141,15 +179,21 @@ Terminal states have no successors. When the context ends an execution, it calls
 
 ### Ownership
 
-- An unfinished execution owns every component its command addresses. A chunk owns all
-  the components in its steps.
-- A submission that addresses a component owned by another `source` fails with
-  `OwnershipError("ownership_conflict")` and never reaches the runtime.
+- An unfinished execution owns the joints of every component its command addresses. A
+  component that declares no joints, such as a gripper or base without them, is owned
+  under its own name. A chunk owns everything in its steps. Ownership is held on
+  joints, so overlapping groups conflict: a composite group and its subgroups command
+  the same joints.
+- A submission that needs anything owned by another `source` fails with
+  `OwnershipError("ownership_conflict")` and never reaches the runtime. The error's
+  path names the contested resource, for example `joint:left_lift`.
 - A submission from the same source supersedes and cancels its earlier executions on
   those components. This happens only once the runtime has accepted the new command;
   if it rejects it, the earlier executions continue. A source replaces its own
   commands; it never interleaves with another source's.
 - Commands to disjoint components, such as the left and right arms, run concurrently.
+- `owner(component)`, `stop(components)`, and fault scopes all work through the same
+  joints.
 - Ownership is released when an execution reaches any terminal state. A `rejected`
   execution never takes ownership.
 
@@ -223,17 +267,16 @@ serialized command carries no unit of its own, so it cannot contradict its mode.
 - Pose channels report the pose of `source` expressed in `frame`, as
   `[x, y, z, qw, qx, qy, qz]`.
 - Base twists are expressed in the base frame: x forward, y left, z up.
-- Camera channels are captured in the `source` frame, which is an optical frame:
-  x right, y down, z forward.
+- Camera channels come from a `camera` sensor whose frame is an optical frame: x right,
+  y down, z forward. Wrench channels come from a `force_torque` sensor and are
+  expressed in its frame.
 
 ### Names
 
 - A name must be non-empty and contain no surrounding whitespace or control characters.
   Source names from MJCF or URDF are kept as they are, never rewritten.
-- Names are unique within a robot, per namespace: joints, frames, components (joint
-  groups, grippers, and bases share one namespace), and channels.
-- Names are local to a robot. When several robots share a scene, an entity is qualified
-  by the pair (robot name, entity name).
+- Names are unique within a robot, per namespace, and qualified as
+  `<robot>:<namespace>:<name>`. See *RobotDescription*.
 - Identifiers in execution records follow the same rule, so records can be correlated:
   `ExecutionStatus.execution`, `AppliedCommand.execution`, `Modification.target`, and
   `Diagnostic.component` when present. A malformed identifier fails with
@@ -293,6 +336,9 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | Record | Purpose |
 | --- | --- |
 | [`RobotDescription`](../schemas/ssrobot.RobotDescription.v1.json) | The robot, including declared capabilities. |
+| [`KinematicModel`](../schemas/ssrobot.KinematicModel.v1.json) | A robot's frames and joints, as a model loader produces them. |
+| [`ssrobot.package`](../schemas/ssrobot.package.v1.json) | A package manifest, `ssrobot.toml`. See [packages.md](packages.md). |
+| [`PackageReport`](../schemas/ssrobot.PackageReport.v1.json) | What loading a package resolved. |
 | [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v1.json) | What an opened runtime binds and confirms. |
 | [`JointCommand`](../schemas/ssrobot.JointCommand.v1.json) | Instantaneous position, velocity, or effort targets for a group. |
 | [`GripperCommand`](../schemas/ssrobot.GripperCommand.v1.json) | Target opening. |
@@ -329,8 +375,9 @@ inspected before any runtime opens. The runtime confirms which are available in
 | `joint_effort` | joint group | (n,) | float64 | N·m or N |
 | `gripper_opening` | gripper | (1,) | float64 | 1 |
 | `pose` | frame, expressed in `frame` | (7,) | float64 | m, then unit quaternion |
-| `rgb_image` | optical frame | (h, w, 3) | uint8 | — |
-| `depth_image` | optical frame | (h, w) | float32 | m along optical z |
+| `wrench` | `force_torque` sensor, in its frame | (6,) | float64 | N (force), then N·m (torque) |
+| `rgb_image` | `camera` sensor | (h, w, 3) | uint8 | — |
+| `depth_image` | `camera` sensor | (h, w) | float32 | m along optical z |
 
 Vector quantities are read as tuples of floats. Images are read as `ArrayValue`.
 `RobotContext.observe` rejects a gripper opening outside `[0, 1]` with `out_of_limits`
@@ -460,6 +507,9 @@ conformance trace and report are uploaded as the `installed-conformance` artifac
 | `artifacts/test_conventions_accept_valid_and_reject_ambiguous_input/conventions-report.json` | Every valid and invalid convention case with its expected and actual diagnostic code and path. Covers the MuJoCo, URDF, and ROS timestamp conversions, chunk clocks against manual and external runtimes, and execution-record identifiers. |
 | `artifacts/test_replay_runtime_passes_the_conformance_scenario/run/` | The ReplayRuntime conformance `trace.jsonl` and `conformance-report.json`. The test re-reads them and checks every line against the schema, contiguous sequence numbers, time that never decreases, legal transitions, all five terminal states, and that each applied command is attributed to its submitter. A second run in `rerun/` is byte-identical. |
 | `artifacts/test_replay_faults_on_divergence_and_exhaustion/trace.jsonl` | A replay that diverges from its recording, recovers, then runs out of ticks. |
+| `artifacts/test_example_package_loads_identically_wherever_it_lives[<name>]/` | For each example package: its description, a semantic summary (manipulators, their joints, frames, end effectors and grippers, composite groups, sensors, qualified names), and its package report. Each validates against `schemas/`. The same content loads identically from a copy and as an installed Python package. |
+| `artifacts/test_overlapping_groups_share_ownership/ownership-report.json` | A composite arm-with-lift trajectory owning the arm's joints, so a different source commanding the arm is refused, while the other arm is free. |
+| `artifacts/test_package_ingress_rejects_bad_packages/ingress-report.json` | Manifest, path, symlink, and semantic mistakes, each rejected with its code and path before any description exists. |
 | `artifacts/test_core_imports_no_backend/gate.txt` | Where `ssrobot` was imported from, and the gate's verdict. |
 | `artifacts/test_gate_finds_backend_imports_in_every_form/gate-forms.json` | Planted eager, lazy, `from`, aliased, multiline, dotted, and `import_module` backend imports, each failing the gate with its module, line, and dependency. |
 | `artifacts/test_direct_responses_keep_causal_time/` | An external runtime's answers advancing `now`, a deadline counted from acceptance, a regressing answer causing a breach, and a manual runtime answering ahead of its tick being rolled back. |

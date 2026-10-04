@@ -1,0 +1,339 @@
+{
+  "schema": "ssrobot.KinematicModel",
+  "version": 1,
+  "name": "bimanual_lift",
+  "frames": [
+    {
+      "name": "world",
+      "parent": null
+    },
+    {
+      "name": "base",
+      "parent": "world"
+    },
+    {
+      "name": "head_camera_optical",
+      "parent": "base"
+    },
+    {
+      "name": "left_carriage",
+      "parent": "base"
+    },
+    {
+      "name": "left_arm_mount",
+      "parent": "left_carriage"
+    },
+    {
+      "name": "left_shoulder",
+      "parent": "left_arm_mount"
+    },
+    {
+      "name": "left_upper_arm",
+      "parent": "left_shoulder"
+    },
+    {
+      "name": "left_forearm",
+      "parent": "left_upper_arm"
+    },
+    {
+      "name": "left_wrist_1_link",
+      "parent": "left_forearm"
+    },
+    {
+      "name": "left_wrist_2_link",
+      "parent": "left_wrist_1_link"
+    },
+    {
+      "name": "left_wrist_3_link",
+      "parent": "left_wrist_2_link"
+    },
+    {
+      "name": "left_flange",
+      "parent": "left_wrist_3_link"
+    },
+    {
+      "name": "left_ft_sensor",
+      "parent": "left_flange"
+    },
+    {
+      "name": "left_gripper_base",
+      "parent": "left_ft_sensor"
+    },
+    {
+      "name": "left_left_driver",
+      "parent": "left_gripper_base"
+    },
+    {
+      "name": "left_right_driver",
+      "parent": "left_gripper_base"
+    },
+    {
+      "name": "left_tcp",
+      "parent": "left_gripper_base"
+    },
+    {
+      "name": "right_carriage",
+      "parent": "base"
+    },
+    {
+      "name": "right_arm_mount",
+      "parent": "right_carriage"
+    },
+    {
+      "name": "right_shoulder",
+      "parent": "right_arm_mount"
+    },
+    {
+      "name": "right_upper_arm",
+      "parent": "right_shoulder"
+    },
+    {
+      "name": "right_forearm",
+      "parent": "right_upper_arm"
+    },
+    {
+      "name": "right_wrist_1_link",
+      "parent": "right_forearm"
+    },
+    {
+      "name": "right_wrist_2_link",
+      "parent": "right_wrist_1_link"
+    },
+    {
+      "name": "right_wrist_3_link",
+      "parent": "right_wrist_2_link"
+    },
+    {
+      "name": "right_flange",
+      "parent": "right_wrist_3_link"
+    },
+    {
+      "name": "right_ft_sensor",
+      "parent": "right_flange"
+    },
+    {
+      "name": "right_gripper_base",
+      "parent": "right_ft_sensor"
+    },
+    {
+      "name": "right_left_driver",
+      "parent": "right_gripper_base"
+    },
+    {
+      "name": "right_right_driver",
+      "parent": "right_gripper_base"
+    },
+    {
+      "name": "right_tcp",
+      "parent": "right_gripper_base"
+    }
+  ],
+  "joints": [
+    {
+      "name": "left_lift",
+      "kind": "prismatic",
+      "parent": "base",
+      "child": "left_carriage",
+      "limits": {
+        "lower": 0.0,
+        "upper": 0.5,
+        "velocity": 0.1
+      }
+    },
+    {
+      "name": "left_shoulder_pan",
+      "kind": "revolute",
+      "parent": "left_arm_mount",
+      "child": "left_shoulder",
+      "limits": {
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "velocity": 3.14,
+        "effort": 150.0
+      }
+    },
+    {
+      "name": "left_shoulder_lift",
+      "kind": "revolute",
+      "parent": "left_shoulder",
+      "child": "left_upper_arm",
+      "limits": {
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "velocity": 3.14,
+        "effort": 150.0
+      }
+    },
+    {
+      "name": "left_elbow",
+      "kind": "revolute",
+      "parent": "left_upper_arm",
+      "child": "left_forearm",
+      "limits": {
+        "lower": -3.141592653589793,
+        "upper": 3.141592653589793,
+        "velocity": 3.14,
+        "effort": 150.0
+      }
+    },
+    {
+      "name": "left_wrist_1",
+      "kind": "revolute",
+      "parent": "left_forearm",
+      "child": "left_wrist_1_link",
+      "limits": {
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "velocity": 3.14,
+        "effort": 28.0
+      }
+    },
+    {
+      "name": "left_wrist_2",
+      "kind": "revolute",
+      "parent": "left_wrist_1_link",
+      "child": "left_wrist_2_link",
+      "limits": {
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "velocity": 3.14,
+        "effort": 28.0
+      }
+    },
+    {
+      "name": "left_wrist_3",
+      "kind": "revolute",
+      "parent": "left_wrist_2_link",
+      "child": "left_wrist_3_link",
+      "limits": {
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "velocity": 3.14,
+        "effort": 28.0
+      }
+    },
+    {
+      "name": "left_left_driver_joint",
+      "kind": "revolute",
+      "parent": "left_gripper_base",
+      "child": "left_left_driver",
+      "limits": {
+        "lower": 0.0,
+        "upper": 0.7
+      }
+    },
+    {
+      "name": "left_right_driver_joint",
+      "kind": "revolute",
+      "parent": "left_gripper_base",
+      "child": "left_right_driver",
+      "limits": {
+        "lower": 0.0,
+        "upper": 0.7
+      }
+    },
+    {
+      "name": "right_lift",
+      "kind": "prismatic",
+      "parent": "base",
+      "child": "right_carriage",
+      "limits": {
+        "lower": 0.0,
+        "upper": 0.5,
+        "velocity": 0.1
+      }
+    },
+    {
+      "name": "right_shoulder_pan",
+      "kind": "revolute",
+      "parent": "right_arm_mount",
+      "child": "right_shoulder",
+      "limits": {
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "velocity": 3.14,
+        "effort": 150.0
+      }
+    },
+    {
+      "name": "right_shoulder_lift",
+      "kind": "revolute",
+      "parent": "right_shoulder",
+      "child": "right_upper_arm",
+      "limits": {
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "velocity": 3.14,
+        "effort": 150.0
+      }
+    },
+    {
+      "name": "right_elbow",
+      "kind": "revolute",
+      "parent": "right_upper_arm",
+      "child": "right_forearm",
+      "limits": {
+        "lower": -3.141592653589793,
+        "upper": 3.141592653589793,
+        "velocity": 3.14,
+        "effort": 150.0
+      }
+    },
+    {
+      "name": "right_wrist_1",
+      "kind": "revolute",
+      "parent": "right_forearm",
+      "child": "right_wrist_1_link",
+      "limits": {
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "velocity": 3.14,
+        "effort": 28.0
+      }
+    },
+    {
+      "name": "right_wrist_2",
+      "kind": "revolute",
+      "parent": "right_wrist_1_link",
+      "child": "right_wrist_2_link",
+      "limits": {
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "velocity": 3.14,
+        "effort": 28.0
+      }
+    },
+    {
+      "name": "right_wrist_3",
+      "kind": "revolute",
+      "parent": "right_wrist_2_link",
+      "child": "right_wrist_3_link",
+      "limits": {
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "velocity": 3.14,
+        "effort": 28.0
+      }
+    },
+    {
+      "name": "right_left_driver_joint",
+      "kind": "revolute",
+      "parent": "right_gripper_base",
+      "child": "right_left_driver",
+      "limits": {
+        "lower": 0.0,
+        "upper": 0.7
+      }
+    },
+    {
+      "name": "right_right_driver_joint",
+      "kind": "revolute",
+      "parent": "right_gripper_base",
+      "child": "right_right_driver",
+      "limits": {
+        "lower": 0.0,
+        "upper": 0.7
+      }
+    }
+  ]
+}

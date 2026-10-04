@@ -1,0 +1,46 @@
+# A single three-joint arm with a passive tool. The smallest useful package.
+schema = "ssrobot.package"
+version = 1
+robot = "minimal_arm"
+canonical_model = "kinematics"
+
+[[models]]
+name = "kinematics"
+format = "ssrobot"
+path = "kinematics.json"
+
+[[semantics.groups]]
+name = "arm"
+joints = ["shoulder", "elbow", "wrist"]
+
+[[semantics.end_effectors]]
+name = "pointer"  # a tool: no gripper
+frame = "tool_tip"
+
+[[semantics.manipulators]]
+name = "arm"
+group = "arm"
+base_frame = "base"
+tool_frame = "flange"
+end_effector = "pointer"
+
+[[semantics.configurations]]
+name = "home"
+group = "arm"
+positions = [0.0, 0.5, -0.5]
+
+[[semantics.commands]]
+component = "arm"
+kind = "joint"
+mode = "position"
+
+[[semantics.commands]]
+component = "arm"
+kind = "joint_trajectory"
+
+[[semantics.channels]]
+name = "arm_q"
+quantity = "joint_position"
+source = "arm"
+shape = [3]
+dtype = "float64"
