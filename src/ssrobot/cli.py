@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 import tomllib
+from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -135,6 +136,10 @@ def _summary(package: RobotPackage) -> None:
     print(f"  {len(d.frames)} frames, {len(d.joints)} joints")
     print(f"  {len(d.collision_allowances)} collision allowances")
     print(f"  {len(d.commands)} command capabilities, {len(d.channels)} channels")
+    kinds = Counter(item.kind for item in package.items)
+    if kinds:
+        declared = ", ".join(f"{n} {kind}" for kind, n in sorted(kinds.items()))
+        print(f"  the model also declares: {declared}")
     for x in package.diagnostics:
         print(f"  note {x.code}: {x.message}")
 

@@ -1,0 +1,34 @@
+# The two full reference robots (#12). Each pin is the first commit of the robot's
+# asset repository whose package carries an ssrobot.toml. The packages own their
+# manifests; ssrobot only pins and validates them. scripts/check_reference_robots.py
+# reads this file.
+
+[[robots]]
+name = "geodude"
+repository = "personalrobotics/geodude_assets"
+commit = "859913c46582796c704a8cdbf1761fc30f8a85cb"
+module = "geodude_assets"
+package_root = "src/geodude_assets"
+
+# Structural facts the report must show. They are checked through the public report,
+# never by robot-specific code.
+[robots.expect]
+manipulators = 4
+grippers = 2
+end_effectors = 2
+prismatic_joints = 2
+revolute_or_continuous_joints = 28
+
+[[robots]]
+name = "ada"
+repository = "personalrobotics/ada_assets"
+commit = "ae018613de12339cefde7e80934cbbbfddfe0351"
+module = "ada_assets"
+package_root = "src/ada_assets"
+
+[robots.expect]
+manipulators = 1
+grippers = 1
+end_effectors = 1
+prismatic_joints = 0
+revolute_or_continuous_joints = 10

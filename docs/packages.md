@@ -298,3 +298,29 @@ installed Python package, yields byte-identical reports.
 `uv run pytest tests/test_packages.py` loads both and writes their descriptions,
 semantic summaries, and reports under `artifacts/`. It also checks a table of
 malformed packages; see the evidence table in [contracts.md](contracts.md).
+
+## Reference robots
+
+Geodude and ADA are the two full reference robots. Each owns its manifest in its asset
+repository. [`references/robots.toml`](../references/robots.toml) pins the first commit
+that carries it, with the structure the robot's report must show.
+
+```sh
+uv run python scripts/check_reference_robots.py --out artifacts/reference-robots
+```
+
+For each robot, this downloads the pinned commit, builds its wheel with `uv build`, and
+runs two public commands:
+
+- `ssrobot doctor` with `--wheel`. Its `wheel` check loads the wheel's contents through
+  `load_installed_package`.
+- `ssrobot inspect <module> --json` against the wheel as an installed package.
+
+It then checks that the report is a valid `ssrobot.PackageReport`, that its fingerprint
+matches its description, that nothing is ambiguous, and that the counts of
+manipulators, grippers, end effectors, and joint kinds match the pins. No
+presentation is compared byte-for-byte. `references.json` records each robot's commit,
+archive and wheel hashes, license, and fingerprint, and the Franka parser fixture's
+upstream commit and license. CI runs this as the `reference-robots` job and uploads the
+reports. That job is the only part of the build that needs network access.
+
