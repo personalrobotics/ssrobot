@@ -55,12 +55,14 @@ def _where(element: ET.Element) -> str:
     return f"{element.get(_FILE, '?')}: {label}"
 
 
-def _parse(path: Path, resolver: Resolver) -> ET.Element:
+def _parse(path: Path, resolver: Resolver, *, primary: bool) -> ET.Element:
+    """Parse a model file. Only the primary file must be ``<mujoco>``; an included file
+    may use any wrapper, which expansion removes."""
     try:
         root = ET.parse(path).getroot()
     except ET.ParseError as e:
         raise ValidationError("malformed_xml", str(e), path=resolver.relative(path)) from None
-    if root.tag != "mujoco":
+    if primary and root.tag != "mujoco":
         raise ValidationError(
             "malformed_xml",
             f"root element is <{root.tag}>, not <mujoco>",
@@ -76,9 +78,14 @@ def _expand(
     base: Path,
     resolver: Resolver,
     stack: tuple[Path, ...],
+    seen: set[Path],
     files: list[ResolvedFile],
 ) -> None:
-    """Replace every ``<include>`` below ``element`` with the included file's children."""
+    """Replace every ``<include>`` below ``element`` with the included file's children.
+
+    As in MuJoCo, a file may be included only once in the whole model, however its path
+    is spelled; including a file from within itself is a cycle.
+    """
     children: list[ET.Element] = []
     for child in list(element):
         if child.tag == "include":
@@ -88,12 +95,21 @@ def _expand(
             target = resolver.resolve_from(base, reference)
             if target in stack:
                 raise _fail("include_cycle", f"{reference!r} includes itself", child)
+            if target in seen:
+                raise _fail(
+                    "duplicate_include",
+                    f"{resolver.relative(target)!r} is already included in this model",
+                    child,
+                )
+            seen.add(target)
             files.append(resolver.record("include", target))
-            included = _parse(target, resolver)
-            _expand(included, base, resolver, (*stack, target), files)
+            included = _parse(target, resolver, primary=False)
+            if len(included) == 0:
+                raise _fail("empty_include", f"{reference!r} contributes no elements", child)
+            _expand(included, base, resolver, (*stack, target), seen, files)
             children.extend(list(included))
         else:
-            _expand(child, base, resolver, stack, files)
+            _expand(child, base, resolver, stack, seen, files)
             children.append(child)
     for child in list(element):
         element.remove(child)
@@ -158,7 +174,13 @@ class _Loader:
             "assetdir": assetdir,
         }
         self.defaults = _Defaults(root)
+        for element in root.iter():
+            for attribute in ("class", "childclass"):
+                cls = element.get(attribute)
+                if element.tag != "default" and cls is not None and cls not in self.defaults.parent:
+                    raise _fail("unknown_reference", f"unknown default class {cls!r}", element)
         self.frames: list[Frame] = [Frame(name="world", parent=None)]
+        self.bodies: set[str] = {"world"}
         self.joints: list[Joint] = []
         self.diagnostics: list[Diagnostic] = []
         self.items: list[SourceItem] = []
@@ -210,6 +232,7 @@ class _Loader:
             self._walk(body, parent, active)
             return
         self.frames.append(Frame(name=name, parent=parent))
+        self.bodies.add(name)
         for joint in joints:
             self.joints.append(self._joint(joint, parent, name, active))
         self._walk(body, name, active)
@@ -293,7 +316,6 @@ class _Loader:
 
     def _report(self) -> None:
         joints = {j.name for j in self.joints}
-        frames = {f.name for f in self.frames}
         for section, kind in (
             ("actuator", "actuator"),
             ("tendon", "tendon"),
@@ -332,10 +354,13 @@ class _Loader:
                     self._note("ignored_element", f"<contact><{element.tag}> is ignored", element)
                     continue
                 a, b = element.get("body1"), element.get("body2")
-                if a is None or b is None or a not in frames or b not in frames:
+                if a not in self.bodies or b not in self.bodies:
                     raise _fail(
-                        "unknown_reference", f"exclude names unknown bodies {a!r}, {b!r}", element
+                        "unknown_reference",
+                        f"exclude must name two bodies, not {a!r} and {b!r}",
+                        element,
                     )
+                assert a is not None and b is not None
                 try:
                     self.allowances.append(
                         CollisionAllowance.between(a, b, reason="mjcf contact exclude")
@@ -349,9 +374,9 @@ class _Loader:
 
 def load_mjcf(path: Path, resolver: Resolver) -> LoadedModel:
     """Load the MJCF file at ``path``, which the resolver has already placed in the package."""
-    root = _parse(path, resolver)
+    root = _parse(path, resolver, primary=True)
     files: list[ResolvedFile] = []
-    _expand(root, path.parent, resolver, (path,), files)
+    _expand(root, path.parent, resolver, (path,), {path}, files)
     loader = _Loader(root, resolver, path.parent)
     loader.run()
     model = KinematicModel(

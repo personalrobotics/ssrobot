@@ -94,14 +94,21 @@ unresolved ambiguity, are reported as `diagnostics`.
 
 The loader needs no MuJoCo. It applies MuJoCo's semantics to this subset:
 
-- `<include>` anywhere. The path is relative to the main model file and must stay
-  inside the package. Cycles fail with `include_cycle`.
+- `<include>` anywhere, as MuJoCo defines it:
+  - The path is relative to the main model file and must stay inside the package.
+  - Only the main file must be `<mujoco>`. An included file may use any top-level
+    wrapper, such as `<mujocoinclude>`, which is removed. It must contribute at least
+    one element (`empty_include`).
+  - Each file may be included at most once in the whole model, however the path is
+    spelled or symlinked (`duplicate_include`). Including a file from within itself
+    fails with `include_cycle`.
 - `<compiler>`: `angle`, which defaults to `degree`; `autolimits`, which defaults to
   `true`; and `meshdir`, `texturedir`, and `assetdir`. When files merge, later
   attributes win.
 - `<default>` classes, nested and inherited. They apply through an element's `class`,
-  or else the nearest enclosing `childclass` on a body or `<frame>`. An unknown class
-  fails with `unknown_reference`.
+  or else the nearest enclosing `childclass` on a body or `<frame>`. Every `class` and
+  `childclass` is checked where it appears, even if nothing uses it, and an unknown
+  class fails with `unknown_reference`.
 - Bodies, sites, and cameras become frames under `world`.
   - `<frame>` elements are transparent.
   - An unnamed body without joints is merged into its parent, with a diagnostic.
@@ -112,7 +119,8 @@ The loader needs no MuJoCo. It applies MuJoCo's semantics to this subset:
   degrees when `angle` is `degree`. A `range` without `limited="true"` while
   `autolimits` is false fails with `ambiguous_limits`.
 - `<contact><exclude body1 body2>` becomes a collision allowance with reason
-  `mjcf contact exclude`.
+  `mjcf contact exclude`. Both names must be MJCF bodies, `world` included; sites and
+  cameras are frames but not bodies (`unknown_reference`).
 
 These kinematic constructs fail with `unsupported_construct`, never silently:
 
@@ -138,10 +146,14 @@ The URDF loader works without ROS.
   with `unsupported_construct`.
 - **Reported.** Mimic joints and transmissions are reported as items, and their joints
   must exist.
-- **Meshes.** Visual and collision meshes resolve relative to the URDF file, or as
-  `package://<robot>/...` for this package only.
+- **Meshes and textures.** Visual and collision meshes, and the textures of top-level
+  and inline materials, resolve relative to the URDF file, or as
+  `package://<robot>/...` for this package only. Each file is hashed and reported once
+  per role. Image and mesh contents are never interpreted.
 
-The SRDF must name the same robot as the URDF (`srdf_mismatch`). Its elements map to
+The SRDF must name the same robot as the URDF (`srdf_mismatch`). Group names must be
+unique (`duplicate_name`), since a later group never silently replaces an earlier one.
+Every passive joint must name a URDF joint (`unknown_reference`). Its elements map to
 neutral records:
 
 | SRDF | Becomes |
@@ -154,7 +166,10 @@ neutral records:
 | `passive_joint` | An item. |
 
 **End effectors.** SRDF's `end_effector` attaches a component group at a
-`parent_link`. That link is an attachment point, not a tool center point, so it never
+`parent_link`. When it names a `parent_group`, that group must differ from the
+component group (`invalid_group`). It must also contain `parent_link`, meaning one of
+its joints moves the link, directly or through fixed joints below the moved link
+(`invalid_chain`). That link is an attachment point, not a tool center point, so it never
 becomes `EndEffector.frame`. If the package declares an end effector of the same name,
 its frame must be at or below `parent_link` (`invalid_chain` otherwise). If it does
 not, the package report carries an `ambiguous_end_effector` diagnostic naming the group

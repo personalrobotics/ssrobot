@@ -1,4 +1,5 @@
-# The MuJoCo Menagerie Franka Panda (see menagerie/PROVENANCE.md), loaded from its MJCF
+# A parser fixture of the MuJoCo Menagerie Franka Panda (see menagerie/PROVENANCE.md); its
+# meshes are empty placeholders, so it is not runnable in MuJoCo. Loaded from its MJCF
 # scene. The kinematics come from MJCF; the semantics below are declared here, because
 # MJCF has none.
 schema = "ssrobot.package"

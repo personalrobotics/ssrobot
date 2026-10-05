@@ -1,8 +1,12 @@
 <?xml version="1.0"?>
 <!-- A four-joint arm with a two-finger hand, written for ssrobot's URDF and SRDF tests. -->
 <robot name="urdf_arm">
+  <material name="checker"><texture filename="textures/checker.ppm"/></material>
   <link name="base_link">
-    <visual><geometry><mesh filename="package://urdf_arm/meshes/base.stl"/></geometry></visual>
+    <visual>
+      <geometry><mesh filename="package://urdf_arm/meshes/base.stl"/></geometry>
+      <material name="base_checker"><texture filename="package://urdf_arm/textures/checker.ppm"/></material>
+    </visual>
     <collision><geometry><mesh filename="package://urdf_arm/meshes/base.stl"/></geometry></collision>
   </link>
   <link name="link1">

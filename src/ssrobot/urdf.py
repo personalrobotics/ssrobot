@@ -171,26 +171,30 @@ class _Urdf:
             )
 
     def _meshes(self) -> None:
-        seen: set[Path] = set()
+        """Resolve and hash every mesh and texture file, in document order, each once."""
+        references: list[tuple[str, str, str | None]] = []  # (role, where, filename)
+        for material in self.root.findall("material"):
+            for texture in material.findall("texture"):
+                where = f"{self.file}: material[{material.get('name')}]"
+                references.append(("texture", where, texture.get("filename")))
         for link in self.root.findall("link"):
+            where = f"{self.file}: link[{link.get('name')}]"
             for role in ("visual", "collision"):
                 for mesh in link.findall(f"{role}/geometry/mesh"):
-                    reference = mesh.get("filename")
-                    if reference is None:
-                        raise _fail(
-                            "malformed_xml",
-                            "mesh without filename",
-                            f"{self.file}: link[{link.get('name')}]",
-                        )
-                    try:
-                        target = self.resolver.resolve_from(self.path.parent, reference)
-                    except ValidationError as e:
-                        raise _fail(
-                            e.code, e.message, f"{self.file}: link[{link.get('name')}] {reference}"
-                        ) from None
-                    if target not in seen:
-                        seen.add(target)
-                        self.files.append(self.resolver.record(f"mesh:{role}", target))
+                    references.append((f"mesh:{role}", where, mesh.get("filename")))
+            for texture in link.findall("visual/material/texture"):
+                references.append(("texture", where, texture.get("filename")))
+        seen: set[tuple[str, Path]] = set()
+        for role, where, reference in references:
+            if reference is None:
+                raise _fail("malformed_xml", f"{role} without filename", where)
+            try:
+                target = self.resolver.resolve_from(self.path.parent, reference)
+            except ValidationError as e:
+                raise _fail(e.code, e.message, f"{where} {reference}") from None
+            if (role, target) not in seen:
+                seen.add((role, target))
+                self.files.append(self.resolver.record(role, target))
 
 
 class _Srdf:
@@ -230,8 +234,16 @@ class _Srdf:
         self._effectors()
         self._collisions()
         self._virtual_joints()
+        joints = {j.name for j in self.urdf.joints} | self.urdf.fixed
         for element in self.root.findall("passive_joint"):
-            self.items.append(SourceItem(kind="passive_joint", name=element.get("name")))
+            name = element.get("name")
+            if name not in joints:
+                raise _fail(
+                    "unknown_reference",
+                    f"unknown joint {name!r}",
+                    f"{self.file}: passive_joint[{name}]",
+                )
+            self.items.append(SourceItem(kind="passive_joint", name=name))
 
     def _note(self, code: str, message: str) -> None:
         self.diagnostics.append(Diagnostic(code=code, message=f"{self.file}: {message}"))
@@ -252,9 +264,17 @@ class _Srdf:
         return [self.urdf.moving[link] for link in reversed(path) if link in self.urdf.moving]
 
     def _groups(self) -> None:
-        elements = {e.get("name"): e for e in self.root.findall("group")}
-        if None in elements:
+        declared = [e.get("name") for e in self.root.findall("group")]
+        if None in declared:
             raise _fail("malformed_xml", "every group needs a name", f"{self.file}: group")
+        for name in declared:
+            if declared.count(name) > 1:
+                raise _fail(
+                    "duplicate_name",
+                    f"group {name!r} is declared twice",
+                    f"{self.file}: group[{name}]",
+                )
+        elements = {e.get("name"): e for e in self.root.findall("group")}
         movable = {j.name for j in self.urdf.joints}
         resolving: set[str] = set()
 
@@ -362,8 +382,24 @@ class _Srdf:
                 raise _fail("unknown_reference", f"unknown or empty group {group!r}", where)
             if parent_link not in links:
                 raise _fail("unknown_reference", f"unknown parent link {parent_link!r}", where)
-            if parent_group is not None and parent_group not in self.groups:
-                raise _fail("unknown_reference", f"unknown parent group {parent_group!r}", where)
+            if parent_group is not None:
+                if parent_group not in self.groups:
+                    raise _fail(
+                        "unknown_reference", f"unknown parent group {parent_group!r}", where
+                    )
+                if parent_group == group:
+                    raise _fail(
+                        "invalid_group",
+                        "an end effector's parent group cannot be its own group",
+                        where,
+                    )
+                if not self._contains(self.groups[parent_group], parent_link):
+                    raise _fail(
+                        "invalid_chain",
+                        f"parent group {parent_group!r} does not contain "
+                        f"parent link {parent_link!r}",
+                        where,
+                    )
             self.end_effectors.append(
                 EndEffectorDeclaration(
                     name=name, group=group, parent_link=parent_link, parent_group=parent_group
@@ -377,6 +413,15 @@ class _Srdf:
                     detail="end_effector",
                 )
             )
+
+    def _contains(self, group: JointGroup, link: str) -> bool:
+        """Whether ``link`` is moved by one of the group's joints, directly or through a
+        chain of fixed joints below the moved link."""
+        parents = {f.name: f.parent for f in self.urdf.frames}
+        current: str | None = link
+        while current is not None and current not in self.urdf.moving:
+            current = parents[current]
+        return current is not None and self.urdf.moving[current] in group.joints
 
     def _collisions(self) -> None:
         links = {f.name for f in self.urdf.frames}
