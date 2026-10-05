@@ -1,0 +1,55 @@
+# A runnable MuJoCo fixture for MujocoRuntime: see arm.xml. The semantics are declared
+# here, because MJCF has none. link1/link3 is declared here, not excluded in the MJCF.
+schema = "ssrobot.package"
+version = 1
+robot = "mujoco_arm"
+canonical_model = "mjcf"
+
+[[models]]
+name = "mjcf"
+format = "mjcf"
+path = "arm.xml"
+
+[[semantics.groups]]
+name = "arm"
+joints = ["shoulder", "elbow", "wrist"]
+
+[[semantics.grippers]]
+name = "gripper"
+frame = "gripper"
+joints = ["left_finger_joint", "right_finger_joint"]
+
+[[semantics.end_effectors]]
+name = "hand"
+frame = "tcp"
+gripper = "gripper"
+
+[[semantics.manipulators]]
+name = "arm"
+group = "arm"
+base_frame = "base"
+tool_frame = "flange"
+end_effector = "hand"
+
+[[semantics.sensors]]
+name = "wrist_camera"
+kind = "camera"
+frame = "wrist_camera"
+
+[[semantics.collision_allowances]]
+frame_a = "link1"
+frame_b = "link3"
+reason = "declared by the package"
+
+# Declared so that a runtime must confirm them; MujocoRuntime binds them in #15 and #16.
+[[semantics.commands]]
+component = "arm"
+kind = "joint"
+mode = "position"
+
+[[semantics.channels]]
+name = "arm_q"
+quantity = "joint_position"
+source = "arm"
+shape = [3]
+dtype = "float64"

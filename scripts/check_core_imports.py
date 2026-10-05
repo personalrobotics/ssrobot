@@ -1,12 +1,16 @@
 """Fail if the core package imports or requires a prohibited backend dependency.
 
-Three checks:
+Core is the package without its integration subpackages (``INTEGRATIONS``), each of
+which may use only the backends of its own extra. The checks:
 
-- Runtime: import the package and every submodule, and report any prohibited
-  top-level module the import pulled in.
+- Runtime: import the package and every core submodule, and report any prohibited
+  top-level module the import pulled in. With --integration NAME, also import that
+  integration and report any prohibited module other than its own backends.
 - Source: parse every module and report ``import`` and ``from ... import`` statements
   naming a prohibited module anywhere, including inside functions, plus
   ``importlib.import_module("...")`` and ``__import__("...")`` with a literal name.
+  An integration may import only its own backends. Core may not import an
+  integration, and an integration may not import another one.
   Other dynamic imports, such as names built at run time, are not detected.
 - Metadata: report prohibited unconditional requirements of the installed
   distribution.
@@ -20,7 +24,8 @@ public-name measures of the milestone consolidation gate in docs/architecture.md
 It also fails unless the public API is closed: every package type that a public name
 accepts, returns, or exposes as a field or property, transitively, must itself be
 public. Public means a top-level name, or a name defined in a documented public module
-(``PUBLIC_MODULES``).
+(``PUBLIC_MODULES``), or, with --integration, a name in that integration's
+``__all__``.
 """
 
 from __future__ import annotations
@@ -42,6 +47,10 @@ from typing import Any
 
 # Modules whose own definitions are public without a top-level name.
 PUBLIC_MODULES = frozenset({"ssrobot.conformance"})
+
+# Integration subpackages, by name under the package, and the prohibited backends each
+# may use: those its extra installs.
+INTEGRATIONS = {"mujoco": frozenset({"mujoco"})}
 
 PROHIBITED = frozenset(
     {
@@ -69,17 +78,37 @@ PROHIBITED = frozenset(
 )
 
 
+def _walk(module: Any, skip: frozenset[str]) -> Iterator[str]:
+    """Import every submodule of ``module`` except those named in ``skip``."""
+    for info in pkgutil.iter_modules(module.__path__, prefix=f"{module.__name__}."):
+        if info.name in skip:
+            continue
+        loaded = importlib.import_module(info.name)
+        yield info.name
+        if info.ispkg:
+            yield from _walk(loaded, skip)
+
+
 def imported_modules(package: str) -> tuple[str, list[str], set[str]]:
-    """Where ``package`` was loaded from, its submodules, and the top-level modules
-    importing it and every submodule loaded."""
+    """Where ``package`` was loaded from, its core submodules, and the top-level modules
+    importing them loaded."""
     before = set(sys.modules)
     root = importlib.import_module(package)
-    submodules = []
-    for module in pkgutil.walk_packages(root.__path__, prefix=f"{package}."):
-        importlib.import_module(module.name)
-        submodules.append(module.name)
+    skip = frozenset(f"{package}.{name}" for name in INTEGRATIONS)
+    submodules = sorted(_walk(root, skip))
     loaded = {name.split(".")[0] for name in set(sys.modules) - before}
-    return str(root.__file__), sorted(submodules), loaded
+    return str(root.__file__), submodules, loaded
+
+
+def imported_integration(package: str, integration: str) -> tuple[list[str], set[str]]:
+    """An integration's modules, and the top-level modules importing them loaded beyond
+    what core already loaded. Call after ``imported_modules``."""
+    before = set(sys.modules)
+    name = f"{package}.{integration}"
+    root = importlib.import_module(name)
+    submodules = [name, *(_walk(root, frozenset()) if hasattr(root, "__path__") else ())]
+    loaded = {m.split(".")[0] for m in set(sys.modules) - before}
+    return sorted(submodules), loaded
 
 
 def _imported_names(tree: ast.AST) -> Iterator[tuple[int, str]]:
@@ -108,10 +137,20 @@ def source_backends(package: str) -> list[str]:
         for path in sorted(base.rglob("*.py")):
             parts = path.relative_to(base).with_suffix("").parts
             module = ".".join((package, *parts)).removesuffix(".__init__")
+            owner = parts[0] if len(parts) > 1 and parts[0] in INTEGRATIONS else None
+            allowed = INTEGRATIONS.get(owner, frozenset()) if owner else frozenset()
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for line, name in _imported_names(tree):
-                if name.split(".")[0] in PROHIBITED:
+                inner = name.split(".")
+                if inner[0] in PROHIBITED - allowed:
                     found.append(f"{module}:{line} imports {name}")
+                elif (
+                    inner[0] == package
+                    and len(inner) > 1
+                    and inner[1] in INTEGRATIONS
+                    and inner[1] != owner
+                ):
+                    found.append(f"{module}:{line} imports integration {name}")
     return found
 
 
@@ -146,12 +185,16 @@ def _signature_hints(obj: Any) -> list[Any]:
     return hints
 
 
-def unexported_types(package: str) -> list[str]:
+def unexported_types(package: str, integration: str | None = None) -> list[str]:
     """``Type (reached from Name)`` for each non-public package type the API exposes."""
     root = importlib.import_module(package)
     names = getattr(root, "__all__", [])
     public = {id(getattr(root, name)) for name in names}
     start = [getattr(root, name) for name in names]
+    if integration is not None:
+        extra = importlib.import_module(f"{package}.{integration}")
+        start += [getattr(extra, name) for name in getattr(extra, "__all__", [])]
+        public |= {id(v) for v in start}
     for module in PUBLIC_MODULES:
         loaded = importlib.import_module(module)
         start += [
@@ -200,15 +243,25 @@ def main() -> int:
     parser.add_argument("--package", default="ssrobot")
     parser.add_argument("--installed", action="store_true", help="require site-packages")
     parser.add_argument("--report", type=Path, help="write the import report here as JSON")
+    parser.add_argument(
+        "--integration", choices=sorted(INTEGRATIONS), help="also check this integration"
+    )
     args = parser.parse_args()
     location, submodules, loaded = imported_modules(args.package)
-    modules = sorted(loaded & PROHIBITED)
+    failures = [f"imports prohibited module {m!r}" for m in sorted(loaded & PROHIBITED)]
+    if args.integration is not None:
+        extra_modules, extra_loaded = imported_integration(args.package, args.integration)
+        submodules = sorted({*submodules, *extra_modules})
+        loaded |= extra_loaded
+        foreign = extra_loaded & (PROHIBITED - INTEGRATIONS[args.integration])
+        failures += [f"{args.integration} imports prohibited module {m!r}" for m in sorted(foreign)]
     requirements = required_backends(args.package)
     print(f"{args.package} imported from {location}")
-    failures = [f"imports prohibited module {m!r}" for m in modules]
     failures += [f"source {s}" for s in source_backends(args.package)]
     failures += [f"requires prohibited distribution {r!r}" for r in requirements]
-    failures += [f"exposes non-public type {t}" for t in unexported_types(args.package)]
+    failures += [
+        f"exposes non-public type {t}" for t in unexported_types(args.package, args.integration)
+    ]
     if args.installed and "site-packages" not in location:
         failures.append("was not imported from an installed distribution")
     if args.report is not None:
@@ -219,6 +272,7 @@ def main() -> int:
             declared = []
         report = {
             "package": args.package,
+            "integration": args.integration,
             "python": f"{sys.version_info.major}.{sys.version_info.minor}",
             "installed": "site-packages" in location,
             "requirements": sorted(declared),

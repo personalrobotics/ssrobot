@@ -11,13 +11,14 @@ For each robot in references/robots.toml, this script:
    target with ``uv pip install --target``, and runs ``ssrobot inspect <module> --json``
    with that target as the only location of the package;
 5. checks the report against its schema and the robot's pinned fingerprint, model
-   format, license, and structure.
+   format, license, and structure;
+6. opens ``MujocoRuntime`` on the installed package, the same way, and steps it.
 
 Steps 1 and 2 need network access: the archive comes from GitHub and the build
 backends from the package index. It writes, under --out, each robot's ``inspect.json``,
-``inspect.txt``, and ``doctor.json``, plus ``references.json``. That file records every
-pin, archive and wheel hash, license, and fingerprint, the build toolchain, and the
-provenance of the Franka parser fixture. It exits non-zero if any check fails.
+``inspect.txt``, ``doctor.json``, and ``mujoco-startup.json``, plus ``references.json``.
+That file records every pin, archive and wheel hash, license, and fingerprint, the build
+toolchain, and the provenance of the Franka parser fixture. It exits non-zero if any check fails.
 
     uv run python scripts/check_reference_robots.py --out artifacts/reference-robots
 """
@@ -165,6 +166,66 @@ def inspect_installed(
     return result, where
 
 
+STARTUP_STEPS = 10
+
+
+def startup(module: str, out: Path) -> int:
+    """Open MujocoRuntime on the installed ``module``, step it, and write what it bound.
+
+    Runs in the isolated inspection process, see ``mujoco_startup``.
+    """
+    from ssrobot import RobotContext, load_installed_package
+    from ssrobot.mujoco import MujocoRuntime
+
+    package = load_installed_package(module)
+    runtime = MujocoRuntime(package)
+    with RobotContext(package.description, runtime) as ctx:
+        for _ in range(STARTUP_STEPS):
+            ctx.step()
+        record = {
+            "loaded_from_install": package.root.resolve().is_relative_to(
+                Path(os.environ["PYTHONPATH"]).resolve()
+            ),
+            "runtime_version": ctx.info.runtime_version,
+            "steps": STARTUP_STEPS,
+            "time_ns": ctx.now.time_ns,
+            "mapping": json.loads(dumps(runtime.mapping)),
+        }
+    out.write_text(json.dumps(record, indent=2) + "\n")
+    return 0
+
+
+def mujoco_startup(module: str, out: Path, scratch: Path) -> tuple[bool, str]:
+    """Run ``startup`` against the installed package, isolated like ``ssrobot inspect``."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            str(Path(__file__).resolve()),
+            "--startup",
+            module,
+            str((out / "mujoco-startup.json").resolve()),
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(scratch / "installed")},
+        cwd=scratch / "empty",
+        check=False,
+    )
+    if result.returncode != 0:
+        return False, f"exited {result.returncode}: {result.stderr.strip().splitlines()[-1:]}"
+    record = json.loads((out / "mujoco-startup.json").read_text())
+    mapping = record["mapping"]
+    expected_ns = STARTUP_STEPS * mapping["substeps"] * mapping["timestep_ns"]
+    installed = record["loaded_from_install"]
+    ok = record["time_ns"] == expected_ns and installed
+    return ok, (
+        f"{len(mapping['frames'])} frames, {len(mapping['joints'])} joints, "
+        f"{len(mapping['actuators'])} actuators resolved; time {record['time_ns']} ns after "
+        f"{STARTUP_STEPS} steps, expected {expected_ns}; loaded from the install: {installed}"
+    )
+
+
 def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
     name = robot["name"]
     out.mkdir(parents=True, exist_ok=True)
@@ -233,13 +294,19 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
     }
     record["structure"] = observed
     compare("structure", {k: expect[k] for k in observed}, observed)
+    add("mujoco_startup", *mujoco_startup(robot["module"], out, scratch))
     return record
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--out", type=Path)
+    parser.add_argument("--startup", nargs=2, metavar=("MODULE", "OUT"), help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.startup is not None:
+        return startup(args.startup[0], Path(args.startup[1]))
+    if args.out is None:
+        parser.error("--out is required")
     pins = tomllib.loads(PINS.read_text())
     robots = []
     for robot in pins["robots"]:
