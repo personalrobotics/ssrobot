@@ -8,7 +8,8 @@ runtime and conformance scenario that exercise them (#6). The JSON Schemas in
 same dataclasses described here. See [architecture.md](architecture.md) for scope and
 ownership.
 
-Snapshots and planning scenes come with #18.
+This document specifies implemented behavior only. Planned interfaces are described in
+architecture.md with their milestones, and enter this document when they land.
 
 ## Boundary
 

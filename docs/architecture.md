@@ -9,22 +9,53 @@ ssrobot owns the *contract* between those clients and backends. It does not own 
 algorithms on either side of it.
 
 This document is normative for scope, ownership, and the architecture decisions listed
-below. Exact types and schemas are specified by the M0 contract issues (#2–#5) and
-their checked-in artifacts; the code examples here are illustrative.
+below. It describes both what exists and what v0.1 targets, and marks each with its
+status. Implemented behavior, with exact types and schemas, is specified only in
+[contracts.md](contracts.md), [packages.md](packages.md), and
+[authoring.md](authoring.md). The target examples here are illustrative and do not run
+yet.
 
 ## Core concepts
 
-| Concept | Role |
-| --- | --- |
-| `RobotDescription` | Immutable, validated semantic model of a robot: joints, links, frames, groups, manipulators, bases, end effectors, sensors, declared capabilities. Safe to share across contexts. |
-| `RobotContext` | The public session. Context-managed; the only path through which users observe, submit commands, step, snapshot, and close. |
-| `Runtime` | Injected backend mechanics (replay, MuJoCo, ROS 2). Owns I/O, lifecycle, status, and capability reporting. Contains no planning or task logic. |
-| `Execution` | Passive handle returned by `submit`. Owns no thread, loop, or clock. |
-| `SceneSnapshot` | Immutable, serializable scene state. |
-| `PlanningScene` | Neutral capability a runtime materializes from a snapshot: forward kinematics, state and edge validity, optional collision detail. Isolated and timeless. |
-| Trace | Versioned JSONL record of everything a context did, with content-addressed external assets. |
+| Concept | Role | Status |
+| --- | --- | --- |
+| `RobotDescription` | Immutable, validated semantic model of a robot: joints, links, frames, groups, manipulators, bases, end effectors, sensors, declared capabilities. Safe to share across contexts. | Implemented |
+| Robot package | A model plus its `ssrobot.toml` manifest, loaded from a directory or an installed Python package into a `RobotDescription`. | Implemented |
+| `RobotContext` | The public session. Context-managed; the only path through which users observe, submit commands, step, snapshot, and close. | Implemented, except snapshots (M2) and semantic views such as `ctx.manipulator` (M3) |
+| `Runtime` | Injected backend mechanics (replay, MuJoCo, ROS 2). Owns I/O, lifecycle, status, and capability reporting. Contains no planning or task logic. | Implemented: the protocol and `ReplayRuntime`. `MujocoRuntime` is M2; `Ros2Runtime` is M6 |
+| `Execution` | Passive handle returned by `submit`. Owns no thread, loop, or clock. | Implemented |
+| `SceneSnapshot` | Immutable, serializable scene state. | M2 |
+| `PlanningScene` | Neutral capability a runtime materializes from a snapshot: forward kinematics, state and edge validity, optional collision detail. Isolated and timeless. | M2 |
+| Trace | Versioned JSONL record of everything a context did, with content-addressed external assets. | Implemented |
+| `PolicyRunner` | Drives policy inference timing over a context: observe, infer, validate, submit, step. | M4 |
 
-## User journeys
+## Current journey (M1): load and understand a robot
+
+This runs today. A robot package owns its manifest, written once with `ssrobot init`
+and checked with `ssrobot doctor` (see [authoring.md](authoring.md)). Anyone with the
+package installed can then load and inspect it without running any of its code:
+
+```sh
+ssrobot inspect geodude_assets --json report.json   # readable summary; full PackageReport
+```
+
+```python
+import ssrobot
+
+package = ssrobot.load_installed_package("geodude_assets")  # no package code runs
+robot = package.description                                 # immutable RobotDescription
+print(robot.name, robot.fingerprint()[:12])
+for arm in robot.manipulators:
+    print(arm.name, robot.group(arm.group).joints, arm.base_frame, "->", arm.tool_frame)
+```
+
+The same description drives a `RobotContext` over `ReplayRuntime`, which
+[contracts.md](contracts.md) specifies.
+
+## Target v0.1 user journeys
+
+None of these run yet. `MujocoRuntime` and snapshots arrive in M2, `ctx.manipulator`
+and planning in M3, and `PolicyRunner` and the LeRobot adapter in M4.
 
 All three journeys use the same robot package, context, command types, and trace. A
 client that works in one runtime works in another by changing only the runtime
@@ -126,6 +157,9 @@ TSR sampler is out of scope (1).
 
 ## Dependency direction
 
+This is the target v0.1 structure. Today the distribution is core only, with no
+runtime dependencies; the integrations arrive with M2–M4, and ROS 2 with M6.
+
 ```mermaid
 flowchart TD
     apps["Applications<br/>tasks, grasp selection, viewers"]
@@ -156,7 +190,8 @@ flowchart TD
 
 Rules:
 
-- Core imports only the standard library and NumPy. It never imports an integration.
+- Core imports only the standard library and, once a milestone needs it, NumPy. It
+  never imports an integration.
 - Integrations depend on core, not on each other. The one sanctioned exception is the
   optional native lowering between the MuJoCo `PlanningScene` provider and the
   sscbirrt adapter, active only when both extras are installed (#18, #22).
@@ -213,6 +248,30 @@ Rules:
   `mj_manipulator`, `mj_environment`, the asset manager, or `HardwareContext` must be
   deleted or deprecated in its source repository through a linked migration PR, once
   equivalent behavior and a rollback path are verified.
+
+### Milestone consolidation gate
+
+Each milestone must pass this gate before it closes, and the next one must not start
+until it has:
+
+- No new core abstraction without two concrete consumers.
+- No new top-level export merely for possible future use.
+- No new schema unless data crosses a persistence, process, package, or adapter
+  boundary.
+- Prefer explicit package declarations over additional inference rules.
+- Before beginning a milestone, close, defer, or remove stale speculative work.
+- Every integration milestone demonstrates one complete installed-package user
+  journey.
+- Every legacy migration identifies the code and configuration it retires.
+
+The gate measures weight by what users carry, not by line count, which rewards
+compressed code over simple design:
+
+- the number of concepts an ordinary user must understand;
+- the number of top-level public names;
+- the dependencies installed for each workflow;
+- the lines of configuration and application code the reference task needs;
+- the legacy code deleted after migration.
 
 ## Non-goals
 
