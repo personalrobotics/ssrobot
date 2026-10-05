@@ -53,7 +53,7 @@ These 12 joined, because public results already expose them:
 | --- | --- |
 | `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice` | `RobotPackage.manifest` (a `PackageManifest`), and `PackageReport.model_format` |
 | `ResolvedFile` | `RobotPackage.files` and `PackageReport.files` |
-| `InferenceReport`, `Candidate`, `CandidateKind`, `Outcome` | `RobotPackage.inference` and `PackageReport.inference` |
+| `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` | `RobotPackage.inference` and `PackageReport.inference` |
 
 `AssetStore`, `Value`, `PackageManifest`, and `SourceItem` stay top-level for the same
 reason. `dumps` and `loads` take an `AssetStore`, which records containing an

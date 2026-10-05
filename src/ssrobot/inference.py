@@ -90,7 +90,7 @@ class CandidateKind(enum.StrEnum):
     END_EFFECTOR = "end_effector"
 
 
-class Outcome(enum.StrEnum):
+class CandidateOutcome(enum.StrEnum):
     CONFIRMED = "confirmed"
     """Adopted because the package confirmed it."""
     ADOPTED = "adopted"
@@ -127,7 +127,9 @@ class Candidate(Value):
         default=None,
         metadata=meta("A declared group with this chain's joints, which adoption reuses."),
     )
-    outcome: Outcome = field(default=Outcome.REPORTED, metadata=meta("What became of it."))
+    outcome: CandidateOutcome = field(
+        default=CandidateOutcome.REPORTED, metadata=meta("What became of it.")
+    )
     name: str | None = field(default=None, metadata=meta("Name of the adopted entities."))
     override: str | None = field(
         default=None, metadata=meta("The manifest override that decided it, if any.")
@@ -417,24 +419,26 @@ def resolve(
         group = coverage[c.id].group
         c = replace(c, declared_group=group)
         if coverage[c.id].full:
-            decided[c.id] = replace(c, outcome=Outcome.DECLARED)
+            decided[c.id] = replace(c, outcome=CandidateOutcome.DECLARED)
         elif c.id in confirmed:
             decided[c.id] = replace(
-                c, outcome=Outcome.CONFIRMED, name=confirmed[c.id], override="confirm"
+                c, outcome=CandidateOutcome.CONFIRMED, name=confirmed[c.id], override="confirm"
             )
         elif c.id in settings.reject:
-            decided[c.id] = replace(c, outcome=Outcome.REJECTED, override="reject")
+            decided[c.id] = replace(c, outcome=CandidateOutcome.REJECTED, override="reject")
         elif c.ambiguity is not None and (
             chosen_by_declaration(c) or any(m in confirmed for m in members[c.ambiguity])
         ):
-            decided[c.id] = replace(c, outcome=Outcome.NOT_CHOSEN)
+            decided[c.id] = replace(c, outcome=CandidateOutcome.NOT_CHOSEN)
         else:
             decided[c.id] = c
 
     taken = _taken(declared, [d for d in decided.values() if d.name is not None])
     diagnostics = []
     for kind in CandidateKind:
-        open_ = [d for d in decided.values() if d.kind is kind and d.outcome is Outcome.REPORTED]
+        open_ = [
+            d for d in decided.values() if d.kind is kind and d.outcome is CandidateOutcome.REPORTED
+        ]
         if not open_:
             continue
         if settings.mode is InferenceMode.REPORT:
@@ -442,7 +446,7 @@ def resolve(
         only = open_[0]
         name = _default_name(only)
         if len(open_) == 1 and _free(only, name, taken):
-            decided[only.id] = replace(only, outcome=Outcome.ADOPTED, name=name)
+            decided[only.id] = replace(only, outcome=CandidateOutcome.ADOPTED, name=name)
             taken = _taken(declared, [d for d in decided.values() if d.name is not None])
             continue
         clusters = {d.ambiguity or d.id for d in open_}
@@ -460,7 +464,7 @@ def resolve(
             )
         )
         for d in open_:
-            decided[d.id] = replace(d, outcome=Outcome.AMBIGUOUS)
+            decided[d.id] = replace(d, outcome=CandidateOutcome.AMBIGUOUS)
 
     for c in found:
         if c.kind is CandidateKind.GRIPPER and not any(
@@ -516,7 +520,9 @@ def _free(candidate: Candidate, name: str, taken: dict[str, set[str]]) -> bool:
 
 def _build(candidates: list[Candidate], declared: Semantics, model: KinematicModel) -> Semantics:
     parents = {f.name: f.parent for f in model.frames}
-    adopted = [c for c in candidates if c.outcome in (Outcome.CONFIRMED, Outcome.ADOPTED)]
+    adopted = [
+        c for c in candidates if c.outcome in (CandidateOutcome.CONFIRMED, CandidateOutcome.ADOPTED)
+    ]
     gripper_names = {g.frame: g.name for g in declared.grippers}
     for c in adopted:
         if c.kind is CandidateKind.GRIPPER and c.frame is not None and c.name is not None:

@@ -36,7 +36,7 @@ uses them:
 | Who | Names |
 | --- | --- |
 | Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `ResolvedFile`, `SourceItem`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
-| Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `Outcome` |
+| Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
 | Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode` |
 | Runtimes, and those who write them | `Runtime`, `RuntimeInfo`, `RuntimeUpdate`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |

@@ -63,10 +63,10 @@ from ssrobot.inference import (
     Candidate,
     CandidateChoice,
     CandidateKind,
+    CandidateOutcome,
     InferenceMode,
     InferenceReport,
     InferenceSettings,
-    Outcome,
 )
 from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
 from ssrobot.package import (
@@ -94,6 +94,7 @@ __all__ = [
     "Candidate",
     "CandidateChoice",
     "CandidateKind",
+    "CandidateOutcome",
     "CapabilityError",
     "ChannelSpec",
     "ClockMode",
@@ -135,7 +136,6 @@ __all__ = [
     "NamedConfiguration",
     "Observation",
     "ObservationRequest",
-    "Outcome",
     "Ownership",
     "OwnershipError",
     "PackageManifest",
