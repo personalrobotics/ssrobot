@@ -5,11 +5,11 @@
   "$defs": {
     "Candidate": {
       "type": "object",
-      "description": "Candidate(*, id: 'str', kind: 'CandidateKind', rule: 'str', reasons: 'tuple[str, ...]', joints: 'tuple[str, ...]' = (), frame: 'str | None' = None, base_frame: 'str | None' = None, tool_frame: 'str | None' = None, gripper: 'str | None' = None, ambiguity: 'str | None' = None, outcome: 'Outcome' = <Outcome.REPORTED: 'reported'>, name: 'str | None' = None, override: 'str | None' = None)",
+      "description": "Candidate(*, id: 'str', kind: 'CandidateKind', rule: 'str', reasons: 'tuple[str, ...]', joints: 'tuple[str, ...]' = (), frame: 'str | None' = None, base_frame: 'str | None' = None, tool_frame: 'str | None' = None, gripper: 'str | None' = None, ambiguity: 'str | None' = None, declared_group: 'str | None' = None, outcome: 'Outcome' = <Outcome.REPORTED: 'reported'>, name: 'str | None' = None, override: 'str | None' = None)",
       "properties": {
         "id": {
           "type": "string",
-          "description": "Stable identifier, e.g. 'chain:joint1..joint7'."
+          "description": "Stable identifier; names in it are percent-encoded."
         },
         "kind": {
           "type": "string",
@@ -92,6 +92,17 @@
             }
           ],
           "description": "Candidates sharing this set exclude one another."
+        },
+        "declared_group": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A declared group with this chain's joints, which adoption reuses."
         },
         "outcome": {
           "type": "string",

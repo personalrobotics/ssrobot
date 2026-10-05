@@ -297,3 +297,271 @@ def test_inference_is_off_unless_requested() -> None:
     assert package.inference is None
     with pytest.raises(SsrobotError):
         package.description.manipulator("arm")
+
+
+def _colliding_model() -> dict[str, Any]:
+    """Two arms whose chains would both be named chain:a..b..c without encoding, plus
+    tool leaves whose names differ only by an encoded character."""
+    limits = {"lower": -1.0, "upper": 1.0}
+    frames = [{"name": "world", "parent": None}]
+    joints = []
+    for arm, names in (("one", ["a", "m1", "b..c"]), ("two", ["a..b", "m2", "c"])):
+        parent = "world"
+        for i, joint in enumerate(names):
+            link = f"{arm}_link{i}"
+            frames.append({"name": link, "parent": parent})
+            joints.append(
+                {
+                    "name": joint,
+                    "kind": "revolute",
+                    "parent": parent,
+                    "child": link,
+                    "limits": limits,
+                }
+            )
+            parent = link
+    frames += [{"name": "t:1", "parent": "one_link2"}, {"name": "t%3A1", "parent": "one_link2"}]
+    return {
+        "schema": "ssrobot.KinematicModel",
+        "version": 1,
+        "name": "colliding",
+        "frames": frames,
+        "joints": joints,
+    }
+
+
+def test_candidate_ids_never_collide(artifacts: Path, tmp_path: Path) -> None:
+    """#69: ids encode source names, so distinct chains and frames get distinct ids that
+    overrides address independently."""
+    root = tmp_path / "colliding"
+    root.mkdir()
+    (root / "kinematics.json").write_text(json.dumps(_colliding_model()))
+    header = (
+        'schema = "ssrobot.package"\nversion = 1\nrobot = "colliding"\ncanonical_model = "k"\n\n'
+        '[[models]]\nname = "k"\nformat = "ssrobot"\npath = "kinematics.json"\n\n[inference]\n'
+    )
+    first, second = "chain:a..b%2E%2Ec", "chain:a%2E%2Eb..c"
+    (root / "ssrobot.toml").write_text(
+        header + f'mode = "adopt"\nreject = ["{second}"]\n'
+        f'[[inference.confirm]]\ncandidate = "{first}"\nname = "first"\n'
+    )
+    package = load_package(root)
+    report: dict[str, Any] = {
+        "chain_joints": {"one": ["a", "m1", "b..c"], "two": ["a..b", "m2", "c"]},
+        "leaf_frames": ["t:1", "t%3A1"],
+        "candidates": _outcomes(package),
+        "manipulators": {
+            m.name: list(package.description.group(m.group).joints)
+            for m in package.description.manipulators
+        },
+    }
+    (artifacts / "ids.json").write_text(json.dumps(report, indent=2) + "\n")
+    ids = list(report["candidates"])
+    assert len(ids) == len(set(ids))
+    assert {first, second, "end_effector:t%3A1", "end_effector:t%253A1"} <= set(ids)
+    assert report["candidates"][first][1:] == ["confirmed", "first", "confirm"]
+    assert report["candidates"][second][1:] == ["rejected", None, "reject"]
+    assert report["manipulators"] == {"first": ["a", "m1", "b..c"]}
+
+
+def _group_blocks(manifest: str, *names: str) -> list[str]:
+    """The ``[[semantics.groups]]`` tables of ``manifest`` declaring ``names``."""
+    return [
+        block
+        for block in manifest.split("\n\n")
+        if block.startswith("[[semantics.groups]]")
+        and any(block.split("\n")[1] == f'name = "{n}"' for n in names)
+    ]
+
+
+def _summary(package: RobotPackage) -> dict[str, Any]:
+    d = package.description
+    return {
+        "groups": {g.name: list(g.joints) for g in d.groups},
+        **_entities(d),
+    }
+
+
+def _variant(source: Path, root: Path, manifest_edit: Any) -> Path:
+    shutil.copytree(source, root)
+    manifest_edit(root)
+    return root
+
+
+def test_inference_reconciles_with_declarations(artifacts: Path, tmp_path: Path) -> None:
+    """#70: inference adds only what is missing, and a declared alternative is a choice."""
+    report: dict[str, Any] = {}
+
+    def run(name: str, root: Path) -> RobotPackage:
+        plain = shutil.copytree(root, tmp_path / f"{name}_before")
+        manifest = (root / "ssrobot.toml").read_text()
+        (plain / "ssrobot.toml").write_text(manifest.split("[inference]")[0])
+        package = load_package(root)
+        report[name] = {
+            "before": _summary(load_package(plain)),
+            "after": _summary(package),
+            "candidates": _outcomes(package),
+        }
+        _write_report(artifacts / f"{name}-package-report.json", package)
+        return package
+
+    # The URDF arm with its SRDF kept: the SRDF arm group is reused for a new manipulator.
+    def srdf_kept(root: Path) -> None:
+        head = (root / "ssrobot.toml").read_text().split("[[semantics.")[0]
+        (root / "ssrobot.toml").write_text(head + "\n[inference]\n" + ADOPT + "\n")
+
+    run("urdf_with_srdf", _variant(FIXTURES / "urdf_arm", tmp_path / "urdf_with_srdf", srdf_kept))
+
+    # The lift-free arm groups declared: the lifted alternatives are not chosen.
+    def groups_only(root: Path) -> None:
+        text = (root / "ssrobot.toml").read_text()
+        (root / "ssrobot.toml").write_text(
+            text.split("[[semantics.")[0]
+            + "\n"
+            + "\n\n".join(_group_blocks(text, "left_arm", "right_arm"))
+            + "\n\n[inference]\n"
+            + ADOPT
+            + "\n"
+        )
+
+    run(
+        "arm_groups_declared",
+        _variant(EXAMPLES / "bimanual_lift", tmp_path / "arm_groups_declared", groups_only),
+    )
+
+    # Two TCP alternatives, one declared: the other is not chosen.
+    def second_tcp(root: Path) -> None:
+        urdf = (root / "arm.urdf").read_text()
+        urdf = urdf.replace(
+            '<link name="tcp"/>', '<link name="tcp"/>\n  <link name="tcp2"/>'
+        ).replace(
+            '<joint name="tcp_mount" type="fixed">',
+            '<joint name="tcp2_mount" type="fixed">'
+            '<parent link="hand"/><child link="tcp2"/></joint>\n'
+            '  <joint name="tcp_mount" type="fixed">',
+        )
+        (root / "arm.urdf").write_text(urdf)
+        head = (
+            (root / "ssrobot.toml")
+            .read_text()
+            .split("[[semantics.")[0]
+            .replace('srdf = "arm.srdf"\n', "")
+        )
+        (root / "ssrobot.toml").write_text(
+            head
+            + '\n[[semantics.end_effectors]]\nname = "tip"\nframe = "tcp"\n\n[inference]\n'
+            + ADOPT
+            + "\n"
+        )
+
+    run(
+        "one_tcp_declared",
+        _variant(FIXTURES / "urdf_arm", tmp_path / "one_tcp_declared", second_tcp),
+    )
+    (artifacts / "reconciliation.json").write_text(json.dumps(report, indent=2) + "\n")
+
+    srdf = report["urdf_with_srdf"]
+    assert srdf["after"]["groups"] == srdf["before"]["groups"]  # no duplicate group
+    assert srdf["after"]["manipulators"] == {
+        "arm": [["j1", "j2", "j3", "j4"], "base_link", "link4", "end_effector"]
+    }
+    assert srdf["candidates"]["chain:j1..j4"][1:3] == ["adopted", "arm"]
+
+    groups = report["arm_groups_declared"]
+    for side in ("left", "right"):
+        assert groups["candidates"][f"chain:{side}_lift..{side}_wrist_3"][1] == "not_chosen"
+        assert groups["candidates"][f"chain:{side}_shoulder_pan..{side}_wrist_3"][1] == "ambiguous"
+    assert groups["after"]["groups"] == groups["before"]["groups"]
+    assert groups["after"]["manipulators"] == {}
+
+    tcp = report["one_tcp_declared"]
+    assert tcp["candidates"]["end_effector:tcp"][1] == "declared"
+    assert tcp["candidates"]["end_effector:tcp2"][1] == "not_chosen"
+    assert tcp["after"]["end_effectors"] == {"tip": ["tcp", None]}
+    assert tcp["after"]["manipulators"]["arm"][3] == "tip"
+
+
+def _confirm(candidate: str, name: str) -> str:
+    return f'\n[[inference.confirm]]\ncandidate = "{candidate}"\nname = "{name}"'
+
+
+DECLARED_OVERRIDES: dict[str, tuple[str, str, str | None]] = {
+    # (package, inference table, expected code); the example declares left_arm fully.
+    "confirm a fully declared chain": (
+        "full",
+        ADOPT + _confirm("chain:left_shoulder_pan..left_wrist_3", "x"),
+        "conflicting_override",
+    ),
+    "reject a fully declared chain": (
+        "full",
+        ADOPT + '\nreject = ["chain:left_shoulder_pan..left_wrist_3"]',
+        "conflicting_override",
+    ),
+    "confirm the alternative of a declared chain": (
+        "full",
+        ADOPT + '\n[[inference.confirm]]\ncandidate = "chain:left_lift..left_wrist_3"\nname = "x"',
+        "conflicting_override",
+    ),
+    "confirm a partially declared chain": (
+        "groups",
+        ADOPT + _confirm("chain:left_shoulder_pan..left_wrist_3", "left_arm"),
+        None,
+    ),
+    "reject a partially declared chain": (
+        "groups",
+        ADOPT + '\nreject = ["chain:left_shoulder_pan..left_wrist_3"]',
+        None,
+    ),
+}
+
+
+def test_overrides_on_declared_candidates(artifacts: Path, tmp_path: Path) -> None:
+    """#70: confirming or rejecting what is fully declared conflicts; on a partly declared
+    chain, overrides decide only its manipulator."""
+    full = (EXAMPLES / "bimanual_lift" / "ssrobot.toml").read_text()
+    head = full.split("[[semantics.")[0]
+    (left_group,) = _group_blocks(full, "left_arm")
+    report: dict[str, Any] = {}
+    for name, (base, inference, expected) in DECLARED_OVERRIDES.items():
+        root = shutil.copytree(EXAMPLES / "bimanual_lift", tmp_path / name.replace(" ", "_"))
+        semantics = full[len(head) :] if base == "full" else left_group
+        (root / "ssrobot.toml").write_text(f"{head}\n{semantics}\n\n[inference]\n{inference}\n")
+        try:
+            package = load_package(root)
+            outcome: dict[str, Any] = {
+                "code": None,
+                "candidate": _outcomes(package)["chain:left_shoulder_pan..left_wrist_3"],
+                "manipulators": sorted(m.name for m in package.description.manipulators),
+                "groups": sorted(g.name for g in package.description.groups),
+            }
+        except SsrobotError as e:
+            outcome = {"code": e.code, "path": e.path}
+        report[name] = {"expected": expected, **outcome}
+    (artifacts / "declared-overrides.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert {n: r["code"] for n, r in report.items()} == {
+        n: e for n, (_, _, e) in DECLARED_OVERRIDES.items()
+    }
+    confirmed = report["confirm a partially declared chain"]
+    assert confirmed["candidate"][1:] == ["confirmed", "left_arm", "confirm"]
+    assert confirmed["manipulators"] == ["left_arm"] and confirmed["groups"] == ["left_arm"]
+    rejected = report["reject a partially declared chain"]
+    assert rejected["candidate"][1:] == ["rejected", None, "reject"]
+    assert rejected["manipulators"] == []
+
+
+def test_reasons_are_literally_true(tmp_path: Path) -> None:
+    """#72: a maximal chain says so; its lift-free variant says it was derived and claims
+    maximality only at its tip."""
+    package = load_package(
+        _inferring(EXAMPLES / "bimanual_lift", tmp_path / "reasons", 'mode = "report"')
+    )
+    assert package.inference is not None
+    reasons = {c.id: c.reasons for c in package.inference.candidates}
+    full, variant = (
+        reasons["chain:left_lift..left_wrist_3"],
+        reasons["chain:left_shoulder_pan..left_wrist_3"],
+    )
+    assert any("maximal" in r and "'left_lift'" in r for r in full)
+    assert not any("maximal" in r or "above" in r for r in variant)
+    assert any(r.startswith("derived from chain:left_lift..left_wrist_3") for r in variant)
+    assert any("below 'left_wrist_3'" in r for r in variant)

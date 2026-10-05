@@ -196,9 +196,27 @@ reasons for it:
 
 | Rule | Candidate | Evidence |
 | --- | --- | --- |
-| `serial_chain` | `chain:<first>..<last>`: a joint group and its manipulator | At least 3 movable joints in series, with no branching between them. The base frame is the first joint's parent and the tool frame the last joint's child. A chain that starts with prismatic joints, such as a lift, also gets a candidate without them, and the two share an ambiguity set. |
+| `serial_chain` | `chain:<first>..<last>`: a joint group and its manipulator | A maximal series of at least 3 movable joints, with no branching between them. The base frame is the first joint's parent and the tool frame the last joint's child. If the series starts with prismatic joints, such as a lift, a candidate without them is derived too. Both share an ambiguity set, and the derived one's reasons say how it was derived. |
 | `gripper` | `gripper:<frame>`: a gripper | A frame at the tip of a chain whose subtree splits into at least 2 moving branches, each of at most 2 joints in series. Its joints are every joint below it. |
 | `tool_center_point` | `end_effector:<frame>`: an end effector | A leaf frame below the gripper frame, or below the tool frame if there is no gripper, reached through fixed connections only. Several such leaves share an ambiguity set. |
+
+**Identifiers.** Source names inside an identifier are percent-encoded. Every
+character except ASCII letters, digits, `_`, `-`, and `/` becomes `%XX` per UTF-8 byte,
+in uppercase hex. An encoded name therefore never contains `.` or `:`, so `..` and the
+`kind:` prefix are unambiguous. For example, a chain from `a` to `b..c` is
+`chain:a..b%2E%2Ec`, and a TCP frame `t:1` is `end_effector:t%3A1`. Identifiers are
+checked to be unique before any override applies (`duplicate_candidate`). Write them in
+`confirm` and `reject` exactly as the report shows them.
+
+**Declarations.** A candidate is compared with the entities it would contribute:
+
+- A chain whose joints match a declared group, but which no declared manipulator uses,
+  is *partially declared*. Adopting it adds only a manipulator, built on that group. It
+  keeps the group's name unless confirmed under another one.
+- A chain with a declared manipulator, or a gripper or end effector whose frame is
+  declared, is *declared*.
+- A declared member of an ambiguity set, partially or fully, is a choice: its
+  alternatives become `not_chosen`.
 
 Each candidate's outcome is one of the following:
 
@@ -206,9 +224,9 @@ Each candidate's outcome is one of the following:
 | --- | --- |
 | `confirmed` | Listed in `[[inference.confirm]]`. It becomes entities under the given `name`: a group and a manipulator for a chain, a gripper, or an end effector. |
 | `rejected` | Listed in `reject`. |
-| `not_chosen` | Another candidate in its ambiguity set was confirmed. |
-| `declared` | The package or model already declares it: a group with the same joints, or a gripper or end effector at the same frame. |
-| `adopted` | In `adopt` mode, the only remaining candidate for its kind, adopted under the default name `arm`, `gripper`, or `end_effector` if that name is free. |
+| `not_chosen` | Another member of its ambiguity set was confirmed or declared. |
+| `declared` | Everything it would contribute is declared already; nothing is added. |
+| `adopted` | In `adopt` mode, the only open candidate of its kind. It takes the default name `arm`, `gripper`, or `end_effector`, or a reused group's name, if that name is free in its namespaces. |
 | `ambiguous` | In `adopt` mode, its kind has more than one remaining candidate, or the default name is taken. An `ambiguous_<kind>` diagnostic lists them. |
 | `reported` | `report` mode, where nothing is adopted unless confirmed. |
 
@@ -226,9 +244,15 @@ which is an explicit selection. A declared capability that names an entity infer
 left ambiguous fails as an unknown reference. Everything adopted passes the same
 validation as declared semantics.
 
-Confirming or rejecting an unknown candidate fails with `unknown_reference`.
-Confirming two candidates from one ambiguity set, or confirming and rejecting the same
-candidate, fails with `conflicting_override`. The package report's `inference` field
+Confirming or rejecting an unknown candidate fails with `unknown_reference`. These
+fail with `conflicting_override`:
+
+- confirming two candidates from one ambiguity set;
+- confirming a candidate whose alternative is declared;
+- confirming or rejecting a declared candidate;
+- confirming and rejecting the same candidate.
+
+Confirming or rejecting a partially declared chain decides only its manipulator. The package report's `inference` field
 lists every candidate with its rule, reasons, ambiguity set, outcome, name, and the
 override that decided it.
 
