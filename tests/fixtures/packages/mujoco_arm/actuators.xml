@@ -1,0 +1,10 @@
+<!-- Included by arm.xml. -->
+<mujoco>
+  <actuator>
+    <position name="shoulder" joint="shoulder"/>
+    <position name="elbow" joint="elbow"/>
+    <position name="wrist" joint="wrist"/>
+    <position name="left_finger" joint="left_finger_joint" ctrlrange="0 0.04"/>
+    <position name="right_finger" joint="right_finger_joint" ctrlrange="0 0.04"/>
+  </actuator>
+</mujoco>

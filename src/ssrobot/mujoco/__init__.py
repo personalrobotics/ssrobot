@@ -22,10 +22,16 @@ from ssrobot._wire import Value, meta
 from ssrobot.commands import Command
 from ssrobot.conventions import ClockMode, Timestamp
 from ssrobot.description import JointKind, RobotDescription
-from ssrobot.errors import CapabilityError, LifecycleError, StaleRevisionError, ValidationError
+from ssrobot.errors import (
+    CapabilityError,
+    LifecycleError,
+    SsrobotError,
+    StaleRevisionError,
+    ValidationError,
+)
 from ssrobot.execution import Diagnostic, ExecutionState, ExecutionStatus
 from ssrobot.observations import Observation, ObservationRequest
-from ssrobot.package import ModelFormat, RobotPackage
+from ssrobot.package import ModelFormat, RobotPackage, load_package
 from ssrobot.runtime import RuntimeInfo, RuntimeUpdate
 
 __all__ = [
@@ -90,18 +96,12 @@ class ActuatorBinding(Value):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AllowanceBinding(Value):
-    """A collision allowance, its MuJoCo bodies, and whether MuJoCo already excludes it."""
+    """A collision allowance and the MuJoCo bodies of its two frames."""
 
     frame_a: str = field(metadata=meta("First frame."))
     frame_b: str = field(metadata=meta("Second frame."))
     body_a: int = field(metadata=meta("MuJoCo body of the first frame.", unit="1"))
     body_b: int = field(metadata=meta("MuJoCo body of the second frame.", unit="1"))
-    excluded: bool = field(
-        metadata=meta(
-            "The compiled model never collides the pair: same body, an explicit "
-            "exclude, or a parent and child that MuJoCo filters."
-        )
-    )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -228,18 +228,37 @@ class _Binder:
         )
 
     def allowance(self, frame_a: str, frame_b: str) -> AllowanceBinding:
-        m = self.model
         a, b = self.bodies[frame_a], self.bodies[frame_b]
-        low, high = sorted((a, b))
-        explicit = ((low << 16) + high) in {int(s) for s in m.exclude_signature}
-        filterparent = not (int(m.opt.disableflags) & int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT))
-        family = low != 0 and (
-            int(m.body_parentid[high]) == low or int(m.body_parentid[low]) == high
-        )
-        excluded = a == b or explicit or (filterparent and family)
-        return AllowanceBinding(
-            frame_a=frame_a, frame_b=frame_b, body_a=a, body_b=b, excluded=excluded
-        )
+        return AllowanceBinding(frame_a=frame_a, frame_b=frame_b, body_a=a, body_b=b)
+
+
+def _unchanged(package: RobotPackage) -> None:
+    """Fail unless the package on disk is still the one that was loaded.
+
+    Loads it again from its root, under the same containment rules, and compares its
+    manifest and every recorded file's hash with what ``package`` recorded.
+    """
+    try:
+        current = load_package(package.root)
+    except SsrobotError as e:
+        raise ValidationError(
+            "package_changed", f"the package no longer loads: {e.code}: {e.message}", path=e.path
+        ) from None
+    if current.manifest != package.manifest:
+        raise ValidationError("package_changed", "the manifest changed", path="ssrobot.toml")
+    recorded: dict[str, set[tuple[str, str]]] = {}
+    found: dict[str, set[tuple[str, str]]] = {}
+    for files, into in ((package.files, recorded), (current.files, found)):
+        for f in files:
+            into.setdefault(f.path, set()).add((f.role, f.sha256))
+    for path in sorted(recorded.keys() | found.keys()):
+        if recorded.get(path) != found.get(path):
+            what = (
+                "is new" if path not in recorded else "is gone" if path not in found else "changed"
+            )
+            raise ValidationError(
+                "package_changed", f"{path} {what} since the package was loaded", path=path
+            )
 
 
 def _versions() -> tuple[str, str, str]:
@@ -292,6 +311,7 @@ class MujocoRuntime:
         return self._mapping
 
     def open(self, description: RobotDescription) -> RuntimeInfo:
+        self._mapping = None  # a previous session's mapping is no evidence for this one
         try:
             return self._open(description)
         except BaseException:
@@ -322,10 +342,14 @@ class MujocoRuntime:
                 f"MuJoCo {MUJOCO_VERSION} is required; installed {installed}, "
                 f"loaded {loaded}, compiled {compiled}",
             )
+        # Compile only what was loaded and hashed: check before, and again after, in case
+        # a file changed while MuJoCo read it.
+        _unchanged(self._package)
         try:
             model = mujoco.MjModel.from_xml_path(str(self._package.root / entry.path))
         except ValueError as e:
             raise ValidationError("model_compile_failed", str(e), path=entry.path) from None
+        _unchanged(self._package)
         timestep_ns = round(float(model.opt.timestep) * 1e9)
         if timestep_ns < 1 or abs(float(model.opt.timestep) * 1e9 - timestep_ns) > 1e-3:
             raise ValidationError(
