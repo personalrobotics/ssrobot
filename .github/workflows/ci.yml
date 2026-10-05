@@ -48,7 +48,7 @@ jobs:
       - name: The installed wheel provides the ssrobot command
         run: clean/bin/ssrobot --help
       - name: Dependency gate on the installed wheel
-        run: clean/bin/python scripts/check_core_imports.py --installed
+        run: clean/bin/python scripts/check_core_imports.py --installed --report artifacts/installed-conformance/imports.json
       - name: Conformance from the installed wheel
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/clean/bin/python -m ssrobot.conformance --out $GITHUB_WORKSPACE/artifacts/installed-conformance

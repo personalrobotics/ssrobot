@@ -12,7 +12,10 @@ Three checks:
   distribution.
 
 With --installed it also fails unless the package was imported from site-packages
-rather than a source checkout.
+rather than a source checkout. With --report it writes the import report as JSON: the
+distribution's requirements, every non-standard-library module importing the package
+loaded, its submodules, and its top-level public names. These are the dependency and
+public-name measures of the milestone consolidation gate in docs/architecture.md.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import argparse
 import ast
 import importlib
 import importlib.metadata
+import json
 import pkgutil
 import re
 import sys
@@ -53,14 +57,17 @@ PROHIBITED = frozenset(
 )
 
 
-def imported_backends(package: str) -> tuple[str, list[str]]:
-    """Where ``package`` was loaded from, and the prohibited modules importing it loaded."""
+def imported_modules(package: str) -> tuple[str, list[str], set[str]]:
+    """Where ``package`` was loaded from, its submodules, and the top-level modules
+    importing it and every submodule loaded."""
     before = set(sys.modules)
     root = importlib.import_module(package)
+    submodules = []
     for module in pkgutil.walk_packages(root.__path__, prefix=f"{package}."):
         importlib.import_module(module.name)
+        submodules.append(module.name)
     loaded = {name.split(".")[0] for name in set(sys.modules) - before}
-    return str(root.__file__), sorted(loaded & PROHIBITED)
+    return str(root.__file__), sorted(submodules), loaded
 
 
 def _imported_names(tree: ast.AST) -> Iterator[tuple[int, str]]:
@@ -117,8 +124,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", default="ssrobot")
     parser.add_argument("--installed", action="store_true", help="require site-packages")
+    parser.add_argument("--report", type=Path, help="write the import report here as JSON")
     args = parser.parse_args()
-    location, modules = imported_backends(args.package)
+    location, submodules, loaded = imported_modules(args.package)
+    modules = sorted(loaded & PROHIBITED)
     requirements = required_backends(args.package)
     print(f"{args.package} imported from {location}")
     failures = [f"imports prohibited module {m!r}" for m in modules]
@@ -126,6 +135,27 @@ def main() -> int:
     failures += [f"requires prohibited distribution {r!r}" for r in requirements]
     if args.installed and "site-packages" not in location:
         failures.append("was not imported from an installed distribution")
+    if args.report is not None:
+        root = sys.modules[args.package]
+        try:
+            declared = importlib.metadata.requires(args.package) or []
+        except importlib.metadata.PackageNotFoundError:
+            declared = []
+        report = {
+            "package": args.package,
+            "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+            "installed": "site-packages" in location,
+            "requirements": sorted(declared),
+            "third_party_modules_loaded": sorted(
+                loaded - set(sys.stdlib_module_names) - {args.package}
+            ),
+            "submodules": submodules,
+            "public_name_count": len(root.__all__),
+            "public_names": sorted(root.__all__),
+            "failures": failures,
+        }
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps(report, indent=2) + "\n")
     for failure in failures:
         print(f"FAIL: {args.package} {failure}", file=sys.stderr)
     if not failures:

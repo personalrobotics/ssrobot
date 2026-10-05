@@ -33,13 +33,13 @@ from ssrobot import (
     Quantity,
     Reading,
     RobotDescription,
-    RuntimeEvent,
     RuntimeInfo,
     RuntimeUpdate,
     Sensor,
     SensorKind,
     Timestamp,
 )
+from ssrobot.runtime import RuntimeEvent
 
 ARM = JointLimits(lower=-math.pi, upper=math.pi, velocity=2.0, effort=50.0)
 

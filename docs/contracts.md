@@ -21,6 +21,25 @@ RobotContext ──uses──▶ Runtime (protocol) ──binds──▶ RobotDe
 `RobotDescription` knows nothing about contexts or runtimes. A runtime sees only the
 description it is opened with. Only `RobotContext` is user-facing.
 
+### Public surface
+
+The public interface is the names in `ssrobot.__all__`, the
+`ssrobot.conformance.run_conformance` scenario, and the `ssrobot` command (`init`,
+`inspect`, `doctor`) with the records its JSON options read and write. Every other
+module and name is implementation. It can be imported, but this contract does not
+cover it. The top-level names, by who uses them:
+
+| Who | Names |
+| --- | --- |
+| Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
+| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode` |
+| Runtimes, and those who write them | `Runtime`, `RuntimeInfo`, `RuntimeUpdate`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
+| Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `dumps`, `loads` |
+| Error handling | `SsrobotError`, `ValidationError`, `CapabilityError`, `OwnershipError`, `StaleRevisionError`, `LifecycleError` |
+
+A new top-level name must pass the milestone consolidation gate in
+[architecture.md](architecture.md).
+
 ### RobotDescription
 
 An immutable, validated semantic model of one robot. Construction fails on duplicate
@@ -517,7 +536,10 @@ The dependency gate makes three checks:
 
 CI also builds the wheel, installs only that wheel in an empty environment, and runs
 the dependency gate with `--installed` and the conformance scenario from it. That
-conformance trace and report are uploaded as the `installed-conformance` artifact.
+conformance trace and report, and the gate's `imports.json` import report, are uploaded
+as the `installed-conformance` artifact. The import report lists the distribution's
+requirements, every non-standard-library module that importing `ssrobot` and its
+submodules loaded, the submodules, and the top-level public names.
 
 | Artifact | Shows |
 | --- | --- |
