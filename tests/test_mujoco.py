@@ -16,7 +16,6 @@ from ssrobot import (
     JointCommand,
     JointLimits,
     JointMode,
-    ObservationRequest,
     RobotContext,
     RobotDescription,
     SsrobotError,
@@ -26,7 +25,7 @@ from ssrobot import (
 from ssrobot.mujoco import MujocoRuntime
 from tests.conftest import ROOT
 
-FIXTURE = ROOT / "tests" / "fixtures" / "packages" / "mujoco_arm"
+FIXTURE = ROOT / "examples" / "packages" / "mujoco_arm"
 TIMESTEP_NS = 2_000_000  # arm.xml: <option timestep="0.002"/>
 
 
@@ -41,8 +40,8 @@ def test_mujoco_runtime_resolves_and_steps_the_package(artifacts: Path) -> None:
     package = load_package(FIXTURE)
     description = package.description
     arm = description.group("arm")
-    command = JointCommand(
-        group="arm", joints=arm.joints, mode=JointMode.POSITION, values=(0.0, 0.0, 0.0)
+    velocity = JointCommand(
+        group="arm", joints=arm.joints, mode=JointMode.VELOCITY, values=(0.0, 0.0, 0.0)
     )
     runs = []
     for _ in range(2):
@@ -53,15 +52,10 @@ def test_mujoco_runtime_resolves_and_steps_the_package(artifacts: Path) -> None:
                 ctx.step()
                 times.append(ctx.now.time_ns)
             refused = {}
-            requests: dict[str, Callable[[], object]] = {
-                "submit": lambda: ctx.submit(command),
-                "observe": lambda: ctx.observe(ObservationRequest(channels=("arm_q",))),
-            }
-            for name, request in requests.items():
-                try:
-                    request()
-                except SsrobotError as e:
-                    refused[name] = e.code
+            try:
+                ctx.submit(velocity)
+            except SsrobotError as e:
+                refused["velocity command"] = e.code
         runtime.close()  # again, after the context closed it
         lifecycle = {
             "info": _json(ctx.info),
@@ -111,11 +105,20 @@ def test_mujoco_runtime_resolves_and_steps_the_package(artifacts: Path) -> None:
     )
     assert lifecycle["times_ns"] == [k * 5 * TIMESTEP_NS for k in range(5)]
     assert lifecycle["info"]["clock_mode"] == "manual"
-    assert lifecycle["info"]["commands"] == [] and lifecycle["info"]["channels"] == []
-    assert lifecycle["refused"] == {
-        "submit": "unavailable_command",
-        "observe": "unavailable_channel",
+    assert [(c["component"], c["kind"]) for c in lifecycle["info"]["commands"]] == [
+        ("arm", "joint"),
+        ("arm", "joint_trajectory"),
+        ("gripper", "gripper"),
+        ("wrist_only", "joint"),
+    ]
+    assert lifecycle["info"]["channels"] == ["arm_q", "arm_qd", "gripper_opening"]
+    unconfirmed = {
+        (c["component"], c["kind"], c["mode"]): c["unavailable"]["code"]
+        for c in mapping["commands"]
+        if c["unavailable"] is not None
     }
+    assert unconfirmed == {("arm", "joint", "velocity"): "no_velocity_actuators"}
+    assert lifecycle["refused"] == {"velocity command": "unavailable_command"}
     assert lifecycle["state_after_close"] == "closed"
     assert reuse == {
         "failed_reopen": "stale_description",

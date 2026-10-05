@@ -11,7 +11,7 @@ from pathlib import Path
 from ssrobot._wire import json_schema, record_types
 
 # Records outside the top-level package must be imported to get schemas.
-for _module in ("ssrobot.authoring", "ssrobot.conformance", "ssrobot.doctor"):
+for _module in ("ssrobot.authoring", "ssrobot.conformance", "ssrobot.doctor", "ssrobot.mujoco"):
     importlib.import_module(_module)
 
 SCHEMAS = Path(__file__).resolve().parents[1] / "schemas"

@@ -55,14 +55,12 @@ jobs:
           uv pip install --python clean-mujoco "$(echo dist/*.whl)[mujoco]"
       - name: Dependency gate on the installed wheel with the mujoco extra
         run: clean-mujoco/bin/python scripts/check_core_imports.py --installed --integration mujoco --report artifacts/installed-conformance/imports-mujoco.json
-      - name: MujocoRuntime from the installed wheel
-        working-directory: ${{ runner.temp }}
-        run: >-
-          $GITHUB_WORKSPACE/clean-mujoco/bin/python -c "import ssrobot;
-          from ssrobot.mujoco import MujocoRuntime;
-          p = ssrobot.load_package('$GITHUB_WORKSPACE/tests/fixtures/packages/mujoco_arm');
-          ctx = ssrobot.RobotContext(p.description, MujocoRuntime(p));
-          ctx.__enter__(); ctx.step(); print(ctx.info.runtime_version, ctx.now); ctx.close()"
+      - name: MujocoRuntime runs the README trajectory from the installed wheel
+        working-directory: ${{ github.workspace }}
+        run: |
+          sed -n '/^### Simulation in MuJoCo/,/^## /p' README.md | sed -n '/^```python$/,/^```$/p' | sed '1d;$d' > "$RUNNER_TEMP/readme_mujoco.py"
+          clean-mujoco/bin/python -P "$RUNNER_TEMP/readme_mujoco.py" | tee "$RUNNER_TEMP/readme_mujoco.txt"
+          grep -q '^succeeded ' "$RUNNER_TEMP/readme_mujoco.txt"
       - name: Conformance from the installed wheel
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/clean/bin/python -m ssrobot.conformance --out $GITHUB_WORKSPACE/artifacts/installed-conformance

@@ -1,4 +1,4 @@
-# A runnable MuJoCo fixture for MujocoRuntime: see arm.xml. The semantics are declared
+# A small arm and gripper that runs in MujocoRuntime: see arm.xml. The semantics are declared
 # here, because MJCF has none. link1/link3 is declared here, not excluded in the MJCF.
 schema = "ssrobot.package"
 version = 1
@@ -10,9 +10,19 @@ name = "mjcf"
 format = "mjcf"
 path = "arm.xml"
 
+[[profiles]]
+name = "sim"
+runtime = "mujoco"
+path = "mujoco.toml"
+
 [[semantics.groups]]
 name = "arm"
 joints = ["shoulder", "elbow", "wrist"]
+
+# The wrist alone, overlapping the arm: a chunk may not command both at once.
+[[semantics.groups]]
+name = "wrist_only"
+joints = ["wrist"]
 
 [[semantics.grippers]]
 name = "gripper"
@@ -41,9 +51,28 @@ frame_a = "link1"
 frame_b = "link3"
 reason = "declared by the package"
 
-# Declared so that a runtime must confirm them; MujocoRuntime binds them in #15 and #16.
+# A runtime must confirm each of these. MujocoRuntime confirms all but the velocity
+# command: arm.xml has no velocity actuators.
 [[semantics.commands]]
 component = "arm"
+kind = "joint"
+mode = "position"
+
+[[semantics.commands]]
+component = "arm"
+kind = "joint_trajectory"
+
+[[semantics.commands]]
+component = "gripper"
+kind = "gripper"
+
+[[semantics.commands]]
+component = "arm"
+kind = "joint"
+mode = "velocity"
+
+[[semantics.commands]]
+component = "wrist_only"
 kind = "joint"
 mode = "position"
 
@@ -52,4 +81,18 @@ name = "arm_q"
 quantity = "joint_position"
 source = "arm"
 shape = [3]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "arm_qd"
+quantity = "joint_velocity"
+source = "arm"
+shape = [3]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "gripper_opening"
+quantity = "gripper_opening"
+source = "gripper"
+shape = [1]
 dtype = "float64"
