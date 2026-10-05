@@ -294,23 +294,24 @@ def infer(model: KinematicModel) -> list[Candidate]:
 
     effectors: list[Candidate] = []
     for tip_joint in dict.fromkeys(c.joints[-1] for c in chains):
-        tool = tree.joints[tip_joint].child
+        tool = tree.joints[tip_joint].child  # the base of the chain tip's rigid body
         holder = next(
             (g for g in grippers if g.frame and _at_or_below(tree.parent, tool, g.frame)), None
         )
-        start = tool if holder is None or holder.frame is None else holder.frame
-        leaves = _fixed_leaves(tree, start)
-        where = f"the gripper frame {start!r}" if holder else f"the tool frame {start!r}"
+        leaves = _fixed_leaves(tree, tool)
         for leaf in leaves:
             effectors.append(
                 Candidate(
                     id=f"end_effector:{encode_name(leaf)}",
                     kind=CandidateKind.END_EFFECTOR,
                     rule="tool_center_point",
-                    reasons=(f"{leaf!r} is a fixed leaf below {where}",),
+                    reasons=(
+                        f"{leaf!r} is a fixed leaf of the rigid body at the tip of "
+                        f"{tips[tip_joint].id}",
+                    ),
                     frame=leaf,
                     gripper=None if holder is None else holder.id,
-                    ambiguity=f"tcp@{encode_name(start)}" if len(leaves) > 1 else None,
+                    ambiguity=f"tcp@{encode_name(tool)}" if len(leaves) > 1 else None,
                 )
             )
     found = [*chains, *grippers, *effectors]
