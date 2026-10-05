@@ -29,7 +29,9 @@ this order:
 The written manifest is fully explicit, with no `[inference]` table, so its meaning
 never changes with later inference rules. Rerunning with the same model and answers
 leaves the file unchanged. A different existing manifest is never replaced without
-`--force`. A failure at any step leaves the existing manifest and no temporary files.
+`--force`. Even with `--force`, or `overwrite=True` through the API, a manifest is
+validated against the package before the file is touched. A failure at any step leaves
+the existing manifest and no temporary files.
 
 ### Decisions
 
@@ -54,7 +56,8 @@ writing; `--yes` skips that last confirmation. Anywhere else it never prompts. I
 decisions remain open, it lists them, writes the draft (an `ssrobot.AuthoringDraft`)
 to `--draft-json`, and exits with status 2. Supply answers with
 `--answers FILE`, either as an `ssrobot.AuthoringAnswers` JSON record or as TOML with
-the same fields:
+the same fields. A candidate may be answered only once, across `include` and `exclude`
+together, and a template listed only once (`duplicate_name`).
 
 ```toml
 robot = "bimanual_lift"
@@ -94,14 +97,16 @@ The summary is not a compatibility surface. `--json PATH` writes the
 | `wheel` | With `--wheel PATH`, the wheel lacks the package's `ssrobot.toml` or any file it needs, or loading it as an installed package gives a different description or file set. |
 
 `--json PATH` writes an `ssrobot.DoctorReport`. `--check` writes nothing and cannot be
-combined with `--json`.
+combined with `--json`. A wheel that cannot be read fails the `wheel` check with the
+reason, rather than stopping `doctor`. That covers a missing file, a non-zip, or a
+corrupt entry.
 
 ## Exit status
 
 | Status | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 1 | An invalid model, package, or answer, or a failed check. |
+| 1 | An invalid model, package, or answer; a missing input or unwritable output file; or a failed check. Each prints a diagnostic, never a traceback. |
 | 2 | Decisions still need answers and there is no terminal to ask. |
 | 3 | A different manifest exists and `--force` was not given. |
 

@@ -147,6 +147,18 @@ class AuthoringAnswers(Record):
     )
     templates: tuple[Template, ...] = field(default=(), metadata=meta("Templates to apply."))
 
+    def _validate(self) -> None:
+        listed = [c.candidate for c in self.include] + list(self.exclude)
+        for i, candidate in enumerate(self.exclude):
+            check_name(candidate, path=f"exclude[{i}]")
+        repeated = sorted({c for c in listed if listed.count(c) > 1})
+        if repeated:
+            raise ValidationError(
+                "duplicate_name", f"{repeated} are answered more than once", path="include"
+            )
+        if len(set(self.templates)) != len(self.templates):
+            raise ValidationError("duplicate_name", "a template is listed twice", path="templates")
+
 
 @dataclass(frozen=True)
 class Draft:
@@ -486,6 +498,7 @@ def write_manifest(
     root = Path(root)
     target = Path(output) if output is not None else root / MANIFEST
     text = render_manifest(manifest, header=HEADER)
+    assemble_package(root, manifest)  # an invalid manifest never replaces a valid one
     if target.exists() and target.read_text(encoding="utf-8") == text:
         status = "unchanged"
     else:

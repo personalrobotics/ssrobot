@@ -14,13 +14,15 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import jsonschema
+import pytest
 
-from ssrobot import load_package
-from ssrobot.authoring import AuthoringAnswers, Template, answer, draft
+from ssrobot import JointGroup, SsrobotError, load_package
+from ssrobot.authoring import AuthoringAnswers, Template, answer, draft, write_manifest
 from ssrobot.cli import prompt
 from ssrobot.inference import CandidateChoice
 from tests.conftest import ROOT
@@ -367,3 +369,92 @@ def test_doctor_verifies_the_built_wheel(artifacts: Path, tmp_path: Path) -> Non
     assert "textures/checker.ppm" in missing["detail"]
     assert checked.returncode == 0 and not (tmp_path / "x.json").exists()
     assert conflicting.returncode == 1
+
+
+def test_overwrite_never_destroys_a_valid_manifest(tmp_path: Path) -> None:
+    """Even with overwrite, an invalid manifest is rejected before the file is touched."""
+    root = _without_manifest(FIXTURES / "urdf_arm", tmp_path / "keep")
+    valid = load_package(FIXTURES / "urdf_arm").manifest
+    write_manifest(root, valid)
+    before = (root / "ssrobot.toml").read_bytes()
+    broken = replace(
+        valid,
+        semantics=replace(
+            valid.semantics,
+            groups=(*valid.semantics.groups, JointGroup(name="ghost", joints=("no_such_joint",))),
+        ),
+    )
+    with pytest.raises(SsrobotError) as error:
+        write_manifest(root, broken, overwrite=True)
+    assert error.value.code == "unknown_reference"
+    assert (root / "ssrobot.toml").read_bytes() == before
+    assert [p.name for p in root.iterdir() if p.name.startswith(".ssrobot-")] == []
+
+
+def _corrupt(wheel: Path) -> Path:
+    """Flip bytes inside a stored member so its CRC no longer matches."""
+    data = wheel.read_bytes()
+    marker = b'schema = "ssrobot.package"'
+    assert marker in data
+    wheel.write_bytes(data.replace(marker, b'schema = "ssrobot.packagX"', 1))
+    return wheel
+
+
+def test_operational_errors_are_diagnostics(artifacts: Path, tmp_path: Path) -> None:
+    """Missing files, corrupt wheels, and repeated answers give an exit status and a
+    message, never a traceback."""
+    root = _without_manifest(FIXTURES / "urdf_arm", tmp_path / "arm")
+    (root / "ssrobot.toml").write_text((FIXTURES / "urdf_arm" / "ssrobot.toml").read_text())
+    model = _without_manifest(EXAMPLES / "bimanual_lift", tmp_path / "bimanual") / "kinematics.json"
+    twice = tmp_path / "twice.toml"
+    twice.write_text(
+        BIMANUAL_ANSWERS + '[[include]]\ncandidate = "gripper:left_gripper_base"\nname = "other"\n'
+    )
+    both = tmp_path / "both.toml"
+    both.write_text(
+        BIMANUAL_ANSWERS.replace(
+            "templates =", 'exclude = ["gripper:left_gripper_base"]\ntemplates ='
+        )
+    )
+    not_zip = tmp_path / "not.whl"
+    not_zip.write_bytes(b"this is not a zip archive")
+    corrupt = _corrupt(_wheel(tmp_path / "corrupt.whl", root, "urdf_arm_robot"))
+    cases: dict[str, tuple[list[str | Path], int, str]] = {
+        "missing answers file": (
+            ["init", model, "--answers", tmp_path / "nope.toml"],
+            1,
+            "error file",
+        ),
+        "candidate included twice": (["init", model, "--answers", twice], 1, "duplicate_name"),
+        "candidate included and excluded": (
+            ["init", model, "--answers", both],
+            1,
+            "duplicate_name",
+        ),
+        "unwritable inspect output": (
+            ["inspect", root, "--json", tmp_path / "no" / "dir" / "r.json"],
+            1,
+            "error file",
+        ),
+        "wheel that is not a zip": (["doctor", root, "--wheel", not_zip], 1, "BadZipFile"),
+        "wheel with a corrupt member": (["doctor", root, "--wheel", corrupt], 1, "BadZipFile"),
+        "missing wheel": (
+            ["doctor", root, "--wheel", tmp_path / "missing.whl"],
+            1,
+            "FileNotFoundError",
+        ),
+    }
+    report: dict[str, Any] = {}
+    for name, (args, status, needle) in cases.items():
+        result = _ssrobot(*args)
+        output = result.stdout + result.stderr
+        report[name] = {
+            "status": result.returncode,
+            "expected_status": status,
+            "mentions": needle in output,
+            "traceback": "Traceback" in output,
+        }
+    (artifacts / "operational-errors.json").write_text(json.dumps(report, indent=2) + "\n")
+    for name, outcome in report.items():
+        assert outcome["status"] == outcome["expected_status"], (name, outcome)
+        assert outcome["mentions"] and not outcome["traceback"], (name, outcome)

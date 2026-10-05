@@ -191,10 +191,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         status: int = args.run(args)
     except SsrobotError as e:
-        print(
-            f"error {e.code}" + (f" at {e.path}" if e.path else "") + f": {e.message}",
-            file=sys.stderr,
-        )
+        where = f" at {e.path}" if e.path else ""
+        print(f"error {e.code}{where}: {e.message}", file=sys.stderr)
+        return INVALID
+    except OSError as e:  # a missing input or an unwritable output path
+        print(f"error file: {e}", file=sys.stderr)
         return INVALID
     return status
 

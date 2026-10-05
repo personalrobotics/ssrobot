@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -121,10 +122,13 @@ def _expected_files(source: RobotPackage) -> list[str]:
 
 def _check_wheel(source: RobotPackage, wheel: Path) -> tuple[bool, str]:
     try:
-        archive = zipfile.ZipFile(wheel)
-    except (OSError, zipfile.BadZipFile) as e:
-        return False, f"cannot read {wheel}: {e}"
-    with archive:
+        return _inspect_wheel(source, wheel)
+    except (OSError, EOFError, zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error) as e:
+        return False, f"cannot read {wheel}: {type(e).__name__}: {e}"
+
+
+def _inspect_wheel(source: RobotPackage, wheel: Path) -> tuple[bool, str]:
+    with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
         homes = []
         for name in sorted(n for n in names if n == MANIFEST or n.endswith(f"/{MANIFEST}")):
