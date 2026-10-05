@@ -62,6 +62,7 @@ joints = ["left_shoulder_pan", "..."]
 | `assets` | no | Asset directories. |
 | `profiles` | no | Runtime profiles, each naming the runtime that interprets it. |
 | `calibrations` | no | Portable calibration files. |
+| `inference` | no | Opt-in semantic inference; see *Inference*. Without it, nothing is inferred. |
 
 Decoding is as strict as every other ssrobot record: unknown keys, missing required
 keys, wrong types, and duplicate names fail. The semantic layer is validated against
@@ -174,6 +175,86 @@ becomes `EndEffector.frame`. If the package declares an end effector of the same
 its frame must be at or below `parent_link` (`invalid_chain` otherwise). If it does
 not, the package report carries an `ambiguous_end_effector` diagnostic naming the group
 and asking for the TCP frame. No end effector is created.
+
+## Inference
+
+Model files often carry no semantics. A package can ask ssrobot to propose them:
+
+```toml
+[inference]
+mode = "adopt"           # or "report"
+reject = ["chain:left_lift..left_wrist_3"]
+
+[[inference.confirm]]
+candidate = "chain:left_shoulder_pan..left_wrist_3"
+name = "left_arm"
+```
+
+Inference reads only the structure of the canonical model's frame tree. Names are
+never evidence. Three rules propose candidates, each with a stable identifier and the
+reasons for it:
+
+| Rule | Candidate | Evidence |
+| --- | --- | --- |
+| `serial_chain` | `chain:<first>..<last>`: a joint group and its manipulator | A maximal series of at least 3 movable joints, with no branching between them. The base frame is the first joint's parent and the tool frame the last joint's child. If the series starts with prismatic joints, such as a lift, a candidate without them is derived too. Both share an ambiguity set, and the derived one's reasons say how it was derived. |
+| `gripper` | `gripper:<frame>`: a gripper | A frame at the tip of a chain whose subtree splits into at least 2 moving branches, each of at most 2 joints in series. Its joints are every joint below it. |
+| `tool_center_point` | `end_effector:<frame>`: an end effector | A leaf frame below the gripper frame, or below the tool frame if there is no gripper, reached through fixed connections only. Several such leaves share an ambiguity set. |
+
+**Identifiers.** Source names inside an identifier are percent-encoded. Every
+character except ASCII letters, digits, `_`, `-`, and `/` becomes `%XX` per UTF-8 byte,
+in uppercase hex. An encoded name therefore never contains `.` or `:`, so `..` and the
+`kind:` prefix are unambiguous. For example, a chain from `a` to `b..c` is
+`chain:a..b%2E%2Ec`, and a TCP frame `t:1` is `end_effector:t%3A1`. Identifiers are
+checked to be unique before any override applies (`duplicate_candidate`). Write them in
+`confirm` and `reject` exactly as the report shows them.
+
+**Declarations.** A candidate is compared with the entities it would contribute:
+
+- A chain whose joints match a declared group, but which no declared manipulator uses,
+  is *partially declared*. Adopting it adds only a manipulator, built on that group. It
+  keeps the group's name unless confirmed under another one.
+- A chain with a declared manipulator, or a gripper or end effector whose frame is
+  declared, is *declared*.
+- A declared member of an ambiguity set, partially or fully, is a choice: its
+  alternatives become `not_chosen`.
+
+Each candidate's outcome is one of the following:
+
+| Outcome | When |
+| --- | --- |
+| `confirmed` | Listed in `[[inference.confirm]]`. It becomes entities under the given `name`: a group and a manipulator for a chain, a gripper, or an end effector. |
+| `rejected` | Listed in `reject`. |
+| `not_chosen` | Another member of its ambiguity set was confirmed or declared. |
+| `declared` | Everything it would contribute is declared already; nothing is added. |
+| `adopted` | In `adopt` mode, the only open candidate of its kind. It takes the default name `arm`, `gripper`, or `end_effector`, or a reused group's name, if that name is free in its namespaces. |
+| `ambiguous` | In `adopt` mode, its kind has more than one remaining candidate, or the default name is taken. An `ambiguous_<kind>` diagnostic lists them. |
+| `reported` | `report` mode, where nothing is adopted unless confirmed. |
+
+A single arm can therefore be adopted as is. A dual-arm robot, or an arm on a lift,
+stays ambiguous until the package names each candidate it wants. Inference never picks
+an active arm.
+
+Adopted manipulators get the one adopted or declared end effector at or below their
+tool frame, if there is exactly one. Adopted end effectors get the gripper above them.
+A gripper with no TCP candidate gets a `no_tcp_candidate` diagnostic.
+
+**Safety.** Inference never declares command capabilities or observation channels. An
+inferred group cannot be commanded until the package declares a capability for it,
+which is an explicit selection. A declared capability that names an entity inference
+left ambiguous fails as an unknown reference. Everything adopted passes the same
+validation as declared semantics.
+
+Confirming or rejecting an unknown candidate fails with `unknown_reference`. These
+fail with `conflicting_override`:
+
+- confirming two candidates from one ambiguity set;
+- confirming a candidate whose alternative is declared;
+- confirming or rejecting a declared candidate;
+- confirming and rejecting the same candidate.
+
+Confirming or rejecting a partially declared chain decides only its manipulator. The package report's `inference` field
+lists every candidate with its rule, reasons, ambiguity set, outcome, name, and the
+override that decided it.
 
 ## Paths
 

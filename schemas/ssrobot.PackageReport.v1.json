@@ -3,6 +3,151 @@
   "title": "ssrobot.PackageReport v1",
   "$ref": "#/$defs/PackageReport",
   "$defs": {
+    "Candidate": {
+      "type": "object",
+      "description": "Candidate(*, id: 'str', kind: 'CandidateKind', rule: 'str', reasons: 'tuple[str, ...]', joints: 'tuple[str, ...]' = (), frame: 'str | None' = None, base_frame: 'str | None' = None, tool_frame: 'str | None' = None, gripper: 'str | None' = None, ambiguity: 'str | None' = None, declared_group: 'str | None' = None, outcome: 'Outcome' = <Outcome.REPORTED: 'reported'>, name: 'str | None' = None, override: 'str | None' = None)",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable identifier; names in it are percent-encoded."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "chain",
+            "gripper",
+            "end_effector"
+          ],
+          "description": "What it would become."
+        },
+        "rule": {
+          "type": "string",
+          "description": "The inference rule that produced it."
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The structural evidence."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joints, base to tip."
+        },
+        "frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Gripper or TCP frame."
+        },
+        "base_frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Chain base frame."
+        },
+        "tool_frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Chain tool frame."
+        },
+        "gripper": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Gripper candidate an end-effector candidate sits below."
+        },
+        "ambiguity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Candidates sharing this set exclude one another."
+        },
+        "declared_group": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A declared group with this chain's joints, which adoption reuses."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "confirmed",
+            "adopted",
+            "declared",
+            "rejected",
+            "not_chosen",
+            "ambiguous",
+            "reported"
+          ],
+          "description": "What became of it."
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Name of the adopted entities."
+        },
+        "override": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The manifest override that decided it, if any."
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "rule",
+        "reasons"
+      ],
+      "additionalProperties": false
+    },
     "Diagnostic": {
       "type": "object",
       "description": "Why something was rejected, failed, or modified.",
@@ -30,6 +175,39 @@
       "required": [
         "code",
         "message"
+      ],
+      "additionalProperties": false
+    },
+    "InferenceReport": {
+      "type": "object",
+      "description": "Every candidate, the rule behind it, and what became of it.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "report",
+            "adopt"
+          ],
+          "description": "The manifest's inference mode."
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Candidate"
+          },
+          "description": "Candidates in a stable order."
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Diagnostic"
+          },
+          "description": "Ambiguity and missing-evidence findings."
+        }
+      },
+      "required": [
+        "mode",
+        "candidates"
       ],
       "additionalProperties": false
     },
@@ -75,6 +253,17 @@
             "$ref": "#/$defs/Diagnostic"
           },
           "description": "Non-fatal findings: ignored constructs and unresolved ambiguity."
+        },
+        "inference": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InferenceReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Inference candidates and outcomes, when enabled."
         }
       },
       "required": [
