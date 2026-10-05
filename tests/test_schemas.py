@@ -8,7 +8,8 @@ import sys
 import jsonschema
 import pytest
 
-from ssrobot import Record, json_schema
+from ssrobot import Record
+from ssrobot._wire import json_schema
 from tests.conftest import ROOT
 
 

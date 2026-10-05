@@ -49,9 +49,9 @@ from ssrobot.inference import (
     Candidate,
     CandidateChoice,
     CandidateKind,
+    CandidateOutcome,
     InferenceMode,
     InferenceSettings,
-    Outcome,
     resolve,
 )
 from ssrobot.manifest_toml import render_manifest
@@ -275,7 +275,7 @@ def _semantics_of(d: RobotDescription) -> Semantics:
 
 
 def _candidate_decisions(candidates: tuple[Candidate, ...]) -> list[Decision]:
-    open_ = [c for c in candidates if c.outcome is not Outcome.DECLARED]
+    open_ = [c for c in candidates if c.outcome is not CandidateOutcome.DECLARED]
     decisions = []
     for c in open_:
         siblings = tuple(
@@ -283,14 +283,16 @@ def _candidate_decisions(candidates: tuple[Candidate, ...]) -> list[Decision]:
             for o in candidates
             if o.ambiguity is not None and o.ambiguity == c.ambiguity and o.id != c.id
         )
-        same_kind = [o for o in open_ if o.kind is c.kind and o.outcome is not Outcome.NOT_CHOSEN]
+        same_kind = [
+            o for o in open_ if o.kind is c.kind and o.outcome is not CandidateOutcome.NOT_CHOSEN
+        ]
         what = {
             CandidateKind.CHAIN: "Include as a manipulator (and its group)",
             CandidateKind.GRIPPER: "Include as a gripper",
             CandidateKind.END_EFFECTOR: "Include as an end effector",
         }[c.kind]
         question = f"{what}? {c.id}: {'; '.join(c.reasons)}"
-        if c.outcome is Outcome.NOT_CHOSEN:
+        if c.outcome is CandidateOutcome.NOT_CHOSEN:
             decisions.append(
                 Decision(
                     id=c.id,

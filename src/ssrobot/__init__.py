@@ -6,12 +6,8 @@ from ssrobot._wire import (
     DType,
     Record,
     Value,
-    decode,
     dumps,
-    encode,
-    json_schema,
     loads,
-    record_types,
 )
 from ssrobot.commands import (
     ActionChunk,
@@ -19,7 +15,6 @@ from ssrobot.commands import (
     Command,
     CommandKind,
     GripperCommand,
-    InstantCommand,
     JointCommand,
     JointMode,
     JointTrajectory,
@@ -64,19 +59,31 @@ from ssrobot.execution import (
     RuntimeHealth,
     Submission,
 )
+from ssrobot.inference import (
+    Candidate,
+    CandidateChoice,
+    CandidateKind,
+    CandidateOutcome,
+    InferenceMode,
+    InferenceReport,
+    InferenceSettings,
+)
 from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
 from ssrobot.package import (
+    FileEntry,
+    ModelEntry,
+    ModelFormat,
     PackageManifest,
     PackageReport,
+    ProfileEntry,
     RobotPackage,
     load_installed_package,
     load_package,
 )
 from ssrobot.replay import ReplayRuntime, ReplayScript, ReplayTick
-from ssrobot.resources import SourceItem
-from ssrobot.runtime import Runtime, RuntimeEvent, RuntimeInfo, RuntimeUpdate
-from ssrobot.trace import JsonlTrace, TraceKind, TraceRecord, TraceSink, read_trace
-from ssrobot.validation import check_applied, check_command, check_observation, check_request
+from ssrobot.resources import ResolvedFile, SourceItem
+from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate
+from ssrobot.trace import JsonlTrace, TraceKind, TraceRecord, read_trace
 
 __all__ = [
     "ActionChunk",
@@ -84,6 +91,10 @@ __all__ = [
     "ArrayValue",
     "AssetStore",
     "BaseTwistCommand",
+    "Candidate",
+    "CandidateChoice",
+    "CandidateKind",
+    "CandidateOutcome",
     "CapabilityError",
     "ChannelSpec",
     "ClockMode",
@@ -98,11 +109,14 @@ __all__ = [
     "Execution",
     "ExecutionState",
     "ExecutionStatus",
+    "FileEntry",
     "Frame",
     "Gripper",
     "GripperCommand",
     "HealthState",
-    "InstantCommand",
+    "InferenceMode",
+    "InferenceReport",
+    "InferenceSettings",
     "Joint",
     "JointCommand",
     "JointGroup",
@@ -115,6 +129,8 @@ __all__ = [
     "LifecycleError",
     "Manipulator",
     "MobileBase",
+    "ModelEntry",
+    "ModelFormat",
     "Modification",
     "ModificationKind",
     "NamedConfiguration",
@@ -125,17 +141,18 @@ __all__ = [
     "PackageManifest",
     "PackageReport",
     "Pose",
+    "ProfileEntry",
     "Quantity",
     "Reading",
     "Record",
     "ReplayRuntime",
     "ReplayScript",
     "ReplayTick",
+    "ResolvedFile",
     "RobotContext",
     "RobotDescription",
     "RobotPackage",
     "Runtime",
-    "RuntimeEvent",
     "RuntimeHealth",
     "RuntimeInfo",
     "RuntimeUpdate",
@@ -149,20 +166,11 @@ __all__ = [
     "Timestamp",
     "TraceKind",
     "TraceRecord",
-    "TraceSink",
     "ValidationError",
     "Value",
-    "check_applied",
-    "check_command",
-    "check_observation",
-    "check_request",
-    "decode",
     "dumps",
-    "encode",
-    "json_schema",
     "load_installed_package",
     "load_package",
     "loads",
     "read_trace",
-    "record_types",
 ]

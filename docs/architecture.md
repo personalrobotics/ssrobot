@@ -19,7 +19,7 @@ yet.
 
 | Concept | Role | Status |
 | --- | --- | --- |
-| `RobotDescription` | Immutable, validated semantic model of a robot: joints, links, frames, groups, manipulators, bases, end effectors, sensors, declared capabilities. Safe to share across contexts. | Implemented |
+| `RobotDescription` | Immutable, validated semantic model of a robot: joints, links, frames, groups, manipulators, bases, end effectors, sensors, declared capabilities. Safe to share across contexts. | Implemented. Opendubs, a mobile manipulator with a mecanum base, is the first external consumer of `MobileBase` and `BaseTwistCommand`, in M2 (#85) |
 | Robot package | A model plus its `ssrobot.toml` manifest, loaded from a directory or an installed Python package into a `RobotDescription`. | Implemented |
 | `RobotContext` | The public session. Context-managed; the only path through which users observe, submit commands, step, snapshot, and close. | Implemented, except snapshots (M2) and semantic views such as `ctx.manipulator` (M3) |
 | `Runtime` | Injected backend mechanics (replay, MuJoCo, ROS 2). Owns I/O, lifecycle, status, and capability reporting. Contains no planning or task logic. | Implemented: the protocol and `ReplayRuntime`. `MujocoRuntime` is M2; `Ros2Runtime` is M6 |

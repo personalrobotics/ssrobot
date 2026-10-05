@@ -3,24 +3,24 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from pathlib import Path
 
-import ssrobot
+from ssrobot._wire import json_schema, record_types
 
 # Records outside the top-level package must be imported to get schemas.
-import ssrobot.authoring
-import ssrobot.conformance
-import ssrobot.doctor
+for _module in ("ssrobot.authoring", "ssrobot.conformance", "ssrobot.doctor"):
+    importlib.import_module(_module)
 
 SCHEMAS = Path(__file__).resolve().parents[1] / "schemas"
 
 
 def render() -> dict[str, str]:
     return {
-        f"{cls.SCHEMA}.v{cls.VERSION}.json": json.dumps(ssrobot.json_schema(cls), indent=2) + "\n"
-        for cls in ssrobot.record_types()
+        f"{cls.SCHEMA}.v{cls.VERSION}.json": json.dumps(json_schema(cls), indent=2) + "\n"
+        for cls in record_types()
     }
 
 

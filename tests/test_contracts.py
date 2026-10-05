@@ -52,11 +52,10 @@ from ssrobot import (
     StaleRevisionError,
     Timestamp,
     ValidationError,
-    check_command,
-    check_request,
     dumps,
     loads,
 )
+from ssrobot.validation import check_command, check_request
 from tests.conftest import ROOT
 from tests.support import KinematicRuntime, ObserveOnlyRuntime, bimanual_robot
 

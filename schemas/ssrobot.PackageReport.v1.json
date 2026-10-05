@@ -5,7 +5,7 @@
   "$defs": {
     "Candidate": {
       "type": "object",
-      "description": "Candidate(*, id: 'str', kind: 'CandidateKind', rule: 'str', reasons: 'tuple[str, ...]', joints: 'tuple[str, ...]' = (), frame: 'str | None' = None, base_frame: 'str | None' = None, tool_frame: 'str | None' = None, gripper: 'str | None' = None, ambiguity: 'str | None' = None, declared_group: 'str | None' = None, outcome: 'Outcome' = <Outcome.REPORTED: 'reported'>, name: 'str | None' = None, override: 'str | None' = None)",
+      "description": "Candidate(*, id: 'str', kind: 'CandidateKind', rule: 'str', reasons: 'tuple[str, ...]', joints: 'tuple[str, ...]' = (), frame: 'str | None' = None, base_frame: 'str | None' = None, tool_frame: 'str | None' = None, gripper: 'str | None' = None, ambiguity: 'str | None' = None, declared_group: 'str | None' = None, outcome: 'CandidateOutcome' = <CandidateOutcome.REPORTED: 'reported'>, name: 'str | None' = None, override: 'str | None' = None)",
       "properties": {
         "id": {
           "type": "string",
