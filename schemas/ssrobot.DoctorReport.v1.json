@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.DoctorReport v1",
+  "$ref": "#/$defs/DoctorReport",
+  "$defs": {
+    "DoctorCheck": {
+      "type": "object",
+      "description": "DoctorCheck(*, name: 'str', outcome: 'CheckOutcome', detail: 'str')",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Check name."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "not_applicable"
+          ],
+          "description": "Result."
+        },
+        "detail": {
+          "type": "string",
+          "description": "What was found, or how to fix it."
+        }
+      },
+      "required": [
+        "name",
+        "outcome",
+        "detail"
+      ],
+      "additionalProperties": false
+    },
+    "DoctorReport": {
+      "type": "object",
+      "description": "The result of ``ssrobot doctor``.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.DoctorReport"
+        },
+        "version": {
+          "const": 1
+        },
+        "robot": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Robot name, when the manifest could be read."
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DoctorCheck"
+          },
+          "description": "Every check, in order."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "robot",
+        "checks"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

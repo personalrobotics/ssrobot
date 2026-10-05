@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.AuthoringAnswers v1",
+  "$ref": "#/$defs/AuthoringAnswers",
+  "$defs": {
+    "AuthoringAnswers": {
+      "type": "object",
+      "description": "Answers to a draft's decisions, for non-interactive authoring.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.AuthoringAnswers"
+        },
+        "version": {
+          "const": 1
+        },
+        "robot": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Robot name."
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CandidateChoice"
+          },
+          "description": "Candidates to include, with the name of their entities."
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Candidates to leave out."
+        },
+        "end_effectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EndEffector"
+          },
+          "description": "End effectors to declare directly, e.g. a TCP the model has no leaf for."
+        },
+        "templates": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "commands",
+              "joint_channels"
+            ]
+          },
+          "description": "Templates to apply."
+        }
+      },
+      "required": [
+        "schema",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "CandidateChoice": {
+      "type": "object",
+      "description": "CandidateChoice(*, candidate: 'str', name: 'str')",
+      "properties": {
+        "candidate": {
+          "type": "string",
+          "description": "Candidate identifier from the inference report."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the entities the candidate becomes."
+        }
+      },
+      "required": [
+        "candidate",
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "EndEffector": {
+      "type": "object",
+      "description": "What a manipulator acts through. Without a gripper it is a tool, such as a fork.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "End-effector name, unique within the robot."
+        },
+        "frame": {
+          "type": "string",
+          "description": "Tool center point frame."
+        },
+        "gripper": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Gripper that actuates it, if any."
+        }
+      },
+      "required": [
+        "name",
+        "frame"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

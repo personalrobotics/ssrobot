@@ -257,21 +257,35 @@ def _resolve_end_effectors(loaded: LoadedModel, description: RobotDescription) -
     return diagnostics
 
 
-def load_package(directory: str | os.PathLike[str]) -> RobotPackage:
-    """Load the package rooted at ``directory``. Deterministic for identical content."""
-    root = Path(directory)
-    manifest_path = Resolver(root, "").resolve(MANIFEST)
+def parse_manifest(text: str) -> PackageManifest:
+    """Strictly decode the text of an ``ssrobot.toml``."""
     try:
-        data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+        data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         raise ValidationError("malformed_toml", str(e), path=MANIFEST) from None
     try:
-        manifest = decode(data, PackageManifest)
+        return decode(data, PackageManifest)
     except ValidationError as e:
         raise ValidationError(e.code, e.message, path=f"{MANIFEST}: {e.path}") from None
 
-    resolver = Resolver(root, manifest.robot)
-    files = [resolver.record("manifest", manifest_path)]
+
+def load_package(directory: str | os.PathLike[str]) -> RobotPackage:
+    """Load the package rooted at ``directory``. Deterministic for identical content."""
+    manifest_path = Resolver(directory, "").resolve(MANIFEST)
+    manifest = parse_manifest(manifest_path.read_text(encoding="utf-8"))
+    return assemble_package(directory, manifest, manifest_path)
+
+
+def assemble_package(
+    directory: str | os.PathLike[str], manifest: PackageManifest, manifest_path: Path | None = None
+) -> RobotPackage:
+    """Load a package from a manifest that may not be written yet.
+
+    Every file the manifest refers to is resolved and checked exactly as in
+    ``load_package``. Without ``manifest_path``, the report has no manifest entry.
+    """
+    resolver = Resolver(directory, manifest.robot)
+    files = [] if manifest_path is None else [resolver.record("manifest", manifest_path)]
     loaded: LoadedModel | None = None
     for entry in manifest.models:
         target = resolver.resolve(entry.path)

@@ -45,6 +45,8 @@ jobs:
       - run: uv venv --no-project clean
       - run: uv pip install --python clean dist/*.whl
       - run: uv pip list --python clean
+      - name: The installed wheel provides the ssrobot command
+        run: clean/bin/ssrobot --help
       - name: Dependency gate on the installed wheel
         run: clean/bin/python scripts/check_core_imports.py --installed
       - name: Conformance from the installed wheel

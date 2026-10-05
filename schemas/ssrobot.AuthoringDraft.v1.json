@@ -1,0 +1,366 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.AuthoringDraft v1",
+  "$ref": "#/$defs/AuthoringDraft",
+  "$defs": {
+    "AuthoringDraft": {
+      "type": "object",
+      "description": "Everything known about a package being authored, and what is still undecided.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.AuthoringDraft"
+        },
+        "version": {
+          "const": 1
+        },
+        "model": {
+          "$ref": "#/$defs/ModelEntry",
+          "description": "The canonical model, relative to the package root."
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Candidate"
+          },
+          "description": "Inference candidates and evidence."
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Decision"
+          },
+          "description": "Every decision, in a stable order."
+        },
+        "end_effectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EndEffector"
+          },
+          "description": "End effectors the author declared directly."
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Diagnostic"
+          },
+          "description": "Loader and inference findings."
+        },
+        "complete": {
+          "type": "boolean",
+          "description": "Whether every required decision is answered."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "model",
+        "candidates",
+        "decisions",
+        "complete"
+      ],
+      "additionalProperties": false
+    },
+    "Candidate": {
+      "type": "object",
+      "description": "Candidate(*, id: 'str', kind: 'CandidateKind', rule: 'str', reasons: 'tuple[str, ...]', joints: 'tuple[str, ...]' = (), frame: 'str | None' = None, base_frame: 'str | None' = None, tool_frame: 'str | None' = None, gripper: 'str | None' = None, ambiguity: 'str | None' = None, declared_group: 'str | None' = None, outcome: 'Outcome' = <Outcome.REPORTED: 'reported'>, name: 'str | None' = None, override: 'str | None' = None)",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable identifier; names in it are percent-encoded."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "chain",
+            "gripper",
+            "end_effector"
+          ],
+          "description": "What it would become."
+        },
+        "rule": {
+          "type": "string",
+          "description": "The inference rule that produced it."
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The structural evidence."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joints, base to tip."
+        },
+        "frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Gripper or TCP frame."
+        },
+        "base_frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Chain base frame."
+        },
+        "tool_frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Chain tool frame."
+        },
+        "gripper": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Gripper candidate an end-effector candidate sits below."
+        },
+        "ambiguity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Candidates sharing this set exclude one another."
+        },
+        "declared_group": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A declared group with this chain's joints, which adoption reuses."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "confirmed",
+            "adopted",
+            "declared",
+            "rejected",
+            "not_chosen",
+            "ambiguous",
+            "reported"
+          ],
+          "description": "What became of it."
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Name of the adopted entities."
+        },
+        "override": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The manifest override that decided it, if any."
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "rule",
+        "reasons"
+      ],
+      "additionalProperties": false
+    },
+    "Decision": {
+      "type": "object",
+      "description": "One question for the author, its proposed answer, and its answer so far.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "'robot', a candidate id, or 'template:<name>'."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "robot",
+            "candidate",
+            "template"
+          ],
+          "description": "What is being decided."
+        },
+        "question": {
+          "type": "string",
+          "description": "What to decide, in words."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Whether finalizing needs an explicit answer."
+        },
+        "resolved": {
+          "type": "boolean",
+          "description": "Whether it has an answer, explicit or default."
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The robot name, the entity name for an included candidate (None excludes it), or 'on'/'off' for a template."
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Candidates inference treats as alternatives to this one."
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "question",
+        "required",
+        "resolved"
+      ],
+      "additionalProperties": false
+    },
+    "Diagnostic": {
+      "type": "object",
+      "description": "Why something was rejected, failed, or modified.",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Stable machine-readable code."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable explanation."
+        },
+        "component": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Affected component, if any."
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "EndEffector": {
+      "type": "object",
+      "description": "What a manipulator acts through. Without a gripper it is a tool, such as a fork.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "End-effector name, unique within the robot."
+        },
+        "frame": {
+          "type": "string",
+          "description": "Tool center point frame."
+        },
+        "gripper": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Gripper that actuates it, if any."
+        }
+      },
+      "required": [
+        "name",
+        "frame"
+      ],
+      "additionalProperties": false
+    },
+    "ModelEntry": {
+      "type": "object",
+      "description": "ModelEntry(*, name: 'str', format: 'ModelFormat', path: 'str', srdf: 'str | None' = None)",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Model name, unique within the package."
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "ssrobot",
+            "mjcf",
+            "urdf"
+          ],
+          "description": "File format."
+        },
+        "path": {
+          "type": "string",
+          "description": "File path relative to the package root."
+        },
+        "srdf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SRDF semantics for a URDF model, relative to the root."
+        }
+      },
+      "required": [
+        "name",
+        "format",
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
