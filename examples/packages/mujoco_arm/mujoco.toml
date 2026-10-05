@@ -1,0 +1,10 @@
+# MujocoRuntime settings for arm.xml: which control values close and open the gripper.
+schema = "ssrobot.MujocoProfile"
+version = 1
+
+[[grippers]]
+gripper = "gripper"
+actuators = [
+  { actuator = "left_finger", closed = 0.0, open = 0.04 },
+  { actuator = "right_finger", closed = 0.0, open = 0.04 },
+]

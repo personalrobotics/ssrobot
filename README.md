@@ -28,10 +28,36 @@ or URDF model, and `ssrobot doctor` checks the package and, given `--wheel`, its
 wheel. A `RobotContext` over the reference `ReplayRuntime` exercises the observation,
 command, ownership, and trace contracts.
 
+### Simulation in MuJoCo
+
+With the `mujoco` extra (`uv sync` installs it for development), a package runs in
+MuJoCo behind the same `RobotContext`. This moves the example arm along a trajectory in
+simulated time:
+
+```python
+import ssrobot
+from ssrobot.mujoco import MujocoRuntime
+
+package = ssrobot.load_package("examples/packages/mujoco_arm")
+arm_q = ssrobot.ObservationRequest(channels=("arm_q",))
+with ssrobot.RobotContext(package.description, MujocoRuntime(package, keyframe="home")) as ctx:
+    start = ctx.observe(arm_q).readings[0].value
+    move = ssrobot.JointTrajectory(
+        group="arm",
+        joints=("shoulder", "elbow", "wrist"),
+        time_from_start_ns=(0, 1_000_000_000),
+        positions=(start, (1.0, -0.5, -0.5)),
+    )
+    status = ctx.run_until(ctx.submit(move), max_ticks=2_000)  # steps simulated time
+    print(status.state.value, ctx.observe(arm_q).readings[0].value)
+```
+
+[docs/mujoco.md](docs/mujoco.md) describes what it binds and how commands run.
+
 ## Target v0.1
 
-Simulation in MuJoCo (M2), planning (M3), and policies (M4) are not implemented yet.
-The planning-only, policy-only, and hybrid examples in
+Observations beyond joint state (M2), planning (M3), and policies (M4) are not
+implemented yet. The planning-only, policy-only, and hybrid examples in
 [docs/architecture.md](docs/architecture.md) show the target v0.1 behavior.
 
 ## Documentation

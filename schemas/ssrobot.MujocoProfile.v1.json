@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.MujocoProfile v1",
+  "$ref": "#/$defs/MujocoProfile",
+  "$defs": {
+    "GripperActuator": {
+      "type": "object",
+      "description": "One actuator of a gripper and its control values when closed and when open.",
+      "properties": {
+        "actuator": {
+          "type": "string",
+          "description": "MuJoCo actuator name."
+        },
+        "closed": {
+          "type": "number",
+          "description": "Control value for an opening of 0.",
+          "x-unit": "1"
+        },
+        "open": {
+          "type": "number",
+          "description": "Control value for an opening of 1.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "actuator",
+        "closed",
+        "open"
+      ],
+      "additionalProperties": false
+    },
+    "GripperProfile": {
+      "type": "object",
+      "description": "How a gripper's opening maps to its actuators.",
+      "properties": {
+        "gripper": {
+          "type": "string",
+          "description": "Gripper name in the description."
+        },
+        "actuators": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GripperActuator"
+          },
+          "description": "Its actuators; each is driven between its closed and open values."
+        }
+      },
+      "required": [
+        "gripper",
+        "actuators"
+      ],
+      "additionalProperties": false
+    },
+    "MujocoProfile": {
+      "type": "object",
+      "description": "MuJoCo-specific settings a robot package declares for ``MujocoRuntime``.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.MujocoProfile"
+        },
+        "version": {
+          "const": 1
+        },
+        "grippers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GripperProfile"
+          },
+          "description": "How each commandable gripper maps to its actuators."
+        }
+      },
+      "required": [
+        "schema",
+        "version"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
