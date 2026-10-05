@@ -10,18 +10,49 @@ following symlinks. See docs/packages.md.
 from __future__ import annotations
 
 import enum
-import hashlib
 import importlib.machinery
 import os
 import re
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from ssrobot._wire import Record, Value, decode, loads, meta
 from ssrobot.conventions import check_name
-from ssrobot.description import ROBOT_NAME, KinematicModel, RobotDescription, Semantics
+from ssrobot.description import (
+    ROBOT_NAME,
+    KinematicModel,
+    RobotDescription,
+    Semantics,
+    _at_or_below,
+)
 from ssrobot.errors import ValidationError
+from ssrobot.execution import Diagnostic
+from ssrobot.mjcf import load_mjcf
+from ssrobot.resources import (
+    LoadedModel,
+    ResolvedFile,
+    Resolver,
+    SourceItem,
+    check_relative,
+)
+from ssrobot.urdf import load_urdf
+
+__all__ = [
+    "MANIFEST",
+    "FileEntry",
+    "ModelEntry",
+    "ModelFormat",
+    "PackageManifest",
+    "PackageReport",
+    "ProfileEntry",
+    "ResolvedFile",
+    "Resolver",
+    "RobotPackage",
+    "check_relative",
+    "load_installed_package",
+    "load_package",
+]
 
 MANIFEST = "ssrobot.toml"
 
@@ -31,6 +62,10 @@ _MODULE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")
 class ModelFormat(enum.StrEnum):
     SSROBOT = "ssrobot"
     """A ``KinematicModel`` in ssrobot's JSON wire form."""
+    MJCF = "mjcf"
+    """MuJoCo XML; see ``ssrobot.mjcf`` for the supported subset."""
+    URDF = "urdf"
+    """URDF, optionally with SRDF semantics; see ``ssrobot.urdf``."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -38,10 +73,19 @@ class ModelEntry(Value):
     name: str = field(metadata=meta("Model name, unique within the package."))
     format: ModelFormat = field(metadata=meta("File format."))
     path: str = field(metadata=meta("File path relative to the package root."))
+    srdf: str | None = field(
+        default=None, metadata=meta("SRDF semantics for a URDF model, relative to the root.")
+    )
 
     def _validate(self) -> None:
         check_name(self.name)
         check_relative(self.path, path="path")
+        if self.srdf is not None:
+            if self.format is not ModelFormat.URDF:
+                raise ValidationError(
+                    "invalid_reference", "only URDF models take an SRDF", path="srdf"
+                )
+            check_relative(self.srdf, path="srdf")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -111,13 +155,6 @@ class PackageManifest(Record):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ResolvedFile(Value):
-    role: str = field(metadata=meta("What the file is, e.g. 'model:mjcf' or 'profile:sim'."))
-    path: str = field(metadata=meta("Resolved path relative to the package root."))
-    sha256: str = field(metadata=meta("SHA-256 of the content; for a directory, of its listing."))
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
 class PackageReport(Record):
     """What loading a package resolved: an inspection artifact."""
 
@@ -128,6 +165,14 @@ class PackageReport(Record):
     canonical_model: str = field(metadata=meta("Model the description was built from."))
     description: str = field(metadata=meta("Fingerprint of the loaded description."))
     files: tuple[ResolvedFile, ...] = field(metadata=meta("Every resolved file, by role."))
+    items: tuple[SourceItem, ...] = field(
+        default=(),
+        metadata=meta("What the canonical model declares that the description does not hold."),
+    )
+    diagnostics: tuple[Diagnostic, ...] = field(
+        default=(),
+        metadata=meta("Non-fatal findings: ignored constructs and unresolved ambiguity."),
+    )
 
 
 @dataclass(frozen=True)
@@ -138,6 +183,8 @@ class RobotPackage:
     manifest: PackageManifest
     description: RobotDescription
     files: tuple[ResolvedFile, ...]
+    items: tuple[SourceItem, ...] = ()
+    diagnostics: tuple[Diagnostic, ...] = ()
 
     def report(self) -> PackageReport:
         return PackageReport(
@@ -145,112 +192,60 @@ class RobotPackage:
             canonical_model=self.manifest.canonical_model,
             description=self.description.fingerprint(),
             files=self.files,
+            items=self.items,
+            diagnostics=self.diagnostics,
         )
 
 
-def check_relative(reference: str, *, path: str = "path") -> None:
-    """Require a plain relative POSIX path: no absolute, empty, '.', or '..' parts."""
-    parts = reference.split("/")
-    if (
-        not reference
-        or reference.startswith("/")
-        or "\\" in reference
-        or any(p in ("", ".", "..") for p in parts)
-    ):
-        raise ValidationError(
-            "invalid_path", f"{reference!r} is not a plain relative path", path=path
-        )
-
-
-class Resolver:
-    """Resolves package-relative paths, and ``package://<robot>/...`` URIs, inside a root."""
-
-    def __init__(self, root: str | os.PathLike[str], package: str) -> None:
-        try:
-            self.root = Path(root).resolve(strict=True)
-        except FileNotFoundError:
-            raise ValidationError("missing_file", f"{root} does not exist") from None
-        self.package = package
-
-    def resolve(self, reference: str, *, directory: bool = False) -> Path:
-        """The existing file (or directory) ``reference`` names, inside the root."""
-        relative = reference
-        if reference.startswith("package://"):
-            name, _, relative = reference.removeprefix("package://").partition("/")
-            if name != self.package:
-                raise ValidationError(
-                    "unknown_package",
-                    f"{reference!r} names package {name!r}, not {self.package!r}",
-                    path=reference,
-                )
-        check_relative(relative, path=reference)
-        target = (self.root / relative).resolve()
-        if not target.is_relative_to(self.root):
-            raise ValidationError(
-                "path_escape", f"{reference!r} resolves outside the package root", path=reference
-            )
-        if not target.exists():
-            raise ValidationError("missing_file", f"{reference!r} does not exist", path=reference)
-        if target.is_dir() != directory:
-            want = "a directory" if directory else "a file"
-            raise ValidationError("wrong_type", f"{reference!r} is not {want}", path=reference)
-        return target
-
-    def relative(self, target: Path) -> str:
-        return target.relative_to(self.root).as_posix()
-
-
-def _digest(target: Path) -> str:
-    """SHA-256 of a file that has already been resolved inside the root."""
-    return hashlib.sha256(target.read_bytes()).hexdigest()
-
-
-def _digest_directory(resolver: Resolver, directory: Path) -> str:
-    """SHA-256 over a contained directory's files, checking each before reading it.
-
-    File symlinks are followed if they resolve inside the root. Directory symlinks are
-    never traversed: one leading outside fails with ``path_escape``, any other with
-    ``unsupported_symlink``. Broken links fail with ``missing_file`` and special files,
-    such as FIFOs, with ``wrong_type``.
-    """
-    entries = []
-    for current, dirnames, filenames in os.walk(directory, followlinks=False):
-        here = Path(current)
-        for name in sorted(dirnames):
-            link = here / name
-            if link.is_symlink():
-                inside = link.resolve().is_relative_to(resolver.root)
-                raise ValidationError(
-                    "unsupported_symlink" if inside else "path_escape",
-                    "directory symlinks are not followed inside packages"
-                    if inside
-                    else "directory symlink resolves outside the package root",
-                    path=link.relative_to(resolver.root).as_posix(),
-                )
-        for name in filenames:
-            link = here / name
-            where = link.relative_to(resolver.root).as_posix()
-            target = link.resolve()
-            if not target.is_relative_to(resolver.root):
-                raise ValidationError(
-                    "path_escape", "file resolves outside the package root", path=where
-                )
-            if not target.exists():
-                raise ValidationError("missing_file", "broken symlink", path=where)
-            if not target.is_file():
-                raise ValidationError("wrong_type", "not a regular file", path=where)
-            entries.append(f"{link.relative_to(directory).as_posix()}\0{_digest(target)}\n")
-    listing = hashlib.sha256()
-    for entry in sorted(entries):
-        listing.update(entry.encode())
-    return listing.hexdigest()
-
-
-def _load_model(entry: ModelEntry, path: Path) -> KinematicModel:
+def _load_model(entry: ModelEntry, target: Path, resolver: Resolver) -> LoadedModel:
+    """Load a model. MJCF and URDF errors already name the file they arose in."""
+    if entry.format is ModelFormat.MJCF:
+        return load_mjcf(target, resolver)
+    if entry.format is ModelFormat.URDF:
+        srdf = None if entry.srdf is None else resolver.resolve(entry.srdf)
+        return load_urdf(target, resolver, srdf)
     try:
-        return loads(path.read_bytes(), KinematicModel)
+        return LoadedModel(model=loads(target.read_bytes(), KinematicModel))
     except ValidationError as e:
         raise ValidationError(e.code, e.message, path=f"{entry.path}: {e.path}") from None
+
+
+def _merge(overlay: Semantics, loaded: Semantics) -> Semantics:
+    """The package's semantics plus what the model file declared. A name declared in both
+    is a duplicate and fails when the description is composed."""
+    merged = {
+        f.name: (*getattr(overlay, f.name), *getattr(loaded, f.name)) for f in fields(Semantics)
+    }
+    return Semantics(**merged)
+
+
+def _resolve_end_effectors(loaded: LoadedModel, description: RobotDescription) -> list[Diagnostic]:
+    """Check each SRDF end effector against the package's declaration of the same name."""
+    parents = {f.name: f.parent for f in description.frames}
+    declared = {e.name: e for e in description.end_effectors}
+    diagnostics = []
+    for srdf in loaded.end_effectors:
+        effector = declared.get(srdf.name)
+        if effector is None:
+            diagnostics.append(
+                Diagnostic(
+                    code="ambiguous_end_effector",
+                    message=(
+                        f"SRDF end effector {srdf.name!r} attaches group {srdf.group!r} at "
+                        f"{srdf.parent_link!r} but names no tool center point; declare "
+                        f"[[semantics.end_effectors]] name = {srdf.name!r} with its TCP frame"
+                    ),
+                    component=srdf.group,
+                )
+            )
+        elif not _at_or_below(parents, srdf.parent_link, effector.frame):
+            raise ValidationError(
+                "invalid_chain",
+                f"end effector {srdf.name!r} is at {effector.frame!r}, but the SRDF attaches "
+                f"it at {srdf.parent_link!r}",
+                path=f"description: end_effectors.{srdf.name}",
+            )
+    return diagnostics
 
 
 def load_package(directory: str | os.PathLike[str]) -> RobotPackage:
@@ -267,43 +262,39 @@ def load_package(directory: str | os.PathLike[str]) -> RobotPackage:
         raise ValidationError(e.code, e.message, path=f"{MANIFEST}: {e.path}") from None
 
     resolver = Resolver(root, manifest.robot)
-    files = [ResolvedFile(role="manifest", path=MANIFEST, sha256=_digest(manifest_path))]
-    model: KinematicModel | None = None
+    files = [resolver.record("manifest", manifest_path)]
+    loaded: LoadedModel | None = None
     for entry in manifest.models:
         target = resolver.resolve(entry.path)
-        files.append(
-            ResolvedFile(
-                role=f"model:{entry.name}", path=resolver.relative(target), sha256=_digest(target)
-            )
-        )
+        files.append(resolver.record(f"model:{entry.name}", target))
         if entry.name == manifest.canonical_model:
-            model = _load_model(entry, target)
+            loaded = _load_model(entry, target, resolver)
+            files += [
+                ResolvedFile(role=f"model:{entry.name}:{f.role}", path=f.path, sha256=f.sha256)
+                for f in loaded.files
+            ]
+        elif entry.srdf is not None:
+            files.append(resolver.record(f"model:{entry.name}:srdf", resolver.resolve(entry.srdf)))
     for directory_ref in manifest.assets:
-        target = resolver.resolve(directory_ref, directory=True)
-        files.append(
-            ResolvedFile(
-                role="assets",
-                path=resolver.relative(target),
-                sha256=_digest_directory(resolver, target),
-            )
-        )
+        files.append(resolver.record("assets", resolver.resolve(directory_ref, directory=True)))
     for kind, entries in (("profile", manifest.profiles), ("calibration", manifest.calibrations)):
         for item in entries:
-            target = resolver.resolve(item.path)
-            files.append(
-                ResolvedFile(
-                    role=f"{kind}:{item.name}",
-                    path=resolver.relative(target),
-                    sha256=_digest(target),
-                )
-            )
-    assert model is not None  # the manifest guarantees the canonical model is listed
+            files.append(resolver.record(f"{kind}:{item.name}", resolver.resolve(item.path)))
+    assert loaded is not None  # the manifest guarantees the canonical model is listed
     try:
-        description = RobotDescription.compose(model, manifest.semantics, name=manifest.robot)
+        description = RobotDescription.compose(
+            loaded.model, _merge(manifest.semantics, loaded.semantics), name=manifest.robot
+        )
     except ValidationError as e:
         raise ValidationError(e.code, e.message, path=f"description: {e.path}") from None
+    diagnostics = (*loaded.diagnostics, *_resolve_end_effectors(loaded, description))
     return RobotPackage(
-        root=resolver.root, manifest=manifest, description=description, files=tuple(files)
+        root=resolver.root,
+        manifest=manifest,
+        description=description,
+        files=tuple(files),
+        items=loaded.items,
+        diagnostics=diagnostics,
     )
 
 

@@ -247,6 +247,40 @@ class NamedConfiguration(Value):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class CollisionAllowance(Value):
+    """A pair of frames whose geometry is never checked against each other by default.
+
+    This is a static self-collision exclusion, such as adjacent links or SRDF
+    ``disable_collisions``. Attachment-time and scoped allowances are runtime state, not
+    part of the description. The pair is unordered and stored canonically, with
+    ``frame_a < frame_b``; use ``between`` to build one from either order.
+    """
+
+    frame_a: str = field(metadata=meta("The lexicographically smaller frame."))
+    frame_b: str = field(metadata=meta("The lexicographically larger frame."))
+    reason: str | None = field(
+        default=None, metadata=meta("Opaque provenance, e.g. SRDF's 'Adjacent'.")
+    )
+
+    def _validate(self) -> None:
+        check_name(self.frame_a, path="frame_a")
+        check_name(self.frame_b, path="frame_b")
+        if not self.frame_a < self.frame_b:
+            raise ValidationError(
+                "noncanonical_pair",
+                "frames must be distinct and ordered frame_a < frame_b; use "
+                "CollisionAllowance.between",
+                path="frame_a",
+            )
+
+    @classmethod
+    def between(cls, a: str, b: str, reason: str | None = None) -> CollisionAllowance:
+        """The canonical allowance for the unordered pair ``{a, b}``."""
+        first, second = sorted((a, b))
+        return cls(frame_a=first, frame_b=second, reason=reason)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class CommandCapability(Value):
     """A command a component accepts."""
 
@@ -278,6 +312,9 @@ class Semantics(Value):
     sensors: tuple[Sensor, ...] = field(default=(), metadata=meta("Sensors."))
     configurations: tuple[NamedConfiguration, ...] = field(
         default=(), metadata=meta("Named configurations.")
+    )
+    collision_allowances: tuple[CollisionAllowance, ...] = field(
+        default=(), metadata=meta("Static default self-collision exclusions.")
     )
     commands: tuple[CommandCapability, ...] = field(
         default=(), metadata=meta("Declared command capabilities.")
@@ -340,6 +377,9 @@ class RobotDescription(Record):
     configurations: tuple[NamedConfiguration, ...] = field(
         default=(), metadata=meta("Named configurations.")
     )
+    collision_allowances: tuple[CollisionAllowance, ...] = field(
+        default=(), metadata=meta("Static default self-collision exclusions.")
+    )
     commands: tuple[CommandCapability, ...] = field(
         default=(), metadata=meta("Declared command capabilities.")
     )
@@ -363,6 +403,7 @@ class RobotDescription(Record):
             end_effectors=semantics.end_effectors,
             sensors=semantics.sensors,
             configurations=semantics.configurations,
+            collision_allowances=semantics.collision_allowances,
             commands=semantics.commands,
             channels=semantics.channels,
         )
@@ -381,6 +422,7 @@ class RobotDescription(Record):
         self._validate_joints(parents)
         self._validate_components()
         self._validate_semantics(parents)
+        self._validate_collision_allowances()
         self._validate_capabilities()
 
     def _components(self) -> list[JointGroup | Gripper | MobileBase]:
@@ -592,6 +634,13 @@ class RobotDescription(Record):
                 f"gripper {effector.gripper!r} is not mounted at or below the tool frame",
                 path=f"{path}.end_effector",
             )
+
+    def _validate_collision_allowances(self) -> None:
+        pairs = [(a.frame_a, a.frame_b) for a in self.collision_allowances]
+        _unique("collision_allowances", list(pairs))
+        for i, (a, b) in enumerate(pairs):
+            for end, frame in (("frame_a", a), ("frame_b", b)):
+                self._require_frame(frame, f"collision_allowances[{i}].{end}")
 
     def _validate_capabilities(self) -> None:
         components: dict[str, Value] = {c.name: c for c in self._components()}

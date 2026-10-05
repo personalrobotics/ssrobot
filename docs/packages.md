@@ -69,12 +69,111 @@ the canonical model when the description is composed.
 
 ### Model formats
 
-| Format | File |
-| --- | --- |
-| `ssrobot` | A `KinematicModel` in ssrobot's JSON wire form ([schema](../schemas/ssrobot.KinematicModel.v1.json)). |
+| Format | File | Extra |
+| --- | --- | --- |
+| `ssrobot` | A `KinematicModel` in ssrobot's JSON wire form ([schema](../schemas/ssrobot.KinematicModel.v1.json)) | |
+| `mjcf` | MuJoCo XML, usually the scene that includes the robot | |
+| `urdf` | URDF | Optional `srdf = "<path>"` with SRDF semantics |
 
-MJCF and URDF arrive with #8 and #9. They produce the same `KinematicModel`, so the
-semantic layer and everything after it are unchanged by the choice of format.
+Every format produces the same `KinematicModel`, plus whatever semantics the file
+carries. That model is merged with the manifest's `semantics`. A name declared in both
+is a duplicate and fails.
+
+**What loaders keep, and what they don't.** The description holds topology, joint
+limits, and semantics. Loaders resolve every file a model refers to: includes, meshes,
+textures, height fields, skins, and the SRDF. Each must stay inside the package, and
+each is listed with its hash in the report. Loaders also report, as `items`, what the
+model declares but the description deliberately does not hold: actuators,
+transmissions, tendons and equality constraints, mimic joints, MJCF sensors,
+keyframes, passive joints, and SRDF end-effector declarations. No dynamics, inertia,
+geometry, poses, or actuator parameters are copied. Those belong to runtimes, which
+read the source model themselves. Non-fatal findings, such as ignored elements or
+unresolved ambiguity, are reported as `diagnostics`.
+
+### MJCF
+
+The loader needs no MuJoCo. It applies MuJoCo's semantics to this subset:
+
+- `<include>` anywhere, as MuJoCo defines it:
+  - The path is relative to the main model file and must stay inside the package.
+  - Only the main file must be `<mujoco>`. An included file may use any top-level
+    wrapper, such as `<mujocoinclude>`, which is removed. It must contribute at least
+    one element (`empty_include`).
+  - Each file may be included at most once in the whole model, however the path is
+    spelled or symlinked (`duplicate_include`). Including a file from within itself
+    fails with `include_cycle`.
+- `<compiler>`: `angle`, which defaults to `degree`; `autolimits`, which defaults to
+  `true`; and `meshdir`, `texturedir`, and `assetdir`. When files merge, later
+  attributes win.
+- `<default>` classes, nested and inherited. They apply through an element's `class`,
+  or else the nearest enclosing `childclass` on a body or `<frame>`. Every `class` and
+  `childclass` is checked where it appears, even if nothing uses it, and an unknown
+  class fails with `unknown_reference`.
+- Bodies, sites, and cameras become frames under `world`.
+  - `<frame>` elements are transparent.
+  - An unnamed body without joints is merged into its parent, with a diagnostic.
+  - An unnamed site or camera is ignored, with a diagnostic.
+  - Names must be unique across bodies, sites, and cameras.
+- At most one `hinge` or `slide` joint per body. A limited hinge is revolute, an
+  unlimited hinge continuous, and a limited slide prismatic. Hinge ranges convert from
+  degrees when `angle` is `degree`. A `range` without `limited="true"` while
+  `autolimits` is false fails with `ambiguous_limits`.
+- `<contact><exclude body1 body2>` becomes a collision allowance with reason
+  `mjcf contact exclude`. Both names must be MJCF bodies, `world` included; sites and
+  cameras are frames but not bodies (`unknown_reference`).
+
+These kinematic constructs fail with `unsupported_construct`, never silently:
+
+- ball and free joints;
+- several joints in one body;
+- unbounded slides;
+- joints in unnamed bodies;
+- `<attach>`, `<replicate>`, `<composite>`, and `<flexcomp>`;
+- `<model>` assets.
+
+Joint references in actuators, tendons, and equality constraints must name existing
+joints.
+
+### URDF and SRDF
+
+The URDF loader works without ROS.
+
+- **Frames.** Links become frames, rooted at the one link no joint moves. Fixed
+  joints only attach frames.
+- **Joints.** Revolute, continuous, and prismatic joints become joints. Revolute and
+  prismatic joints need `<limit lower upper>`. `velocity` and `effort` are optional
+  but must be positive when given (`invalid_limits`). Floating and planar joints fail
+  with `unsupported_construct`.
+- **Reported.** Mimic joints and transmissions are reported as items, and their joints
+  must exist.
+- **Meshes and textures.** Visual and collision meshes, and the textures of top-level
+  and inline materials, resolve relative to the URDF file, or as
+  `package://<robot>/...` for this package only. Each file is hashed and reported once
+  per role. Image and mesh contents are never interpreted.
+
+The SRDF must name the same robot as the URDF (`srdf_mismatch`). Group names must be
+unique (`duplicate_name`), since a later group never silently replaces an earlier one.
+Every passive joint must name a URDF joint (`unknown_reference`). Its elements map to
+neutral records:
+
+| SRDF | Becomes |
+| --- | --- |
+| `group` | A `JointGroup`. A `chain` gives the movable joints from base to tip, a `joint` that movable joint (a fixed one adds nothing), and a `link` the movable joint that moves it. A group made only of non-composite subgroups is composite; any other mixture is flattened in order, with a diagnostic. A group with no movable joints is skipped, with a diagnostic. |
+| `group_state` | A `NamedConfiguration`; every joint of the group needs a value. |
+| `disable_collisions` | A `CollisionAllowance`, keeping `reason`. |
+| fixed `virtual_joint` | A parent frame above the root link. Other virtual joint types are ignored, with a diagnostic. |
+| `end_effector` | Nothing on its own; see below. |
+| `passive_joint` | An item. |
+
+**End effectors.** SRDF's `end_effector` attaches a component group at a
+`parent_link`. When it names a `parent_group`, that group must differ from the
+component group (`invalid_group`). It must also contain `parent_link`, meaning one of
+its joints moves the link, directly or through fixed joints below the moved link
+(`invalid_chain`). That link is an attachment point, not a tool center point, so it never
+becomes `EndEffector.frame`. If the package declares an end effector of the same name,
+its frame must be at or below `parent_link` (`invalid_chain` otherwise). If it does
+not, the package report carries an `ambiguous_end_effector` diagnostic naming the group
+and asking for the TCP frame. No end effector is created.
 
 ## Paths
 

@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<robot name="urdf_arm">
+  <virtual_joint name="world_mount" type="fixed" parent_frame="world" child_link="base_link"/>
+  <group name="arm">
+    <chain base_link="base_link" tip_link="flange"/>
+  </group>
+  <group name="hand">
+    <joint name="left_finger_joint"/>
+    <joint name="right_finger_joint"/>
+  </group>
+  <group name="shoulder">
+    <joint name="j1"/>
+    <joint name="j2"/>
+  </group>
+  <group name="wrist">
+    <link name="link4"/>
+  </group>
+  <group name="arm_and_hand">
+    <group name="arm"/>
+    <group name="hand"/>
+  </group>
+  <group_state name="home" group="arm">
+    <joint name="j1" value="0"/>
+    <joint name="j2" value="0.5"/>
+    <joint name="j3" value="-0.5"/>
+    <joint name="j4" value="0"/>
+  </group_state>
+  <group_state name="open" group="hand">
+    <joint name="left_finger_joint" value="0.04"/>
+    <joint name="right_finger_joint" value="0.04"/>
+  </group_state>
+  <end_effector name="gripper" parent_link="flange" group="hand" parent_group="arm"/>
+  <disable_collisions link1="base_link" link2="link1" reason="Adjacent"/>
+  <disable_collisions link1="link2" link2="link1" reason="Adjacent"/>
+  <disable_collisions link1="left_finger" link2="right_finger" reason="Never"/>
+</robot>

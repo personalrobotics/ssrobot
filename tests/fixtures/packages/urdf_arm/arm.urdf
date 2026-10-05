@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<!-- A four-joint arm with a two-finger hand, written for ssrobot's URDF and SRDF tests. -->
+<robot name="urdf_arm">
+  <material name="checker"><texture filename="textures/checker.ppm"/></material>
+  <link name="base_link">
+    <visual>
+      <geometry><mesh filename="package://urdf_arm/meshes/base.stl"/></geometry>
+      <material name="base_checker"><texture filename="package://urdf_arm/textures/checker.ppm"/></material>
+    </visual>
+    <collision><geometry><mesh filename="package://urdf_arm/meshes/base.stl"/></geometry></collision>
+  </link>
+  <link name="link1">
+    <visual><geometry><mesh filename="meshes/link.stl"/></geometry></visual>
+  </link>
+  <link name="link2"><visual><geometry><mesh filename="meshes/link.stl"/></geometry></visual></link>
+  <link name="link3"><visual><geometry><mesh filename="meshes/link.stl"/></geometry></visual></link>
+  <link name="link4"/>
+  <link name="flange"/>
+  <link name="hand"/>
+  <link name="left_finger"><visual><geometry><mesh filename="meshes/finger.stl"/></geometry></visual></link>
+  <link name="right_finger"><visual><geometry><mesh filename="meshes/finger.stl"/></geometry></visual></link>
+  <link name="tcp"/>
+
+  <joint name="j1" type="revolute">
+    <parent link="base_link"/><child link="link1"/>
+    <axis xyz="0 0 1"/><limit lower="-3.0" upper="3.0" velocity="2.0" effort="50"/>
+  </joint>
+  <joint name="j2" type="revolute">
+    <parent link="link1"/><child link="link2"/>
+    <axis xyz="0 1 0"/><limit lower="-2.0" upper="2.0" velocity="2.0" effort="50"/>
+  </joint>
+  <joint name="j3" type="revolute">
+    <parent link="link2"/><child link="link3"/>
+    <axis xyz="0 1 0"/><limit lower="-2.5" upper="2.5" velocity="2.5" effort="30"/>
+  </joint>
+  <joint name="j4" type="continuous">
+    <parent link="link3"/><child link="link4"/>
+    <axis xyz="0 0 1"/><limit velocity="3.0" effort="10"/>
+  </joint>
+  <joint name="flange_mount" type="fixed"><parent link="link4"/><child link="flange"/></joint>
+  <joint name="hand_mount" type="fixed"><parent link="flange"/><child link="hand"/></joint>
+  <joint name="left_finger_joint" type="prismatic">
+    <parent link="hand"/><child link="left_finger"/>
+    <axis xyz="0 1 0"/><limit lower="0" upper="0.04" velocity="0.1" effort="20"/>
+  </joint>
+  <joint name="right_finger_joint" type="prismatic">
+    <parent link="hand"/><child link="right_finger"/>
+    <axis xyz="0 -1 0"/><limit lower="0" upper="0.04" velocity="0.1" effort="20"/>
+    <mimic joint="left_finger_joint" multiplier="1" offset="0"/>
+  </joint>
+  <joint name="tcp_mount" type="fixed"><parent link="hand"/><child link="tcp"/></joint>
+
+  <transmission name="j1_transmission">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="j1"><hardwareInterface>PositionJointInterface</hardwareInterface></joint>
+    <actuator name="j1_motor"><mechanicalReduction>100</mechanicalReduction></actuator>
+  </transmission>
+</robot>

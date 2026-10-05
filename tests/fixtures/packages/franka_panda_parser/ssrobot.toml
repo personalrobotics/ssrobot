@@ -1,0 +1,39 @@
+# A parser fixture of the MuJoCo Menagerie Franka Panda (see menagerie/PROVENANCE.md); its
+# meshes are empty placeholders, so it is not runnable in MuJoCo. Loaded from its MJCF
+# scene. The kinematics come from MJCF; the semantics below are declared here, because
+# MJCF has none.
+schema = "ssrobot.package"
+version = 1
+robot = "franka_panda"
+canonical_model = "mjcf"
+
+[[models]]
+name = "mjcf"
+format = "mjcf"
+path = "menagerie/scene.xml"
+
+[[semantics.groups]]
+name = "arm"
+joints = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7"]
+
+[[semantics.grippers]]
+name = "gripper"
+frame = "hand"
+joints = ["finger_joint1", "finger_joint2"]
+
+[[semantics.end_effectors]]
+name = "hand"
+frame = "hand"  # the MJCF declares no TCP site; the hand frame stands in
+gripper = "gripper"
+
+[[semantics.manipulators]]
+name = "arm"
+group = "arm"
+base_frame = "link0"
+tool_frame = "link7"
+end_effector = "hand"
+
+[[semantics.configurations]]
+name = "home"  # the MJCF keyframe of the same name
+group = "arm"
+positions = [0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853]
