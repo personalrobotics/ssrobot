@@ -16,20 +16,32 @@ rather than a source checkout. With --report it writes the import report as JSON
 distribution's requirements, every non-standard-library module importing the package
 loaded, its submodules, and its top-level public names. These are the dependency and
 public-name measures of the milestone consolidation gate in docs/architecture.md.
+
+It also fails unless the public API is closed: every package type that a public name
+accepts, returns, or exposes as a field or property, transitively, must itself be
+public. Public means a top-level name, or a name defined in a documented public module
+(``PUBLIC_MODULES``).
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import dataclasses
 import importlib
 import importlib.metadata
+import inspect
 import json
 import pkgutil
 import re
 import sys
+import typing
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
+
+# Modules whose own definitions are public without a top-level name.
+PUBLIC_MODULES = frozenset({"ssrobot.conformance"})
 
 PROHIBITED = frozenset(
     {
@@ -103,6 +115,69 @@ def source_backends(package: str) -> list[str]:
     return found
 
 
+def _hints(obj: Any) -> list[Any]:
+    try:
+        return list(typing.get_type_hints(obj).values())
+    except (NameError, TypeError):
+        return []
+
+
+def _types(hint: Any) -> Iterator[type]:
+    if isinstance(hint, type):
+        yield hint
+    for arg in typing.get_args(hint):
+        yield from _types(arg)
+
+
+def _signature_hints(obj: Any) -> list[Any]:
+    """Annotations of a function, or of a class's fields, public methods, and properties."""
+    if not inspect.isclass(obj):
+        return _hints(obj) if callable(obj) else []
+    hints = _hints(obj) if dataclasses.is_dataclass(obj) else []
+    for name, member in vars(obj).items():
+        if name.startswith("_") and name != "__init__":
+            continue
+        if isinstance(member, property):
+            hints += _hints(member.fget)
+        elif isinstance(member, (staticmethod, classmethod)):
+            hints += _hints(member.__func__)
+        elif inspect.isfunction(member):
+            hints += _hints(member)
+    return hints
+
+
+def unexported_types(package: str) -> list[str]:
+    """``Type (reached from Name)`` for each non-public package type the API exposes."""
+    root = importlib.import_module(package)
+    names = getattr(root, "__all__", [])
+    public = {id(getattr(root, name)) for name in names}
+    start = [getattr(root, name) for name in names]
+    for module in PUBLIC_MODULES:
+        loaded = importlib.import_module(module)
+        start += [
+            v
+            for k, v in vars(loaded).items()
+            if not k.startswith("_") and getattr(v, "__module__", None) == module
+        ]
+        public |= {id(v) for v in start}
+    found: dict[str, str] = {}
+    seen: set[int] = set()
+    queue = [(obj, getattr(obj, "__qualname__", repr(obj))) for obj in start]
+    while queue:
+        obj, origin = queue.pop()
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        for hint in _signature_hints(obj):
+            for t in _types(hint):
+                if not t.__module__.startswith(f"{package}.") and t.__module__ != package:
+                    continue
+                if id(t) not in public:
+                    found.setdefault(f"{t.__module__}.{t.__qualname__}", origin)
+                queue.append((t, origin))
+    return sorted(f"{name} (reached from {origin})" for name, origin in found.items())
+
+
 def required_backends(distribution: str) -> list[str]:
     """Prohibited unconditional requirements; extras may depend on anything."""
     try:
@@ -133,6 +208,7 @@ def main() -> int:
     failures = [f"imports prohibited module {m!r}" for m in modules]
     failures += [f"source {s}" for s in source_backends(args.package)]
     failures += [f"requires prohibited distribution {r!r}" for r in requirements]
+    failures += [f"exposes non-public type {t}" for t in unexported_types(args.package)]
     if args.installed and "site-packages" not in location:
         failures.append("was not imported from an installed distribution")
     if args.report is not None:
@@ -150,8 +226,8 @@ def main() -> int:
                 loaded - set(sys.stdlib_module_names) - {args.package}
             ),
             "submodules": submodules,
-            "public_name_count": len(root.__all__),
-            "public_names": sorted(root.__all__),
+            "public_name_count": len(getattr(root, "__all__", [])),
+            "public_names": sorted(getattr(root, "__all__", [])),
             "failures": failures,
         }
         args.report.parent.mkdir(parents=True, exist_ok=True)
@@ -159,7 +235,7 @@ def main() -> int:
     for failure in failures:
         print(f"FAIL: {args.package} {failure}", file=sys.stderr)
     if not failures:
-        print("OK: no prohibited backend imports or requirements")
+        print("OK: no prohibited backend imports or requirements, and the public API is closed")
     return 1 if failures else 0
 
 

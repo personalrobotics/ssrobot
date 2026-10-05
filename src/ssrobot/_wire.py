@@ -330,7 +330,7 @@ def _encode_any(v: Any, assets: AssetStore | None) -> Any:
     return v
 
 
-_S = TypeVar("_S", bound=Struct)
+_S = TypeVar("_S", bound=Value | Record)
 
 
 def decode(data: Any, cls: type[_S], assets: AssetStore | None = None) -> _S:
@@ -465,7 +465,7 @@ def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def dumps(obj: Struct, assets: AssetStore | None = None) -> str:
+def dumps(obj: Value | Record, assets: AssetStore | None = None) -> str:
     """Encode a value as one line of JSON."""
     return json.dumps(encode(obj, assets), allow_nan=False, separators=(",", ":"))
 

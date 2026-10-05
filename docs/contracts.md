@@ -23,18 +23,23 @@ description it is opened with. Only `RobotContext` is user-facing.
 
 ### Public surface
 
-The public interface is the names in `ssrobot.__all__`, the
-`ssrobot.conformance.run_conformance` scenario, and the `ssrobot` command (`init`,
-`inspect`, `doctor`) with the records its JSON options read and write. Every other
-module and name is implementation. It can be imported, but this contract does not
-cover it. The top-level names, by who uses them:
+The public interface consists of the names in `ssrobot.__all__`; the
+`ssrobot.conformance` module (`run_conformance` and its `ConformanceReport`,
+`ConformanceCheck`, `CheckOutcome`, and `FaultInjector`); and the `ssrobot` command
+(`init`, `inspect`, `doctor`), with the records its JSON options read and write. Every
+other module and name is implementation. It can be imported, but this contract does not
+cover it. The interface is closed: every type that a public name accepts, returns, or
+exposes as a field or property is itself public, so no public use needs an
+implementation import. The dependency gate checks this. The top-level names, by who
+uses them:
 
 | Who | Names |
 | --- | --- |
-| Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
+| Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `ResolvedFile`, `SourceItem`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
+| Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `Outcome` |
 | Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode` |
 | Runtimes, and those who write them | `Runtime`, `RuntimeInfo`, `RuntimeUpdate`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
-| Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `dumps`, `loads` |
+| Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
 | Error handling | `SsrobotError`, `ValidationError`, `CapabilityError`, `OwnershipError`, `StaleRevisionError`, `LifecycleError` |
 
 A new top-level name must pass the milestone consolidation gate in
@@ -525,7 +530,7 @@ uv run python -m ssrobot.conformance --out out/  # trace.jsonl, conformance-repo
 uv run python scripts/check_core_imports.py      # core dependency gate
 ```
 
-The dependency gate makes three checks:
+The dependency gate makes four checks:
 
 - **Runtime:** importing `ssrobot` and every submodule must not load a prohibited
   module.
@@ -533,6 +538,8 @@ The dependency gate makes three checks:
   `importlib.import_module("...")`, or `__import__("...")` statement, anywhere,
   including inside functions. Names built at run time are not detected.
 - **Metadata:** the distribution must have no prohibited unconditional requirement.
+- **Closure:** every package type reachable from a public name, through parameters,
+  return values, fields, and properties, must itself be public (see *Public surface*).
 
 CI also builds the wheel, installs only that wheel in an empty environment, and runs
 the dependency gate with `--installed` and the conformance scenario from it. That

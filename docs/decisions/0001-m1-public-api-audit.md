@@ -21,28 +21,47 @@ consumer: ssrobot's own modules, repository tooling, or a workflow outside ssrob
 That means loading or reading a robot, running a session, writing a runtime, or reading
 a trace.
 
-A name stays top-level only if a workflow outside ssrobot must name it. A name used
-only by ssrobot's own modules or by repository tooling leaves the top level. It remains
-importable from its module, so no behavior changes.
+Two rules decide the top level:
+
+- **Needed outside.** A name used only by ssrobot's own modules or by repository
+  tooling leaves the top level. It remains importable from its module, so no behavior
+  changes.
+- **Closed.** Every type that a public name accepts, returns, or exposes as a field or
+  property, transitively, must itself be public. A returned value's type is part of the
+  contract even when users only read it. The dependency gate enforces this rule, so it
+  cannot regress unnoticed (#84).
 
 ## Decisions
 
-**Top-level names: 86 → 71.** These 15 left the top level:
+**Top-level names: 86 → 87.** The surface is no larger in practice: 11 internal names
+left, and 12 types the public API already exposed, which the old list omitted, joined.
+
+These 11 left the top level, because only ssrobot's own modules or tooling use them:
 
 | Name | Only consumers | Now in |
 | --- | --- | --- |
 | `check_command`, `check_request`, `check_observation`, `check_applied` | `RobotContext`, which validates both directions itself | `ssrobot.validation` |
 | `json_schema`, `record_types` | `scripts/generate_schemas.py` | `ssrobot._wire` |
 | `encode`, `decode` | ssrobot's loaders and CLI; users have `dumps` and `loads` | `ssrobot._wire` |
-| `Value` | Base class of ssrobot's own records | `ssrobot._wire` |
-| `AssetStore` | `JsonlTrace` and `read_trace` | `ssrobot._wire` |
-| `InstantCommand` | A type alias inside commands, execution, replay, and validation | `ssrobot.commands` |
-| `RuntimeEvent` | A type alias inside `RuntimeUpdate` | `ssrobot.runtime` |
+| `InstantCommand` | A type alias inside commands, execution, replay, and validation; its members are public | `ssrobot.commands` |
+| `RuntimeEvent` | A type alias inside `RuntimeUpdate`; its members are public | `ssrobot.runtime` |
 | `TraceSink` | A type alias for `RobotContext(sinks=...)`; any callable taking a `TraceRecord` works | `ssrobot.trace` |
-| `SourceItem` | A field type of `PackageReport`; read, never constructed | `ssrobot.resources` |
-| `PackageManifest` | The authoring internals behind `ssrobot init` | `ssrobot.package` |
 
-The remaining 71 names, grouped by who uses them, are listed in *Public surface* in
+These 12 joined, because public results already expose them:
+
+| Names | Exposed by |
+| --- | --- |
+| `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice` | `RobotPackage.manifest` (a `PackageManifest`), and `PackageReport.model_format` |
+| `ResolvedFile` | `RobotPackage.files` and `PackageReport.files` |
+| `InferenceReport`, `Candidate`, `CandidateKind`, `Outcome` | `RobotPackage.inference` and `PackageReport.inference` |
+
+`AssetStore`, `Value`, `PackageManifest`, and `SourceItem` stay top-level for the same
+reason. `dumps` and `loads` take an `AssetStore`, which records containing an
+`ArrayValue` need, such as image observations. `Value` and `Record` together bound what
+`dumps` and `loads` accept. `RobotPackage.manifest` is a `PackageManifest`, and
+`RobotPackage.items` and `PackageReport.items` hold `SourceItem` values.
+
+The 87 names, grouped by who uses them, are listed in *Public surface* in
 [contracts.md](../contracts.md), which now owns that list.
 
 **Kept, with two consumers or a scheduled near-term one:**
@@ -56,15 +75,15 @@ The remaining 71 names, grouped by who uses them, are listed in *Public surface*
   `ReplayRuntime` and by the test runtimes in `tests/support.py`. `MujocoRuntime` (M2)
   and `Ros2Runtime` (M6) are its scheduled consumers.
 
-**Kept for planned robots:** `MobileBase` and `BaseTwistCommand` have no consumer yet
-outside ssrobot's reference runtime, because neither Geodude nor ADA has a mobile base.
-They stay because more robots with mobile bases are planned soon (#82). The first such
-robot package is their consumer. If none has arrived by the next consolidation gate,
-that gate removes them. Mobile-base inference (#71) stays deferred: such robots should
-declare their base explicitly.
+**Kept for Opendubs:** `MobileBase` and `BaseTwistCommand` have no consumer yet outside
+ssrobot's reference runtime, because neither Geodude nor ADA has a mobile base (#82).
+They stay because Opendubs, which has two OpenArm manipulators, a pan-tilt head, and a
+mecanum base, is their first external consumer, in M2 (#85). If #85 has not used them by
+the M2 consolidation gate, that gate removes them. Mobile-base inference (#71) stays
+deferred: Opendubs declares its base explicitly.
 
-**Public modules.** Only `ssrobot.conformance.run_conformance` and the `ssrobot`
-command are public beyond the top level. `ssrobot.authoring` and `ssrobot.doctor` are
+**Public modules.** Only `ssrobot.conformance` (`run_conformance` and its report types)
+and the `ssrobot` command are public beyond the top level. `ssrobot.authoring` and `ssrobot.doctor` are
 reached through the command and its JSON records. The remaining modules are
 implementation: loaders, inference, resources, validation, and the wire codec.
 
@@ -90,7 +109,7 @@ compare against:
 | Measure | M1 |
 | --- | --- |
 | Concepts an ordinary user must understand | 6: robot package, `RobotDescription`, `RobotContext`, `Runtime`, `Execution`, trace |
-| Top-level public names | 71 |
+| Top-level public names | 87 |
 | Runtime dependencies, any workflow | 0 |
 | Reference task: load and inspect Geodude | 1 command, or 3 lines of Python |
 | Reference manifests users maintain | Geodude 75 lines, ADA 32 lines of `ssrobot.toml` |
@@ -113,4 +132,5 @@ clean/bin/python scripts/check_core_imports.py --installed --report imports.json
 
 `imports.json` is deterministic for a given wheel and Python version. It lists
 `public_names` and `public_name_count`, `requirements`,
-`third_party_modules_loaded`, and `submodules`.
+`third_party_modules_loaded`, and `submodules`, plus any `failures`, including
+non-public types the API exposes.

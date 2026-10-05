@@ -21,6 +21,7 @@ from ssrobot import (
     ActionChunk,
     AppliedCommand,
     ArrayValue,
+    AssetStore,
     CapabilityError,
     ClockMode,
     Diagnostic,
@@ -54,7 +55,6 @@ from ssrobot import (
     dumps,
     loads,
 )
-from ssrobot._wire import AssetStore
 from ssrobot.validation import check_command, check_request
 from tests.conftest import ROOT
 from tests.support import KinematicRuntime, ObserveOnlyRuntime, bimanual_robot
