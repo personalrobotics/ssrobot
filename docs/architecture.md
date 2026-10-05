@@ -68,9 +68,9 @@ import ssrobot
 from ssrobot.mujoco import MujocoRuntime            # `mujoco` extra
 from ssrobot.planning import CBiRRT                 # `planning` extra
 
-robot = ssrobot.load_package("geodude")             # immutable RobotDescription
+robot = ssrobot.load_installed_package("geodude_assets").description  # RobotDescription
 with ssrobot.RobotContext(robot, MujocoRuntime(scene="tabletop.xml")) as ctx:
-    arm = ctx.manipulator("right")                  # explicit; there is no active arm
+    arm = ctx.manipulator("right_arm")              # explicit; there is no active arm
     plan = arm.plan_to_end_effector_pose(goal, planner=CBiRRT(seed=0))
     execution = ctx.submit(plan.trajectory)         # validated and scheduled, not run
     result = ctx.run_until(execution)               # steps the manual clock to a terminal state
@@ -97,7 +97,7 @@ No planner is installed or imported.
 ```python
 with ssrobot.RobotContext(robot, MujocoRuntime(scene="tabletop.xml")) as ctx:
     ctx.add_sink(recorder)                          # optional LeRobotDataset recorder
-    arm = ctx.manipulator("right")
+    arm = ctx.manipulator("right_arm")
     approach = arm.plan_to_tsr(pregrasp, planner=CBiRRT(seed=0))
     ctx.run_until(ctx.submit(approach.trajectory))  # planner-produced commands own the arm…
     PolicyRunner(ctx, grasp_policy).run_episode()   # …then ownership passes to the policy
@@ -211,9 +211,11 @@ Rules:
   when time advances: by `step()` on manual runtimes, by external updates otherwise.
   `run_until` is a blocking convenience over either. Both clock modes share one
   terminal-state vocabulary.
-- **Snapshots.** `SceneSnapshot` is immutable data. Runtimes materialize it as a
-  neutral, isolated `PlanningScene`. The MuJoCo provider reuses sscbirrt's native
-  scene, snapshot, and attachment-aware checker rather than duplicating them.
+- **Snapshots (M2).** `SceneSnapshot` is immutable data. Snapshots and attachments
+  carry a scene revision: a monotonic integer per context that increments on every
+  scene change. Runtimes materialize a snapshot as a neutral, isolated
+  `PlanningScene`. The MuJoCo provider reuses sscbirrt's native scene, snapshot, and
+  attachment-aware checker rather than duplicating them.
 - **Records.** Public values are frozen, slotted, keyword-only stdlib dataclasses with
   strict hand-written ingress validation; no Pydantic or msgspec in core. Checked-in
   JSON Schema describes their wire form and CI rejects drift. Every wire record
@@ -264,13 +266,15 @@ until it has:
   journey.
 - Every legacy migration identifies the code and configuration it retires.
 
-The gate measures weight by what users carry, not by line count, which rewards
-compressed code over simple design:
+The gate measures weight by what users carry. It does not use the line count of
+ssrobot's own implementation as a proxy for complexity, because that rewards
+compressed code over simple design. It measures:
 
 - the number of concepts an ordinary user must understand;
 - the number of top-level public names;
 - the dependencies installed for each workflow;
-- the lines of configuration and application code the reference task needs;
+- the lines of configuration and application code a user writes for the reference
+  task, which is what users carry, unlike ssrobot's implementation lines;
 - the legacy code deleted after migration.
 
 ## Non-goals

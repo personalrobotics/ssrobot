@@ -36,8 +36,12 @@ them separately, and `RobotDescription.compose(model, semantics)` joins them.
   Each joint names the `parent` frame it is mounted on and the `child` frame it moves,
   whose parent must be `parent`. At most one joint moves any frame. Model loaders
   produce this layer.
-- **Semantic layer:** a `Semantics` value with the entities below. Entities are
-  declared only by a package or a loader, never guessed.
+- **Semantic layer:** a `Semantics` value with the entities below. Entities come from
+  explicit package declarations, from semantics a loader reads in the model (SRDF
+  groups and group states, MJCF contact excludes), and, only when a package opts in,
+  from conservative structural inference that [packages.md](packages.md) specifies.
+  Inference adds only unambiguous entities and never adds command capabilities or
+  channels, so an inferred entity is not commandable until the package declares one.
 
 | Entity | Meaning | Validated |
 | --- | --- | --- |
@@ -327,8 +331,6 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 
 - **Description revision.** The description fingerprint. A runtime reports the
   fingerprint it bound, and a mismatch at open fails with `stale_description`.
-- **Scene revision.** A monotonic integer per context that increments on every scene
-  change. Snapshots and attachments carry it from #17 and #18 onward.
 
 ### Wire form
 

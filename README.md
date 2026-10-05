@@ -24,9 +24,9 @@ for arm in robot.manipulators:
 
 `ssrobot.load_installed_package("geodude_assets")` loads an installed package the same
 way, without running its code. `ssrobot init` writes a package's manifest from an MJCF
-or URDF model, and `ssrobot doctor` checks the package and its wheel. A
-`RobotContext` over the reference `ReplayRuntime` exercises the observation, command,
-ownership, and trace contracts.
+or URDF model, and `ssrobot doctor` checks the package and, given `--wheel`, its built
+wheel. A `RobotContext` over the reference `ReplayRuntime` exercises the observation,
+command, ownership, and trace contracts.
 
 ## Target v0.1
 
