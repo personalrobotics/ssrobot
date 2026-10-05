@@ -56,9 +56,12 @@ The remaining 71 names, grouped by who uses them, are listed in *Public surface*
   `ReplayRuntime` and by the test runtimes in `tests/support.py`. `MujocoRuntime` (M2)
   and `Ros2Runtime` (M6) are its scheduled consumers.
 
-**Not justified yet:** `MobileBase` and `BaseTwistCommand` have no consumer outside
-ssrobot's reference runtime and no scheduled one. Neither reference robot has a mobile
-base. #82 decides whether to remove them before M2.
+**Kept for planned robots:** `MobileBase` and `BaseTwistCommand` have no consumer yet
+outside ssrobot's reference runtime, because neither Geodude nor ADA has a mobile base.
+They stay because more robots with mobile bases are planned soon (#82). The first such
+robot package is their consumer. If none has arrived by the next consolidation gate,
+that gate removes them. Mobile-base inference (#71) stays deferred: such robots should
+declare their base explicitly.
 
 **Public modules.** Only `ssrobot.conformance.run_conformance` and the `ssrobot`
 command are public beyond the top level. `ssrobot.authoring` and `ssrobot.doctor` are
