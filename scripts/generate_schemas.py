@@ -8,7 +8,11 @@ import sys
 from pathlib import Path
 
 import ssrobot
+
+# Records outside the top-level package must be imported to get schemas.
+import ssrobot.authoring
 import ssrobot.conformance
+import ssrobot.doctor
 
 SCHEMAS = Path(__file__).resolve().parents[1] / "schemas"
 
