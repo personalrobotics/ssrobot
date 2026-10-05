@@ -565,3 +565,41 @@ def test_reasons_are_literally_true(tmp_path: Path) -> None:
     assert not any("maximal" in r or "above" in r for r in variant)
     assert any(r.startswith("derived from chain:left_lift..left_wrist_3") for r in variant)
     assert any("below 'left_wrist_3'" in r for r in variant)
+
+
+def test_tcp_candidates_cover_the_tip_body(artifacts: Path, tmp_path: Path) -> None:
+    """A site rigidly attached above the gripper frame, as on Geodude's Robotiq mount, is a
+    TCP candidate alongside the one below it, and either can be the hand."""
+    root = _inferring(FIXTURES / "urdf_arm", tmp_path / "mount", 'mode = "report"')
+    urdf = (root / "arm.urdf").read_text()
+    (root / "arm.urdf").write_text(
+        urdf.replace('<link name="tcp"/>', '<link name="tcp"/>\n  <link name="pinch"/>').replace(
+            '<joint name="tcp_mount" type="fixed">',
+            '<joint name="pinch_mount" type="fixed"><parent link="flange"/>'
+            '<child link="pinch"/></joint>\n  <joint name="tcp_mount" type="fixed">',
+        )
+    )
+    package = load_package(root)
+    candidates = _outcomes(package)
+    assert package.inference is not None
+    effectors = {
+        c.id: [c.gripper, c.ambiguity]
+        for c in package.inference.candidates
+        if c.kind.value == "end_effector"
+    }
+    (artifacts / "tip-body.json").write_text(
+        json.dumps({"candidates": candidates, "end_effectors": effectors}, indent=2) + "\n"
+    )
+    assert effectors == {
+        "end_effector:pinch": ["gripper:hand", "tcp@link4"],
+        "end_effector:tcp": ["gripper:hand", "tcp@link4"],
+    }
+    resolved = (
+        (root / "ssrobot.toml")
+        .read_text()
+        .replace('mode = "report"', ADOPT + _confirm("end_effector:pinch", "hand"))
+    )
+    (root / "ssrobot.toml").write_text(resolved)
+    description = load_package(root).description
+    assert description.end_effector("hand").frame == "pinch"
+    assert description.end_effector("hand").gripper == "gripper"

@@ -417,6 +417,11 @@ CASES: dict[str, tuple[Callable[[Path], None], str | None]] = {
 ATTACHMENT_CASES: dict[str, tuple[str, Callable[[Path], None], str | None]] = {
     "arm and arm-with-lift share a hand": ("bimanual_lift", lambda root: None, None),
     "passive tool": ("minimal_arm", lambda root: None, None),
+    "hand on the gripper's rigid body, above the gripper frame": (
+        "bimanual_lift",
+        _edit_manifest('frame = "left_tcp"', 'frame = "left_ft_sensor"'),
+        None,
+    ),
     "hand on the other arm's gripper": (
         "bimanual_lift",
         _edit_manifest('gripper = "left_gripper"', 'gripper = "right_gripper"'),

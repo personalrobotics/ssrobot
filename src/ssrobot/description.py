@@ -547,11 +547,15 @@ class RobotDescription(Record):
                     f"unknown gripper {e.gripper!r}",
                     path=f"end_effectors.{e.name}.gripper",
                 )
-            if not _at_or_below(parents, gripper.frame, e.frame):
+            moved = {j.child for j in self.joints}
+            if not (
+                _at_or_below(parents, gripper.frame, e.frame)
+                or _body(parents, moved, gripper.frame) == _body(parents, moved, e.frame)
+            ):
                 raise ValidationError(
                     "invalid_chain",
-                    f"gripper {e.gripper!r} at {gripper.frame!r} is not mounted at or above "
-                    f"the tool center point {e.frame!r}",
+                    f"the tool center point {e.frame!r} is neither on the rigid body of gripper "
+                    f"{e.gripper!r} at {gripper.frame!r} nor below it",
                     path=f"end_effectors.{e.name}.gripper",
                 )
         for m in self.manipulators:
@@ -781,6 +785,17 @@ def _path_between(
 
 def _at_or_below(parents: dict[str, str | None], ancestor: str, frame: str) -> bool:
     return frame == ancestor or _path_between(parents, ancestor, frame) is not None
+
+
+def _body(parents: dict[str, str | None], moved: set[str], frame: str) -> str:
+    """The frame at the base of ``frame``'s rigid body: the nearest frame at or above it
+    that a joint moves, or the root. Frames share a rigid body when no joint separates
+    them, which is exactly when they share this base."""
+    current = frame
+    parent = parents[current]
+    while current not in moved and parent is not None:
+        current, parent = parent, parents[parent]
+    return current
 
 
 def _unique(path: str, items: list[object]) -> None:

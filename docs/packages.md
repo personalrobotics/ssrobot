@@ -198,7 +198,7 @@ reasons for it:
 | --- | --- | --- |
 | `serial_chain` | `chain:<first>..<last>`: a joint group and its manipulator | A maximal series of at least 3 movable joints, with no branching between them. The base frame is the first joint's parent and the tool frame the last joint's child. If the series starts with prismatic joints, such as a lift, a candidate without them is derived too. Both share an ambiguity set, and the derived one's reasons say how it was derived. |
 | `gripper` | `gripper:<frame>`: a gripper | A frame at the tip of a chain whose subtree splits into at least 2 moving branches, each of at most 2 joints in series. Its joints are every joint below it. |
-| `tool_center_point` | `end_effector:<frame>`: an end effector | A leaf frame below the gripper frame, or below the tool frame if there is no gripper, reached through fixed connections only. Several such leaves share an ambiguity set. |
+| `tool_center_point` | `end_effector:<frame>`: an end effector | A leaf frame of the rigid body at the chain's tip: one reached from the tool frame without crossing a joint. A gripper is mounted on that body too, so this covers sites on the gripper and on its mount, whether above or below the gripper frame. The candidate references the chain's gripper, if any. Several such leaves share an ambiguity set. |
 
 **Identifiers.** Source names inside an identifier are percent-encoded. Every
 character except ASCII letters, digits, `_`, `-`, and `/` becomes `%XX` per UTF-8 byte,
