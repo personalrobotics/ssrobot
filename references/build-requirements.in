@@ -1,0 +1,5 @@
+# The build backends the pinned reference robots declare in build-system.requires:
+# Geodude needs setuptools >= 61.0, ADA needs hatchling. Lock them into
+# build-constraints.txt with the command at the top of that file.
+setuptools>=61.0
+hatchling

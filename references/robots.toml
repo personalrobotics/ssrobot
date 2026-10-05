@@ -13,6 +13,11 @@ package_root = "src/geodude_assets"
 # Structural facts the report must show. They are checked through the public report,
 # never by robot-specific code.
 [robots.expect]
+# The reviewed semantic identity. Any change to the description, intended or not,
+# must update this fingerprint in review.
+fingerprint = "e3d6fbe0c7d22907a31ee6abbce4a8537794a18518f7e6e56bc4417c78f7a7ec"
+model_format = "mjcf"
+license = "MIT"
 manipulators = 4
 grippers = 2
 end_effectors = 2
@@ -27,6 +32,9 @@ module = "ada_assets"
 package_root = "src/ada_assets"
 
 [robots.expect]
+fingerprint = "20c50727b03f2f513e27dca6ddc888d070fd97e33762d54d402a605c3aaada73"
+model_format = "mjcf"
+license = "MIT"
 manipulators = 1
 grippers = 1
 end_effectors = 1
