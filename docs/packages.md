@@ -298,3 +298,44 @@ installed Python package, yields byte-identical reports.
 `uv run pytest tests/test_packages.py` loads both and writes their descriptions,
 semantic summaries, and reports under `artifacts/`. It also checks a table of
 malformed packages; see the evidence table in [contracts.md](contracts.md).
+
+## Reference robots
+
+Geodude and ADA are the two full reference robots. Each owns its manifest in its asset
+repository. [`references/robots.toml`](../references/robots.toml) pins the first commit
+that carries it, with the structure the robot's report must show.
+
+```sh
+uv run python scripts/check_reference_robots.py --out artifacts/reference-robots
+```
+
+For each robot, this downloads the pinned commit and builds its wheel with `uv build`.
+The build backends come only from
+[`references/build-constraints.txt`](../references/build-constraints.txt), which locks
+setuptools, Hatchling, and their dependencies by version and hash; a backend that is not
+in that file, or whose hash differs, fails the build. Regenerate it with the command at
+its top when a reference robot changes its `build-system.requires`. The job also pins
+the uv version. The script then runs two public commands:
+
+- `ssrobot doctor` with `--wheel`. Its `wheel` check loads the wheel's contents through
+  `load_installed_package`.
+- `ssrobot inspect <module> --json` after the source checkout is deleted and the wheel
+  is installed, without dependencies, into an empty target by `uv pip install
+  --target`. The installer lays out the wheel, including any `.data` relocation, and
+  the command runs from an empty directory with that target as the only location of
+  the package.
+
+It then checks that the report is a valid `ssrobot.PackageReport`, that its fingerprint
+matches its description, that nothing is ambiguous, and that the description
+fingerprint, model format, license, and the counts of manipulators, grippers, end
+effectors, and joint kinds match the pins. The fingerprint is the robot's reviewed
+semantic identity: any change to a frame, joint, group, tool center point, sensor, or
+collision allowance changes it, so an intended change must update the pin in review.
+No presentation is compared byte-for-byte, and wheel hashes are recorded but not pinned,
+because builders write timestamps. `references.json` records each robot's commit,
+archive and wheel hashes, license, and fingerprint; the uv and Python versions, the
+constraints file's hash, and the backend versions it locks; and the Franka parser
+fixture's upstream commit and license. CI runs this as the `reference-robots` job and
+uploads the reports. That job is the only part of the build that needs network access:
+it downloads the commits from GitHub and the locked build backends from the package
+index.

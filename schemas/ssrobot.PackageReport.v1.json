@@ -148,6 +148,143 @@
       ],
       "additionalProperties": false
     },
+    "ChannelSpec": {
+      "type": "object",
+      "description": "A declared observation channel.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Channel name, unique within the robot."
+        },
+        "quantity": {
+          "type": "string",
+          "enum": [
+            "joint_position",
+            "joint_velocity",
+            "joint_effort",
+            "gripper_opening",
+            "pose",
+            "wrench",
+            "rgb_image",
+            "depth_image"
+          ],
+          "description": "What the channel measures."
+        },
+        "source": {
+          "type": "string",
+          "description": "Observed entity: a joint group (joint quantities), a gripper (opening), a frame (pose), a force-torque sensor (wrench), or a camera (images)."
+        },
+        "frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reference frame a pose is expressed in; pose only."
+        },
+        "shape": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Reading shape.",
+          "x-unit": "count"
+        },
+        "dtype": {
+          "type": "string",
+          "enum": [
+            "uint8",
+            "uint16",
+            "int32",
+            "float32",
+            "float64"
+          ],
+          "description": "Element type."
+        }
+      },
+      "required": [
+        "name",
+        "quantity",
+        "source",
+        "shape",
+        "dtype"
+      ],
+      "additionalProperties": false
+    },
+    "CollisionAllowance": {
+      "type": "object",
+      "description": "A pair of frames whose geometry is never checked against each other by default.",
+      "properties": {
+        "frame_a": {
+          "type": "string",
+          "description": "The lexicographically smaller frame."
+        },
+        "frame_b": {
+          "type": "string",
+          "description": "The lexicographically larger frame."
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Opaque provenance, e.g. SRDF's 'Adjacent'."
+        }
+      },
+      "required": [
+        "frame_a",
+        "frame_b"
+      ],
+      "additionalProperties": false
+    },
+    "CommandCapability": {
+      "type": "object",
+      "description": "A command a component accepts.",
+      "properties": {
+        "component": {
+          "type": "string",
+          "description": "Component name."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "joint",
+            "joint_trajectory",
+            "gripper",
+            "base_twist"
+          ],
+          "description": "Accepted command kind."
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "position",
+                "velocity",
+                "effort"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Joint mode; JOINT kind only."
+        }
+      },
+      "required": [
+        "component",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
     "Diagnostic": {
       "type": "object",
       "description": "Why something was rejected, failed, or modified.",
@@ -175,6 +312,88 @@
       "required": [
         "code",
         "message"
+      ],
+      "additionalProperties": false
+    },
+    "EndEffector": {
+      "type": "object",
+      "description": "What a manipulator acts through. Without a gripper it is a tool, such as a fork.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "End-effector name, unique within the robot."
+        },
+        "frame": {
+          "type": "string",
+          "description": "Tool center point frame."
+        },
+        "gripper": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Gripper that actuates it, if any."
+        }
+      },
+      "required": [
+        "name",
+        "frame"
+      ],
+      "additionalProperties": false
+    },
+    "Frame": {
+      "type": "object",
+      "description": "A named coordinate frame: a link, site, or other attachment point.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Frame name, unique within the robot."
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Parent frame; None only for the root."
+        }
+      },
+      "required": [
+        "name",
+        "parent"
+      ],
+      "additionalProperties": false
+    },
+    "Gripper": {
+      "type": "object",
+      "description": "An actuated grasping device, commanded by opening.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Component name, unique among components."
+        },
+        "frame": {
+          "type": "string",
+          "description": "Frame the gripper is mounted at."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joints the gripper moves, including passive linkage joints."
+        }
+      },
+      "required": [
+        "name",
+        "frame"
       ],
       "additionalProperties": false
     },
@@ -211,6 +430,235 @@
       ],
       "additionalProperties": false
     },
+    "Joint": {
+      "type": "object",
+      "description": "A joint that moves ``child`` relative to its parent frame ``parent``.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Joint name, unique within the robot."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "revolute",
+            "continuous",
+            "prismatic"
+          ],
+          "description": "Joint type; fixes the joint unit."
+        },
+        "parent": {
+          "type": "string",
+          "description": "Frame the joint is mounted on."
+        },
+        "child": {
+          "type": "string",
+          "description": "Frame the joint moves; its parent must be `parent`."
+        },
+        "limits": {
+          "$ref": "#/$defs/JointLimits",
+          "description": "Joint limits."
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "parent",
+        "child",
+        "limits"
+      ],
+      "additionalProperties": false
+    },
+    "JointGroup": {
+      "type": "object",
+      "description": "An ordered set of joints commanded and observed together.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Component name, unique among components."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joint names in canonical order."
+        },
+        "subgroups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Groups this composite group is made of, in order."
+        }
+      },
+      "required": [
+        "name",
+        "joints"
+      ],
+      "additionalProperties": false
+    },
+    "JointLimits": {
+      "type": "object",
+      "description": "Joint limits. Absent position bounds mean unbounded; absent rates mean undeclared.",
+      "properties": {
+        "lower": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Lower position.",
+          "x-unit": "joint"
+        },
+        "upper": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Upper position.",
+          "x-unit": "joint"
+        },
+        "velocity": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum absolute velocity.",
+          "x-unit": "joint/s"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum absolute effort.",
+          "x-unit": "joint-effort"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "Manipulator": {
+      "type": "object",
+      "description": "A serial arm: a joint group moving ``tool_frame`` relative to ``base_frame``.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Manipulator name, unique within the robot."
+        },
+        "group": {
+          "type": "string",
+          "description": "Joint group of the arm, base to tip."
+        },
+        "base_frame": {
+          "type": "string",
+          "description": "Frame the arm is mounted at."
+        },
+        "tool_frame": {
+          "type": "string",
+          "description": "Frame at the arm's tip, e.g. the flange."
+        },
+        "end_effector": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "End effector at the tip."
+        },
+        "kinematics": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Kinematics adapter identifier, e.g. 'ssik:ur5e'; opaque to the core."
+        }
+      },
+      "required": [
+        "name",
+        "group",
+        "base_frame",
+        "tool_frame"
+      ],
+      "additionalProperties": false
+    },
+    "MobileBase": {
+      "type": "object",
+      "description": "A base commanded by planar twist.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Component name, unique among components."
+        },
+        "frame": {
+          "type": "string",
+          "description": "Base frame that twists are expressed in."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joints that model the base's motion, if any."
+        }
+      },
+      "required": [
+        "name",
+        "frame"
+      ],
+      "additionalProperties": false
+    },
+    "NamedConfiguration": {
+      "type": "object",
+      "description": "Named joint positions for a group, such as 'home' or 'stow'.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Configuration name, unique within the robot."
+        },
+        "group": {
+          "type": "string",
+          "description": "Joint group the positions are for."
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "One position per group joint, in group order.",
+          "x-unit": "joint"
+        }
+      },
+      "required": [
+        "name",
+        "group",
+        "positions"
+      ],
+      "additionalProperties": false
+    },
     "PackageReport": {
       "type": "object",
       "description": "What loading a package resolved: an inspection artifact.",
@@ -229,9 +677,22 @@
           "type": "string",
           "description": "Model the description was built from."
         },
-        "description": {
+        "model_format": {
+          "type": "string",
+          "enum": [
+            "ssrobot",
+            "mjcf",
+            "urdf"
+          ],
+          "description": "Format of the canonical model."
+        },
+        "fingerprint": {
           "type": "string",
           "description": "Fingerprint of the loaded description."
+        },
+        "description": {
+          "$ref": "#/$defs/RobotDescription",
+          "description": "The loaded description: frames, joints and limits, and semantics."
         },
         "files": {
           "type": "array",
@@ -271,6 +732,8 @@
         "version",
         "robot",
         "canonical_model",
+        "model_format",
+        "fingerprint",
         "description",
         "files"
       ],
@@ -297,6 +760,142 @@
         "role",
         "path",
         "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "RobotDescription": {
+      "type": "object",
+      "description": "Immutable semantic description of one robot. Safe to share between contexts.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.RobotDescription"
+        },
+        "version": {
+          "const": 1
+        },
+        "name": {
+          "type": "string",
+          "description": "Robot name: letters, digits, '_', '.', and '-'."
+        },
+        "frames": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Frame"
+          },
+          "description": "Frame tree with exactly one root."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Joint"
+          },
+          "description": "Joints."
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JointGroup"
+          },
+          "description": "Joint groups."
+        },
+        "grippers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Gripper"
+          },
+          "description": "Grippers."
+        },
+        "bases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MobileBase"
+          },
+          "description": "Mobile bases."
+        },
+        "manipulators": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Manipulator"
+          },
+          "description": "Manipulators."
+        },
+        "end_effectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EndEffector"
+          },
+          "description": "End effectors and tools."
+        },
+        "sensors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Sensor"
+          },
+          "description": "Sensors."
+        },
+        "configurations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NamedConfiguration"
+          },
+          "description": "Named configurations."
+        },
+        "collision_allowances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CollisionAllowance"
+          },
+          "description": "Static default self-collision exclusions."
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CommandCapability"
+          },
+          "description": "Declared command capabilities."
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChannelSpec"
+          },
+          "description": "Declared observation channels."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "name",
+        "frames",
+        "joints"
+      ],
+      "additionalProperties": false
+    },
+    "Sensor": {
+      "type": "object",
+      "description": "Sensor(*, name: 'str', kind: 'SensorKind', frame: 'str')",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Sensor name, unique within the robot."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "camera",
+            "force_torque"
+          ],
+          "description": "What the sensor is."
+        },
+        "frame": {
+          "type": "string",
+          "description": "Frame the sensor measures in."
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "frame"
       ],
       "additionalProperties": false
     },

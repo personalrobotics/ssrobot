@@ -167,7 +167,11 @@ class PackageReport(Record):
 
     robot: str = field(metadata=meta("Robot name."))
     canonical_model: str = field(metadata=meta("Model the description was built from."))
-    description: str = field(metadata=meta("Fingerprint of the loaded description."))
+    model_format: ModelFormat = field(metadata=meta("Format of the canonical model."))
+    fingerprint: str = field(metadata=meta("Fingerprint of the loaded description."))
+    description: RobotDescription = field(
+        metadata=meta("The loaded description: frames, joints and limits, and semantics.")
+    )
     files: tuple[ResolvedFile, ...] = field(metadata=meta("Every resolved file, by role."))
     items: tuple[SourceItem, ...] = field(
         default=(),
@@ -195,10 +199,13 @@ class RobotPackage:
     inference: InferenceReport | None = None
 
     def report(self) -> PackageReport:
+        canonical = next(m for m in self.manifest.models if m.name == self.manifest.canonical_model)
         return PackageReport(
             robot=self.manifest.robot,
             canonical_model=self.manifest.canonical_model,
-            description=self.description.fingerprint(),
+            model_format=canonical.format,
+            fingerprint=self.description.fingerprint(),
+            description=self.description,
             files=self.files,
             items=self.items,
             diagnostics=self.diagnostics,
