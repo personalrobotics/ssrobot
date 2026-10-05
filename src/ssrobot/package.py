@@ -28,6 +28,7 @@ from ssrobot.description import (
 )
 from ssrobot.errors import ValidationError
 from ssrobot.execution import Diagnostic
+from ssrobot.inference import InferenceReport, InferenceSettings, resolve
 from ssrobot.mjcf import load_mjcf
 from ssrobot.resources import (
     LoadedModel,
@@ -130,6 +131,9 @@ class PackageManifest(Record):
     calibrations: tuple[FileEntry, ...] = field(
         default=(), metadata=meta("Portable calibration files; machine-local ones stay outside.")
     )
+    inference: InferenceSettings | None = field(
+        default=None, metadata=meta("Opt-in semantic inference; absent means none.")
+    )
 
     def _validate(self) -> None:
         if not ROBOT_NAME.fullmatch(self.robot):
@@ -173,6 +177,9 @@ class PackageReport(Record):
         default=(),
         metadata=meta("Non-fatal findings: ignored constructs and unresolved ambiguity."),
     )
+    inference: InferenceReport | None = field(
+        default=None, metadata=meta("Inference candidates and outcomes, when enabled.")
+    )
 
 
 @dataclass(frozen=True)
@@ -185,6 +192,7 @@ class RobotPackage:
     files: tuple[ResolvedFile, ...]
     items: tuple[SourceItem, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
+    inference: InferenceReport | None = None
 
     def report(self) -> PackageReport:
         return PackageReport(
@@ -194,6 +202,7 @@ class RobotPackage:
             files=self.files,
             items=self.items,
             diagnostics=self.diagnostics,
+            inference=self.inference,
         )
 
 
@@ -281,10 +290,16 @@ def load_package(directory: str | os.PathLike[str]) -> RobotPackage:
         for item in entries:
             files.append(resolver.record(f"{kind}:{item.name}", resolver.resolve(item.path)))
     assert loaded is not None  # the manifest guarantees the canonical model is listed
+    semantics = _merge(manifest.semantics, loaded.semantics)
+    inference = None
+    if manifest.inference is not None:
+        try:
+            inferred, inference = resolve(loaded.model, semantics, manifest.inference)
+        except ValidationError as e:
+            raise ValidationError(e.code, e.message, path=f"{MANIFEST}: {e.path}") from None
+        semantics = _merge(semantics, inferred)
     try:
-        description = RobotDescription.compose(
-            loaded.model, _merge(manifest.semantics, loaded.semantics), name=manifest.robot
-        )
+        description = RobotDescription.compose(loaded.model, semantics, name=manifest.robot)
     except ValidationError as e:
         raise ValidationError(e.code, e.message, path=f"description: {e.path}") from None
     diagnostics = (*loaded.diagnostics, *_resolve_end_effectors(loaded, description))
@@ -295,6 +310,7 @@ def load_package(directory: str | os.PathLike[str]) -> RobotPackage:
         files=tuple(files),
         items=loaded.items,
         diagnostics=diagnostics,
+        inference=inference,
     )
 
 

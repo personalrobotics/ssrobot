@@ -3,6 +3,25 @@
   "title": "ssrobot.package v1",
   "$ref": "#/$defs/PackageManifest",
   "$defs": {
+    "CandidateChoice": {
+      "type": "object",
+      "description": "CandidateChoice(*, candidate: 'str', name: 'str')",
+      "properties": {
+        "candidate": {
+          "type": "string",
+          "description": "Candidate identifier from the inference report."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the entities the candidate becomes."
+        }
+      },
+      "required": [
+        "candidate",
+        "name"
+      ],
+      "additionalProperties": false
+    },
     "ChannelSpec": {
       "type": "object",
       "description": "A declared observation channel.",
@@ -212,6 +231,38 @@
       "required": [
         "name",
         "frame"
+      ],
+      "additionalProperties": false
+    },
+    "InferenceSettings": {
+      "type": "object",
+      "description": "The ``[inference]`` table of a package manifest.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "report",
+            "adopt"
+          ],
+          "description": "Whether to adopt unambiguous candidates."
+        },
+        "confirm": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CandidateChoice"
+          },
+          "description": "Candidates to adopt, with their names."
+        },
+        "reject": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Candidates never to adopt."
+        }
+      },
+      "required": [
+        "mode"
       ],
       "additionalProperties": false
     },
@@ -438,6 +489,17 @@
             "$ref": "#/$defs/FileEntry"
           },
           "description": "Portable calibration files; machine-local ones stay outside."
+        },
+        "inference": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InferenceSettings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Opt-in semantic inference; absent means none."
         }
       },
       "required": [
