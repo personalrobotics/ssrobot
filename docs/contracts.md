@@ -250,6 +250,10 @@ Terminal states have no successors. When the context ends an execution, it calls
 - An `ActionChunk` whose last step was due before `now` fails with
   `ValidationError("stale_command")` before the runtime sees it. A chunk on another
   clock fails with `clock_mismatch`.
+- The commands in one chunk step must address disjoint resources, by the same
+  `RobotDescription.resources` rule as ownership. Otherwise the chunk fails with
+  `ValidationError("overlapping_components")`, naming the two components and a shared
+  resource, even when their names differ. A group and its subgroup are an example.
 - `stop(components)` cancels every unfinished execution whose resources overlap them;
   `stop()` cancels everything. Unknown components fail with `unknown_reference`.
 

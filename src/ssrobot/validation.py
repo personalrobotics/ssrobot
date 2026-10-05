@@ -20,6 +20,7 @@ from ssrobot.commands import (
     JointCommand,
     JointMode,
     JointTrajectory,
+    command_component,
 )
 from ssrobot.conventions import Pose
 from ssrobot.description import CommandCapability, JointGroup, RobotDescription
@@ -42,6 +43,19 @@ def check_command(
         for i, step in enumerate(command.steps):
             for k, c in enumerate(step):
                 _check_instant(description, c, info, f"steps[{i}][{k}]")
+        # Every step addresses the same components, so checking the first covers all. Two
+        # commands in one step must not write the same resource, whatever they are named.
+        held: dict[str, str] = {}
+        for k, c in enumerate(command.steps[0]):
+            component = command_component(c)
+            for resource in sorted(description.resources((component,))):
+                if resource in held:
+                    raise ValidationError(
+                        "overlapping_components",
+                        f"{held[resource]!r} and {component!r} both command {resource}",
+                        path=f"steps[0][{k}]",
+                    )
+                held[resource] = component
     elif isinstance(command, JointTrajectory):
         _require(description, info, command.group, CommandKind.JOINT_TRAJECTORY, None)
         group = _check_joint_order(description, command.group, command.joints)

@@ -45,7 +45,8 @@ class ActuatorKind(enum.StrEnum):
     MOTOR = "motor"
     """A force or torque source: fixed gain, no bias."""
     OTHER = "other"
-    """Anything else, including actuators with activation dynamics."""
+    """Anything else, including actuators with activation dynamics or a zero gear, which
+    cannot move what they are attached to."""
 
 
 # A joint command mode and the actuator kind that executes it.
@@ -87,7 +88,8 @@ class ActuatorBinding(Value):
     id: int = field(metadata=meta("MuJoCo actuator id.", unit="1"))
     transmission: str = field(metadata=meta("MuJoCo transmission type, e.g. joint or tendon."))
     target: str | None = field(metadata=meta("Name of the joint, tendon, or site it drives."))
-    kind: ActuatorKind = field(metadata=meta("What it does, from its gain and bias."))
+    gear: float = field(metadata=meta("Transmission gain; 0 means it moves nothing.", unit="1"))
+    kind: ActuatorKind = field(metadata=meta("What it does, from its gain, bias, and gear."))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -248,6 +250,7 @@ def actuator_kind(model: Any, i: int) -> ActuatorKind:
         int(model.actuator_gaintype[i]) == int(mujoco.mjtGain.mjGAIN_FIXED)
         and int(model.actuator_dyntype[i]) == int(mujoco.mjtDyn.mjDYN_NONE)
         and gain > 0
+        and float(model.actuator_gear[i][0]) != 0
     )
     bias = int(model.actuator_biastype[i])
     if not simple:
@@ -378,6 +381,7 @@ class Binder:
             id=i,
             transmission=trn.name.removeprefix("mjTRN_").lower(),
             target=target,
+            gear=float(m.actuator_gear[i][0]),
             kind=actuator_kind(m, i),
         )
 
@@ -395,6 +399,29 @@ def joint_actuators(
         if a.transmission in ("joint", "jointinparent") and a.target is not None:
             found.setdefault((a.target, a.kind), []).append(a.id)
     return found
+
+
+def driven_joints(model: Any, i: int) -> frozenset[str] | None:
+    """The joints an actuator moves: its joint, or every joint of its fixed tendon. None
+    when that cannot be told from the transmission, as for sites, bodies, and spatial
+    tendons."""
+    trn = int(model.actuator_trntype[i])
+    target = int(model.actuator_trnid[i][0])
+    if trn in (int(mujoco.mjtTrn.mjTRN_JOINT), int(mujoco.mjtTrn.mjTRN_JOINTINPARENT)):
+        joint = name(model, mujoco.mjtObj.mjOBJ_JOINT, target)
+        return None if joint is None else frozenset({joint})
+    if trn != int(mujoco.mjtTrn.mjTRN_TENDON):
+        return None
+    first, count = int(model.tendon_adr[target]), int(model.tendon_num[target])
+    joints = set()
+    for w in range(first, first + count):
+        if int(model.wrap_type[w]) != int(mujoco.mjtWrap.mjWRAP_JOINT):
+            return None
+        joint = name(model, mujoco.mjtObj.mjOBJ_JOINT, int(model.wrap_objid[w]))
+        if joint is None:
+            return None
+        joints.add(joint)
+    return frozenset(joints)
 
 
 def select_profile(package: RobotPackage, requested: str | None) -> ProfileEntry | None:

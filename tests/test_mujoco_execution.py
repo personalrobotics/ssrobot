@@ -28,6 +28,7 @@ from tests.conftest import ROOT
 
 FIXTURE = ROOT / "examples" / "packages" / "mujoco_arm"
 ARM = ("shoulder", "elbow", "wrist")
+LEFT_FINGER = '<position name="left_finger" joint="left_finger_joint" ctrlrange="0 0.04"'
 TICK_NS = 2_000_000  # arm.xml timestep, one substep per tick
 GOAL = (1.0, -0.5, -0.5)
 STATE = ObservationRequest(channels=("arm_q", "arm_qd", "gripper_opening"))
@@ -81,6 +82,7 @@ def _chunk(ctx: RobotContext) -> dict[str, Any]:
                 mode=JointMode.POSITION,
                 values=tuple(q + 0.05 * k for q in start),
             ),
+            GripperCommand(gripper="gripper", opening=1.0 - 0.25 * k),
         )
         for k in range(5)
     )
@@ -100,6 +102,18 @@ def _gripper(ctx: RobotContext) -> dict[str, Any]:
         assert isinstance(value, tuple)
         openings[str(opening)] = value[0]
     return {"openings": openings}
+
+
+def _gripper_to(opening: float) -> Scenario:
+    def scenario(ctx: RobotContext) -> dict[str, Any]:
+        execution = ctx.submit(GripperCommand(gripper="gripper", opening=opening))
+        ctx.run_until(execution, max_ticks=5)
+        _settle(ctx, 500)
+        value = ctx.observe(ObservationRequest(channels=("gripper_opening",))).readings[0].value
+        assert isinstance(value, tuple)
+        return {"requested": opening, "observed": value[0]}
+
+    return scenario
 
 
 def _cancel(ctx: RobotContext) -> dict[str, Any]:
@@ -127,21 +141,43 @@ def _unreachable(ctx: RobotContext) -> dict[str, Any]:
     return {"status": status.state.value, "diagnostic": status.diagnostic.code}
 
 
-SCENARIOS: dict[str, tuple[Scenario, dict[str, Any]]] = {
-    "trajectory": (_reach, {}),
-    "chunk": (_chunk, {}),
-    "gripper": (_gripper, {}),
-    "cancel": (_cancel, {}),
-    "timeout": (_timeout, {}),
-    "goal_not_reached": (_unreachable, {"goal_tolerance": 0.0, "settle_ns": 0}),
+def _write(file: str, old: str, new: str) -> Callable[[Path], None]:
+    def change(root: Path) -> None:
+        path = root / file
+        assert old in path.read_text()
+        path.write_text(path.read_text().replace(old, new))
+
+    return change
+
+
+# The left finger's control range halved: only openings in [0, 0.5] reach both fingers.
+NARROW_LEFT = _write("actuators.xml", LEFT_FINGER, LEFT_FINGER.replace("0 0.04", "0 0.02"))
+# Both fingers' profile maps reversed: control 0.04 is closed.
+REVERSED = _write("mujoco.toml", "closed = 0.0, open = 0.04", "closed = 0.04, open = 0.0")
+
+SCENARIOS: dict[str, tuple[Scenario, dict[str, Any], Callable[[Path], None] | None]] = {
+    "trajectory": (_reach, {}, None),
+    "chunk": (_chunk, {}, None),
+    "gripper": (_gripper, {}, None),
+    "gripper_range_limited": (_gripper_to(1.0), {}, NARROW_LEFT),
+    "gripper_reversed": (_gripper_to(0.25), {}, REVERSED),
+    "cancel": (_cancel, {}, None),
+    "timeout": (_timeout, {}, None),
+    "goal_not_reached": (_unreachable, {"goal_tolerance": 0.0, "settle_ns": 0}, None),
 }
 
 
 def _run(out: Path) -> dict[str, dict[str, Any]]:
-    """Run every scenario in its own runtime, writing a trace and the final state."""
-    package = load_package(FIXTURE)
+    """Run every scenario in its own runtime, writing a trace and the final state. A
+    scenario with a variant runs a copy of the package, changed, under ``out/packages``."""
     results = {}
-    for name, (scenario, options) in SCENARIOS.items():
+    for name, (scenario, options, variant) in SCENARIOS.items():
+        root = FIXTURE
+        if variant is not None:
+            root = out / "packages" / name
+            shutil.copytree(FIXTURE, root)
+            variant(root)
+        package = load_package(root)
         runtime = MujocoRuntime(package, keyframe="home", **options)
         with (
             JsonlTrace(out / name / "trace.jsonl") as trace,
@@ -152,6 +188,16 @@ def _run(out: Path) -> dict[str, dict[str, Any]]:
         (out / name / "final-state.json").write_text(json.dumps(result, indent=2) + "\n")
         results[name] = result
     return results
+
+
+def _gripper_applied(path: Path) -> list[tuple[float, list[str]]]:
+    """Each applied gripper command's opening and modifications, from a trace."""
+    return [
+        (record.payload.applied.opening, [m.kind.value for m in record.payload.modifications])
+        for record in read_trace(path)
+        if isinstance(record.payload, AppliedCommand)
+        and isinstance(record.payload.applied, GripperCommand)
+    ]
 
 
 def _applied(path: Path) -> list[tuple[int, tuple[float, ...]]]:
@@ -192,8 +238,23 @@ def test_mujoco_executes_trajectories_chunks_and_grippers(artifacts: Path, tmp_p
         k = min((t - chunk["start_ns"]) // (2 * TICK_NS), 4)
         assert values == tuple(q + 0.05 * k for q in start)
 
+    # The chunk's gripper command applies with the arm's, at the same cadence.
+    gripper_steps = _gripper_applied(artifacts / "chunk" / "trace.jsonl")
+    assert len(gripper_steps) == len(applied)
+
     openings = results["gripper"]["openings"]
     assert openings["0.0"] <= 0.05 and openings["1.0"] >= 0.95
+
+    # One coherent opening for every finger, clipped once to what both can reach, and
+    # reported as applied; the hand settles there.
+    limited = results["gripper_range_limited"]
+    assert _gripper_applied(artifacts / "gripper_range_limited" / "trace.jsonl") == [
+        (0.5, ["clipped"])
+    ]
+    assert abs(limited["observed"] - 0.5) <= 0.05
+    reversed_ = results["gripper_reversed"]
+    assert _gripper_applied(artifacts / "gripper_reversed" / "trace.jsonl") == [(0.25, [])]
+    assert abs(reversed_["observed"] - 0.25) <= 0.05
 
     cancel = results["cancel"]
     assert cancel["status"] == "canceled"
@@ -221,15 +282,6 @@ def _copy(tmp_path: Path, name: str, change: Callable[[Path], None]) -> Path:
     return root
 
 
-def _write(file: str, old: str, new: str) -> Callable[[Path], None]:
-    def change(root: Path) -> None:
-        path = root / file
-        assert old in path.read_text()
-        path.write_text(path.read_text().replace(old, new))
-
-    return change
-
-
 def test_mujoco_rejects_unexecutable_commands(artifacts: Path, tmp_path: Path) -> None:
     """Commands it cannot execute are refused, and a bad profile fails at open."""
     report: dict[str, dict[str, Any]] = {}
@@ -253,6 +305,32 @@ def test_mujoco_rejects_unexecutable_commands(artifacts: Path, tmp_path: Path) -
         report["velocity command without velocity actuators"] = {
             "expected": "unavailable_command",
             "code": code,
+        }
+        both = ActionChunk(
+            start=ctx.now,
+            period_ns=TICK_NS,
+            steps=(
+                (
+                    JointCommand(
+                        group="arm", joints=ARM, mode=JointMode.POSITION, values=_arm(ctx)
+                    ),
+                    JointCommand(
+                        group="wrist_only",
+                        joints=("wrist",),
+                        mode=JointMode.POSITION,
+                        values=(_arm(ctx)[2],),
+                    ),
+                ),
+            ),
+        )
+        try:
+            ctx.submit(both)
+            outcome: dict[str, Any] = {"code": "accepted"}
+        except SsrobotError as e:
+            outcome = {"code": e.code, "path": e.path, "message": e.message}
+        report["chunk commanding the arm and its wrist at once"] = {
+            "expected": "overlapping_components",
+            **outcome,
         }
     second_profile = """
 [[profiles]]
@@ -287,19 +365,58 @@ path = "mujoco.toml"
                 "ambiguous",
                 _write(
                     "ssrobot.toml",
-                    "[[semantics.groups]]",
-                    second_profile + "\n[[semantics.groups]]",
+                    'path = "mujoco.toml"\n',
+                    'path = "mujoco.toml"\n' + second_profile,
                 ),
             ),
             {},
         ),
         "unknown profile name": ("unknown_profile", FIXTURE, {"profile": "hardware"}),
+        "gripper profile names the arm's shoulder actuator": (
+            "actuator_alias",
+            _copy(tmp_path, "alias", _write("mujoco.toml", '"left_finger"', '"shoulder"')),
+            {},
+        ),
+        "no opening reaches every finger": (
+            "invalid_profile",
+            _copy(
+                tmp_path,
+                "empty",
+                _write("actuators.xml", LEFT_FINGER, LEFT_FINGER.replace("0 0.04", "0.05 0.06")),
+            ),
+            {},
+        ),
+        "wrist actuator with zero gear": (
+            "opened",
+            _copy(
+                tmp_path,
+                "zero_gear",
+                _write(
+                    "actuators.xml",
+                    '<position name="wrist" joint="wrist"/>',
+                    '<position name="wrist" joint="wrist" gear="0"/>',
+                ),
+            ),
+            {},
+        ),
     }
     for case, (expected, root, options) in opens.items():
         loaded = load_package(root)
+        runtime = MujocoRuntime(loaded, **options)
         try:
-            with RobotContext(loaded.description, MujocoRuntime(loaded, **options)):
-                outcome: dict[str, Any] = {"code": "opened"}
+            with RobotContext(loaded.description, runtime) as opened:
+                outcome = {
+                    "code": "opened",
+                    "confirmed": [f"{c.component} {c.kind.value}" for c in opened.info.commands],
+                    "unconfirmed": {
+                        f"{b.component} {b.kind.value} {b.mode}": [
+                            b.unavailable.code,
+                            b.unavailable.message,
+                        ]
+                        for b in runtime.mapping.commands
+                        if b.unavailable is not None
+                    },
+                }
         except SsrobotError as e:
             outcome = {"code": e.code, "path": e.path, "message": e.message}
         report[case] = {"expected": expected, **outcome}
@@ -311,3 +428,14 @@ path = "mujoco.toml"
         report["profile names a missing actuator"]["path"]
         == "mujoco.toml: grippers[0].actuators[0]"
     )
+    assert report["chunk commanding the arm and its wrist at once"]["path"] == "steps[0][1]"
+    assert "joint:wrist" in report["chunk commanding the arm and its wrist at once"]["message"]
+    assert report["gripper profile names the arm's shoulder actuator"]["path"] == (
+        "mujoco.toml: grippers[0].actuators[0]"
+    )
+    # A zero gear moves nothing: the arm and the wrist lose their position commands, and
+    # say why, while everything else stays confirmed.
+    zero = report["wrist actuator with zero gear"]
+    assert zero["confirmed"] == ["gripper gripper"]
+    code, message = zero["unconfirmed"]["arm joint position"]
+    assert code == "no_position_actuators" and "gear 0" in message

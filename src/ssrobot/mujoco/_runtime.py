@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import itertools
 import math
 from dataclasses import dataclass, replace
 from typing import Any
@@ -34,6 +35,7 @@ from ssrobot.mujoco._model import (
     MODE_ACTUATORS,
     MUJOCO_VERSION,
     Actuator,
+    ActuatorBinding,
     ActuatorKind,
     Binder,
     ChannelBinding,
@@ -42,6 +44,7 @@ from ssrobot.mujoco._model import (
     MujocoMapping,
     MujocoProfile,
     actuator,
+    driven_joints,
     joint_actuators,
     load_profile,
     select_profile,
@@ -54,8 +57,15 @@ from ssrobot.package import ModelFormat, RobotPackage
 from ssrobot.replay import START_TOLERANCE
 from ssrobot.runtime import RuntimeEvent, RuntimeInfo, RuntimeUpdate
 
-# (actuator, control when closed, control when open), per gripper actuator.
-_GripperDrive = tuple[Actuator, float, float]
+
+@dataclass(frozen=True)
+class _Gripper:
+    """A profiled gripper: per actuator (drive, control when closed, control when open),
+    and the openings every actuator's control range can reach."""
+
+    drives: tuple[tuple[Actuator, float, float], ...]
+    low: float
+    high: float
 
 
 @dataclass
@@ -130,7 +140,7 @@ class MujocoRuntime:
         self._timestep_ns = 0
         self._joints: dict[str, JointBinding] = {}
         self._drives: dict[tuple[str, JointMode], Actuator] = {}
-        self._grippers: dict[str, tuple[_GripperDrive, ...]] = {}
+        self._grippers: dict[str, _Gripper] = {}
         self._running: dict[str, _Running] = {}
         self._events: list[RuntimeEvent] = []
 
@@ -303,7 +313,8 @@ class MujocoRuntime:
             if len(ids := by_joint.get((joint, kind), [])) == 1
         }
         self._grippers = self._bind_grippers(model, description, profile, profile_entry)
-        commands = tuple(self._bind_command(c, by_joint) for c in description.commands)
+        commands = tuple(self._bind_command(c, by_joint, actuators) for c in description.commands)
+        _check_aliases(description, commands)
         channels = tuple(
             self._bind_channel(c.name, c.quantity, c.source) for c in description.channels
         )
@@ -364,7 +375,7 @@ class MujocoRuntime:
         description: RobotDescription,
         profile: MujocoProfile,
         entry: Any,
-    ) -> dict[str, tuple[_GripperDrive, ...]]:
+    ) -> dict[str, _Gripper]:
         known = {g.name for g in description.grippers}
         bound = {}
         for i, gripper in enumerate(profile.grippers):
@@ -390,12 +401,45 @@ class MujocoRuntime:
                         f"{a.actuator!r} is a {drive.kind.value} actuator, not a position servo",
                         path=where,
                     )
+                # It must move only joints this gripper owns, or a gripper command would
+                # write a control that another component's owner also writes.
+                moved = driven_joints(model, index)
+                owned = description.resources((gripper.gripper,))
+                outside = (
+                    None if moved is None else sorted(j for j in moved if f"joint:{j}" not in owned)
+                )
+                if moved is None or outside:
+                    raise ValidationError(
+                        "actuator_alias",
+                        f"{a.actuator!r} moves "
+                        + (
+                            "joints that cannot be determined"
+                            if moved is None
+                            else ", ".join(outside or [])
+                        )
+                        + f", which gripper {gripper.gripper!r} does not own",
+                        path=where,
+                    )
                 drives.append((drive, a.closed, a.open))
-            bound[gripper.gripper] = tuple(drives)
+            low, high = 0.0, 1.0
+            for drive, closed, open_ in drives:
+                if drive.ctrl_range is not None:  # openings whose control is in range
+                    ends = sorted((c - closed) / (open_ - closed) for c in drive.ctrl_range)
+                    low, high = max(low, ends[0]), min(high, ends[1])
+            if low > high:
+                raise ValidationError(
+                    "invalid_profile",
+                    "no opening in [0, 1] is within every actuator's control range",
+                    path=path,
+                )
+            bound[gripper.gripper] = _Gripper(drives=tuple(drives), low=low, high=high)
         return bound
 
     def _bind_command(
-        self, capability: CommandCapability, by_joint: dict[tuple[str, ActuatorKind], list[int]]
+        self,
+        capability: CommandCapability,
+        by_joint: dict[tuple[str, ActuatorKind], list[int]],
+        actuators: tuple[ActuatorBinding, ...],
     ) -> CommandBinding:
         d_component = capability.component
         ids: tuple[int, ...] = ()
@@ -409,16 +453,28 @@ class MujocoRuntime:
             missing = [j for j, f in zip(joints, found, strict=True) if len(f) != 1]
             if missing:
                 several = any(len(f) > 1 for f in found)
+                present = "; ".join(
+                    f"{j}: "
+                    + (
+                        ", ".join(
+                            f"{a.name or a.id} ({a.kind.value}, gear {a.gear:g})"
+                            for a in actuators
+                            if a.target == j
+                        )
+                        or "no actuator"
+                    )
+                    for j in missing
+                )
                 unavailable = _unavailable(
                     "several_actuators" if several else f"no_{mode.value}_actuators",
-                    f"{', '.join(missing)} need exactly one {kind.value} actuator each",
+                    f"each joint needs exactly one {kind.value} actuator; {present}",
                     d_component,
                 )
             else:
                 ids = tuple(f[0] for f in found)
         elif capability.kind is CommandKind.GRIPPER:
             if d_component in self._grippers:
-                ids = tuple(drive.id for drive, _, _ in self._grippers[d_component])
+                ids = tuple(drive.id for drive, _, _ in self._grippers[d_component].drives)
             else:
                 unavailable = _unavailable(
                     "no_gripper_profile",
@@ -491,13 +547,20 @@ class MujocoRuntime:
                 values.append(value)
             return replace(command, values=tuple(values)), tuple(modifications)
         if isinstance(command, GripperCommand):
-            opening = command.opening
-            for drive, closed, open_ in self._grippers[command.gripper]:
-                ctrl, clipped = drive.clip(closed + command.opening * (open_ - closed))
-                data.ctrl[drive.id] = ctrl
-                if clipped:
-                    opening = min(max((ctrl - closed) / (open_ - closed), 0.0), 1.0)
-                    modifications.append(_clipped(command.gripper, drive))
+            # Clip once, in opening space, so every actuator gets the same opening.
+            gripper = self._grippers[command.gripper]
+            opening = min(max(command.opening, gripper.low), gripper.high)
+            if opening != command.opening:
+                modifications.append(
+                    Modification(
+                        kind=ModificationKind.CLIPPED,
+                        target=command.gripper,
+                        detail=f"opening limited to [{gripper.low:g}, {gripper.high:g}] "
+                        "by its actuators' control ranges",
+                    )
+                )
+            for drive, closed, open_ in gripper.drives:
+                data.ctrl[drive.id] = drive.clip(closed + opening * (open_ - closed))[0]
             return replace(command, opening=opening), tuple(modifications)
         raise CapabilityError("unavailable_command", "base twist is not bound in MuJoCo")
 
@@ -530,7 +593,7 @@ class MujocoRuntime:
         """The mean opening of a gripper's actuators, from their lengths, in [0, 1]."""
         data = self._open_data()
         openings = []
-        for drive, closed, open_ in self._grippers[gripper]:
+        for drive, closed, open_ in self._grippers[gripper].drives:
             low, high = drive.length_for(closed), drive.length_for(open_)
             length = float(data.actuator_length[drive.id])
             openings.append(min(max((length - low) / (high - low), 0.0), 1.0))
@@ -563,6 +626,25 @@ class MujocoRuntime:
         self._events.append(
             ExecutionStatus(execution=execution, state=state, stamp=stamp, diagnostic=diagnostic)
         )
+
+
+def _check_aliases(description: RobotDescription, commands: tuple[CommandBinding, ...]) -> None:
+    """Fail if confirmed capabilities whose resources do not overlap share an actuator:
+    the context would let different sources own them, and both would write it."""
+    users: dict[int, list[CommandBinding]] = {}
+    for binding in commands:
+        if binding.unavailable is None:
+            for i in binding.actuators:
+                users.setdefault(i, []).append(binding)
+    for i, bindings in sorted(users.items()):
+        for a, b in itertools.combinations(bindings, 2):
+            if not description.resources((a.component,)) & description.resources((b.component,)):
+                raise ValidationError(
+                    "actuator_alias",
+                    f"actuator {i} serves both {a.component!r} ({a.kind.value}) and "
+                    f"{b.component!r} ({b.kind.value}), which own different resources",
+                    path=f"actuators[{i}]",
+                )
 
 
 def _clipped(target: str, drive: Actuator) -> Modification:
