@@ -34,6 +34,18 @@ PLANTED = {
 }
 
 
+# Integration boundaries: files planted in a package, and whether the gate passes.
+# An integration subpackage may import its own backend, nothing else prohibited.
+BOUNDARIES: dict[str, tuple[dict[str, str], bool]] = {
+    "integration_own_backend": ({"mujoco/__init__.py": "import mujoco\n"}, True),
+    "integration_other_backend": ({"mujoco/__init__.py": "def load():\n    import torch\n"}, False),
+    "core_imports_integration": (
+        {"mujoco/__init__.py": "", "core.py": "def load():\n    import {package}.mujoco\n"},
+        False,
+    ),
+}
+
+
 def _gate(*args: str, pythonpath: Path | None = None) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     if pythonpath is not None:
@@ -50,7 +62,8 @@ def test_core_imports_no_backend(artifacts: Path) -> None:
 
 
 def test_gate_finds_backend_imports_in_every_form(tmp_path: Path, artifacts: Path) -> None:
-    """Eager, lazy, from, aliased, multiline, dotted, and literal dynamic imports all fail."""
+    """Eager, lazy, from, aliased, multiline, dotted, and literal dynamic imports all fail,
+    and an integration subpackage may import only its own backend."""
     (tmp_path / "mujoco").mkdir()
     (tmp_path / "mujoco" / "__init__.py").write_text("")  # lets the eager form import
     report: dict[str, dict[str, Any]] = {}
@@ -68,7 +81,27 @@ def test_gate_finds_backend_imports_in_every_form(tmp_path: Path, artifacts: Pat
                 if line.startswith("FAIL:")
             ],
         }
+    for case, (files, passes) in BOUNDARIES.items():
+        package = tmp_path / f"bounded_{case}"
+        package.mkdir()
+        (package / "__init__.py").write_text("")
+        for name, source in files.items():
+            (package / name).parent.mkdir(parents=True, exist_ok=True)
+            (package / name).write_text(source.format(package=package.name))
+        result = _gate("--package", package.name, pythonpath=tmp_path)
+        report[case] = {
+            "exit": result.returncode,
+            "expected_exit": 0 if passes else 1,
+            "failures": [
+                line.removeprefix("FAIL: ")
+                for line in result.stderr.splitlines()
+                if line.startswith("FAIL:")
+            ],
+        }
     (artifacts / "gate-forms.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    for form, outcome in report.items():
+    for form in PLANTED:
+        outcome = report[form]
         assert outcome["exit"] == 1, form
         assert any(f"leaky_{form}.backend:" in f for f in outcome["failures"]), outcome
+    for case in BOUNDARIES:
+        assert report[case]["exit"] == report[case]["expected_exit"], (case, report[case])

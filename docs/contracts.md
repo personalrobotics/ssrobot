@@ -25,8 +25,10 @@ description it is opened with. Only `RobotContext` is user-facing.
 
 The public interface consists of the names in `ssrobot.__all__`; the
 `ssrobot.conformance` module (`run_conformance` and its `ConformanceReport`,
-`ConformanceCheck`, `CheckOutcome`, and `FaultInjector`); and the `ssrobot` command
-(`init`, `inspect`, `doctor`), with the records its JSON options read and write. Every
+`ConformanceCheck`, `CheckOutcome`, and `FaultInjector`); the names in
+`ssrobot.mujoco.__all__`, installed with the `mujoco` extra and specified in
+[mujoco.md](mujoco.md); and the `ssrobot` command (`init`, `inspect`, `doctor`), with
+the records its JSON options read and write. Every
 other module and name is implementation. It can be imported, but this contract does not
 cover it. The interface is closed: every type that a public name accepts, returns, or
 exposes as a field or property is itself public, so no public use needs an
@@ -530,13 +532,18 @@ uv run python -m ssrobot.conformance --out out/  # trace.jsonl, conformance-repo
 uv run python scripts/check_core_imports.py      # core dependency gate
 ```
 
-The dependency gate makes four checks:
+Core is `ssrobot` without its integrations. Each integration is a subpackage, such as
+`ssrobot.mujoco`, that may use only the backends its extra installs. The dependency
+gate makes four checks:
 
-- **Runtime:** importing `ssrobot` and every submodule must not load a prohibited
-  module.
-- **Source:** no module may name one in an `import`, `from ... import`,
-  `importlib.import_module("...")`, or `__import__("...")` statement, anywhere,
-  including inside functions. Names built at run time are not detected.
+- **Runtime:** importing `ssrobot` and every core submodule must not load a prohibited
+  module. With `--integration NAME`, importing that integration must not load one
+  other than its own backends.
+- **Source:** no core module may name a prohibited module in an `import`,
+  `from ... import`, `importlib.import_module("...")`, or `__import__("...")`
+  statement, anywhere, including inside functions. An integration may name only its
+  own backends. Core may not import an integration, and an integration may not import
+  another. Names built at run time are not detected.
 - **Metadata:** the distribution must have no prohibited unconditional requirement.
 - **Closure:** every package type reachable from a public name, through parameters,
   return values, fields, and properties, must itself be public (see *Public surface*).
@@ -546,7 +553,9 @@ the dependency gate with `--installed` and the conformance scenario from it. Tha
 conformance trace and report, and the gate's `imports.json` import report, are uploaded
 as the `installed-conformance` artifact. The import report lists the distribution's
 requirements, every non-standard-library module that importing `ssrobot` and its
-submodules loaded, the submodules, and the top-level public names.
+submodules loaded, the submodules, and the top-level public names. A second clean
+environment installs the wheel with the `mujoco` extra, runs the gate with
+`--integration mujoco` (`imports-mujoco.json`), and opens `MujocoRuntime` from it.
 
 | Artifact | Shows |
 | --- | --- |
@@ -581,7 +590,8 @@ submodules loaded, the submodules, and the top-level public names.
 | `artifacts/test_doctor_verifies_the_built_wheel/` | `doctor --wheel` passing on a complete wheel and naming the missing texture in an incomplete one. |
 | `artifacts/reference-robots/` (CI job `reference-robots`) | Geodude and ADA from their pinned asset commits: `doctor` and installed `inspect` reports for each, and `references.json` with commits, hashes, licenses, fingerprints, the build toolchain, and the Franka fixture's provenance. See *Reference robots* in packages.md. |
 | `artifacts/test_core_imports_no_backend/gate.txt` | Where `ssrobot` was imported from, and the gate's verdict. |
-| `artifacts/test_gate_finds_backend_imports_in_every_form/gate-forms.json` | Planted eager, lazy, `from`, aliased, multiline, dotted, and `import_module` backend imports, each failing the gate with its module, line, and dependency. |
+| `artifacts/test_gate_finds_backend_imports_in_every_form/gate-forms.json` | Planted eager, lazy, `from`, aliased, multiline, dotted, and `import_module` backend imports, each failing the gate with its module, line, and dependency. An integration subpackage importing its own backend passes; one importing another backend, and a core module importing an integration, fail. |
+| MuJoCo runtime artifacts | See *Evidence* in [mujoco.md](mujoco.md). |
 | `artifacts/test_direct_responses_keep_causal_time/` | An external runtime's answers advancing `now`, a deadline counted from acceptance, a regressing answer causing a breach, and a manual runtime answering ahead of its tick being rolled back. |
 | `artifacts/test_applied_commands_stay_within_ownership/` | Applied commands on another source's arm, and beyond limits, both causing a breach. Nothing misleading is published, and every execution fails and releases ownership. |
 | `artifacts/test_invalid_submit_answer_is_rolled_back/rollback-report.json` | A submit answered for the wrong execution: the runtime is told to cancel that exact execution first, nothing stays live, and nothing is committed. |

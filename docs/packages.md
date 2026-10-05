@@ -315,7 +315,7 @@ The build backends come only from
 setuptools, Hatchling, and their dependencies by version and hash; a backend that is not
 in that file, or whose hash differs, fails the build. Regenerate it with the command at
 its top when a reference robot changes its `build-system.requires`. The job also pins
-the uv version. The script then runs two public commands:
+the uv version. The script then runs two public commands, and opens the runtime:
 
 - `ssrobot doctor` with `--wheel`. Its `wheel` check loads the wheel's contents through
   `load_installed_package`.
@@ -324,6 +324,9 @@ the uv version. The script then runs two public commands:
   --target`. The installer lays out the wheel, including any `.data` relocation, and
   the command runs from an empty directory with that target as the only location of
   the package.
+- `MujocoRuntime` on the installed package, in the same isolation, stepped 10 times.
+  It writes `mujoco-startup.json`, the mapping in [mujoco.md](mujoco.md), and requires
+  exact time and a package loaded from the install.
 
 It then checks that the report is a valid `ssrobot.PackageReport`, that its fingerprint
 matches its description, that nothing is ambiguous, and that the description

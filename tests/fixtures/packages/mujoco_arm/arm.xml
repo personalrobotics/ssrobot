@@ -1,0 +1,55 @@
+<!-- A small arm with a two-finger gripper, built from primitive geoms so it compiles in
+     MuJoCo without meshes. It exercises the runtime mapping: a continuous joint, limited
+     hinge and slide joints, an unnamed body the parser merges, sites, a camera, a contact
+     exclude, joint actuators in an included file, and a keyframe. -->
+<mujoco model="mujoco_arm">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002"/>
+  <default>
+    <joint damping="1"/>
+    <position kp="50"/>
+  </default>
+  <worldbody>
+    <light pos="0 0 2"/>
+    <body name="base">
+      <geom type="cylinder" size="0.1 0.05"/>
+      <body name="link1" pos="0 0 0.1">
+        <joint name="shoulder" axis="0 0 1"/>
+        <geom type="capsule" fromto="0 0 0 0 0 0.3" size="0.04"/>
+        <body name="link2" pos="0 0 0.3">
+          <joint name="elbow" axis="0 1 0" range="-2 2"/>
+          <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.035"/>
+          <body name="link3" pos="0.3 0 0">
+            <joint name="wrist" axis="1 0 0" range="-3 3"/>
+            <geom type="capsule" fromto="0 0 0 0.1 0 0" size="0.03"/>
+            <camera name="wrist_camera" pos="0.05 0 0.05" xyaxes="0 -1 0 0 0 1"/>
+            <body pos="0.1 0 0">
+              <geom type="box" size="0.01 0.04 0.04"/>
+              <body name="flange" pos="0.01 0 0">
+                <body name="gripper">
+                  <geom type="box" size="0.02 0.05 0.02"/>
+                  <site name="tcp" pos="0.08 0 0"/>
+                  <body name="left_finger" pos="0.04 0.02 0">
+                    <joint name="left_finger_joint" type="slide" axis="0 1 0" range="0 0.04"/>
+                    <geom type="box" size="0.03 0.005 0.01"/>
+                  </body>
+                  <body name="right_finger" pos="0.04 -0.02 0">
+                    <joint name="right_finger_joint" type="slide" axis="0 -1 0" range="0 0.04"/>
+                    <geom type="box" size="0.03 0.005 0.01"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <contact>
+    <exclude body1="base" body2="link2"/>
+  </contact>
+  <include file="actuators.xml"/>
+  <keyframe>
+    <key name="home" qpos="0.5 -1 0.25 0.02 0.02" ctrl="0.5 -1 0.25 0.02 0.02"/>
+  </keyframe>
+</mujoco>
