@@ -4,7 +4,9 @@
      exclude, joint actuators in an included file, and a keyframe. -->
 <mujoco model="mujoco_arm">
   <compiler angle="radian" autolimits="true"/>
-  <option timestep="0.002" integrator="implicitfast"/>
+  <!-- Elliptic friction cones with a high impedance ratio keep a held object from
+       creeping in a friction grasp, as MuJoCo recommends for grasping. -->
+  <option timestep="0.002" integrator="implicitfast" cone="elliptic" impratio="10"/>
   <default>
     <joint damping="1"/>
     <position kp="300" kv="20"/>

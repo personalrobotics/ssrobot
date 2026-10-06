@@ -22,8 +22,9 @@ yet.
 | `RobotDescription` | Immutable, validated semantic model of a robot: joints, links, frames, groups, manipulators, bases, end effectors, sensors, declared capabilities. Safe to share across contexts. | Implemented. Opendubs, a mobile manipulator with a mecanum base, is the first external consumer of `MobileBase` and `BaseTwistCommand`, in M2 (#85) |
 | Robot package | A model plus its `ssrobot.toml` manifest, loaded from a directory or an installed Python package into a `RobotDescription`. | Implemented |
 | `RobotContext` | The public session. Context-managed; the only path through which users observe, submit commands, step, snapshot, and close. | Implemented, except snapshots (M2) and semantic views such as `ctx.manipulator` (M3) |
-| `Runtime` | Injected backend mechanics (replay, MuJoCo, ROS 2). Owns I/O, lifecycle, status, and capability reporting. Contains no planning or task logic. | Implemented: the protocol, `ReplayRuntime`, and `MujocoRuntime` with joint, trajectory, gripper, and chunk commands and robot observations: joint state, effort, poses, wrenches, and camera images (#14–#16; see [mujoco.md](mujoco.md)). Attachments, object state, and snapshots are the rest of M2; `Ros2Runtime` is M6 |
+| `Runtime` | Injected backend mechanics (replay, MuJoCo, ROS 2). Owns I/O, lifecycle, status, and capability reporting. Contains no planning or task logic. | Implemented: the protocol, `ReplayRuntime`, and `MujocoRuntime` with joint, trajectory, gripper, and chunk commands and robot observations: joint state, effort, poses, wrenches, and camera images (#14–#16), and scenes with declared attachments (#17; see [mujoco.md](mujoco.md)). Object state and snapshots are the rest of M2; `Ros2Runtime` is M6 |
 | `Execution` | Passive handle returned by `submit`. Owns no thread, loop, or clock. | Implemented |
+| `SceneState` | A context's scene: objects, fixtures, and attachments (object, end effector, transform, allowed contacts), with a revision. Declared state for planners and traces; it never changes physics. | Implemented (#17) |
 | `SceneSnapshot` | Immutable, serializable scene state. | M2 |
 | `PlanningScene` | Neutral capability a runtime materializes from a snapshot: forward kinematics, state and edge validity, optional collision detail. Isolated and timeless. | M2 |
 | Trace | Versioned JSONL record of everything a context did, with content-addressed external assets. | Implemented |
@@ -213,9 +214,12 @@ Rules:
   terminal-state vocabulary.
 - **Snapshots (M2).** `SceneSnapshot` is immutable data. Snapshots and attachments
   carry a scene revision: a monotonic integer per context that increments on every
-  scene change. Runtimes materialize a snapshot as a neutral, isolated
-  `PlanningScene`. The MuJoCo provider reuses sscbirrt's native scene, snapshot, and
-  attachment-aware checker rather than duplicating them.
+  scene change. An attachment maps one-to-one onto sscbirrt's attachment (object,
+  holding body, transform, allowed bodies), which makes the held object part of the
+  robot in the planning scene while physics is left alone. Runtimes materialize a
+  snapshot as a neutral, isolated `PlanningScene`. The MuJoCo provider reuses
+  sscbirrt's native scene, snapshot, and attachment-aware checker rather than
+  duplicating them.
 - **Records.** Public values are frozen, slotted, keyword-only stdlib dataclasses with
   strict hand-written ingress validation; no Pydantic or msgspec in core. Checked-in
   JSON Schema describes their wire form and CI rejects drift. Every wire record
