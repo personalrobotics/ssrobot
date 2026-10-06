@@ -16,6 +16,7 @@ from ssrobot import (
     JointCommand,
     JointLimits,
     JointMode,
+    ObservationRequest,
     RobotContext,
     RobotDescription,
     SsrobotError,
@@ -191,6 +192,26 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
     urdf = load_package(ROOT / "tests" / "fixtures" / "packages" / "urdf_arm")
     odd_timestep = load_package(_with_timestep(tmp_path, "0.000333333333"))
     altered = dataclasses.replace(package, description=_altered(package.description))
+    bent_root = tmp_path / "bent"
+    shutil.copytree(FIXTURE, bent_root)
+    arm_xml = bent_root / "arm.xml"
+    arm_xml.write_text(
+        arm_xml.read_text().replace(
+            "  </keyframe>",
+            '    <key name="bent" qpos="0.5 -2.5 0.25 0.02 0.02"/>\n  </keyframe>',
+        )
+    )
+    bent = load_package(bent_root)  # elbow at -2.5, outside its [-2, 2] range
+    edge_root = tmp_path / "edge"
+    shutil.copytree(FIXTURE, edge_root)
+    edge_xml = edge_root / "arm.xml"
+    edge_xml.write_text(
+        edge_xml.read_text().replace(
+            "  </keyframe>",
+            '    <key name="edge" qpos="0.5 -1 3.0005 0.02 0.02"/>\n  </keyframe>',
+        )
+    )
+    edge = load_package(edge_root)  # wrist 0.5 mrad past its +3 stop: within tolerance
 
     def drifted() -> tuple[RobotDescription, MujocoRuntime]:
         monkeypatch.setattr(mujoco, "__version__", "3.13.0")
@@ -217,6 +238,10 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
             "model_mismatch",
             lambda: (altered.description, MujocoRuntime(altered)),
         ),
+        "keyframe outside the joint limits": (
+            "invalid_initial_state",
+            lambda: (bent.description, MujocoRuntime(bent, keyframe="bent")),
+        ),
         "zero substeps": (
             "invalid_substeps",
             lambda: (package.description, MujocoRuntime(package, substeps=0)),
@@ -240,6 +265,25 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
         # Last: its patch of the loaded MuJoCo version lasts for the rest of the test.
         "MuJoCo version drift": ("unsupported_backend_version", drifted),
     }
+    # A start within START_TOLERANCE past a stop opens. It is observed where it is, and
+    # held at the stop, so it settles back inside the range (#100). The wrist bears no
+    # gravity load, so nothing else holds it past the stop.
+    wrist = ObservationRequest(channels=("arm_q",))
+    with RobotContext(edge.description, MujocoRuntime(edge, keyframe="edge")) as ctx:
+        value = ctx.observe(wrist).readings[0].value
+        assert isinstance(value, tuple)
+        initial = value[2]
+        for _ in range(500):
+            ctx.step()
+        value = ctx.observe(wrist).readings[0].value
+        assert isinstance(value, tuple)
+        settled = value[2]
+    tolerated = {
+        "expected": "opened",
+        "code": "opened",
+        "initial_wrist": initial,
+        "settled_wrist": settled,
+    }
     report = {}
     for case, (expected, make) in cases.items():
         outcome: dict[str, Any] = {"expected": expected}
@@ -256,11 +300,16 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
             except SsrobotError:
                 outcome["mapping_available"] = False
         report[case] = outcome
+    report["keyframe just past a stop"] = tolerated
     (artifacts / "startup-failures.json").write_text(json.dumps(report, indent=2) + "\n")
     for case, outcome in report.items():
         assert outcome.get("code") == outcome["expected"], (case, outcome)
         assert not outcome.get("opened") and not outcome.get("mapping_available"), (case, outcome)
     assert report["description disagrees with MuJoCo"]["path"] == "joints[elbow]"
+    assert report["keyframe outside the joint limits"]["path"] == "joints[elbow]"
+    edge_report = report["keyframe just past a stop"]
+    assert edge_report["initial_wrist"] == 3.0005
+    assert 3.0 - 1e-4 <= edge_report["settled_wrist"] <= 3.0 + 1e-5
     assert [
         report[case]["path"]
         for case in (

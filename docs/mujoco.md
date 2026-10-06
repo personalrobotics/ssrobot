@@ -76,6 +76,7 @@ thread:
 | `invalid_timestep` | The model's timestep is not a whole number of nanoseconds. |
 | `model_mismatch` | MuJoCo's compiled model disagrees with the description (see *Mapping*). The path names the entity. |
 | `unknown_keyframe` | `keyframe` names no keyframe in the model. |
+| `invalid_initial_state` | A joint starts more than `START_TOLERANCE` outside its limits, in the keyframe or in the model's default state. The path names the joint. |
 | `unknown_profile`, `ambiguous_profile` | `profile` names no `mujoco` profile of the package, or none is named and the package has several. |
 | `invalid_profile` | The profile is not valid TOML or not a valid `ssrobot.MujocoProfile`. It also fails if it names a gripper the description lacks, an actuator the model lacks, or a gripper actuator that is not a position servo, or if no opening in [0, 1] is within every actuator's control range. The path names the file and entry. |
 | `actuator_alias` | An actuator would serve resources the context treats as separately owned, so two owners could write the same control. A gripper actuator must move only joints the gripper declares: through its joint, or every joint of its fixed tendon. Two confirmed capabilities with disjoint resources may never share an actuator. |
@@ -86,7 +87,8 @@ the result of the latest successful open or unavailable (`not_open`).
 
 On success the runtime starts in the model's default state, or in `keyframe`. Every
 joint position servo is then set to hold its joint where it is, rather than drive it to
-the position a control of 0 would give. The runtime reports this `RuntimeInfo`:
+the position a control of 0 would give. A joint starting just past its stop, within
+`START_TOLERANCE`, is observed where it is and held at the stop. The runtime reports this `RuntimeInfo`:
 
 - runtime `mujoco`, with its version naming ssrobot and MuJoCo;
 - clock mode `manual`, on clock `mujoco:<robot>`;
@@ -197,7 +199,7 @@ the runtime:
 | Command | Runs |
 | --- | --- |
 | `JointCommand`, `GripperCommand` | Applied on the next step, then `succeeded`. A setpoint stays in force until something replaces it. A gripper opening is clipped once, to the openings every one of its actuators can reach, and that one opening is sent to all of them and reported as applied. |
-| `JointTrajectory` | Rejected with `start_mismatch` if its first waypoint is more than `START_TOLERANCE` (1e-3) from the current positions. Otherwise `active` from the next step, sampled by linear interpolation at runtime time. Waypoint velocities are accepted but not used. See *Trajectories*. |
+| `JointTrajectory` | Rejected with `start_mismatch` if its first waypoint is more than `START_TOLERANCE` (1e-3) from the current positions. Otherwise `active` from the next step, sampled by linear interpolation at runtime time. A setpoint past a joint's limits, which only a start from a joint resting on its stop produces, is clamped to the limit with a `clipped` modification. Waypoint velocities are accepted but not used. See *Trajectories*. |
 | `ActionChunk` | Applies its latest due step on every step from its start, and succeeds after the final step. A period shorter than a tick skips steps. The context already refuses stale chunks, chunks on another clock, and steps whose commands overlap. |
 
 When an execution is canceled, superseded, or times out (the context owns deadlines),
@@ -221,9 +223,9 @@ loop is an application that calls `step()`; it is not a different runtime mode.
 | Artifact | Shows |
 | --- | --- |
 | `artifacts/test_mujoco_runtime_resolves_and_steps_the_package/mapping.json`, `lifecycle.json` | The `mujoco_arm` example's full mapping and bindings. Position, trajectory, and gripper commands and three channels confirmed; the velocity command not, as `no_velocity_actuators`, and refused. Exact time over four ticks of five substeps, identical across two opens. Close is idempotent. One runtime, reused: a failed reopen leaves no mapping, and a successful one gives the same mapping again. |
-| `artifacts/test_mujoco_executes_trajectories_chunks_and_grippers/<scenario>/trace.jsonl`, `final-state.json` | Eight scenarios, each from the `home` keyframe. Trajectory: succeeds within `goal_tolerance`. Chunk: an arm and gripper command per step, one application per tick of the latest due step. Gripper: closes to at most 0.05 and opens to at least 0.95. Range-limited gripper (left finger's control range halved): opening 1 is applied as 0.5, `clipped`, and the hand settles within 0.05 of 0.5. Reversed profile: 0.25 applied and reached. The changed packages are under `packages/`. Cancel: nothing applied after it, and the arm holds within 0.02 of its last setpoint. Timeout: `timed_out`. Zero tolerance and settle time: `goal_not_reached`. A second run gives byte-identical files. |
+| `artifacts/test_mujoco_executes_trajectories_chunks_and_grippers/<scenario>/trace.jsonl`, `final-state.json` | Nine scenarios, each from the `home` keyframe. Trajectory: succeeds within `goal_tolerance`. Chunk: an arm and gripper command per step, one application per tick of the latest due step. Gripper: closes to at most 0.05 and opens to at least 0.95. Range-limited gripper (left finger's control range halved): opening 1 is applied as 0.5, `clipped`, and the hand settles within 0.05 of 0.5. Reversed profile: 0.25 applied and reached. Stop and back: the elbow, driven onto its lower stop, rests 0.43 mrad past it, and a trajectory starting there succeeds, with only its first setpoint clamped. The changed packages are under `packages/`. Cancel: nothing applied after it, and the arm holds within 0.02 of its last setpoint. Timeout: `timed_out`. Zero tolerance and settle time: `goal_not_reached`. A second run gives byte-identical files. |
 | `artifacts/test_mujoco_rejects_unexecutable_commands/rejections.json` | `start_mismatch`, an unconfirmed velocity command, a chunk commanding the arm and the overlapping `wrist_only` group, and each profile failure, with its code and path. That covers a gripper profile naming the arm's actuator (`actuator_alias`) and no reachable opening. A zero-gear wrist opens with the arm's and wrist's position commands unconfirmed and their reasons recorded. |
-| `artifacts/test_mujoco_runtime_refuses_mismatches_before_commands/startup-failures.json` | Each code in *Opening*, plus `invalid_substeps`, with its path and message. For `package_changed`: the canonical MJCF edited after loading, an included file edited, and an include replaced by a symlink out of the package. None of them opened or left a mapping. |
+| `artifacts/test_mujoco_runtime_refuses_mismatches_before_commands/startup-failures.json` | Each code in *Opening*, plus `invalid_substeps`, with its path and message, including a keyframe with the elbow outside its range (`invalid_initial_state`). A keyframe with the wrist 0.5 mrad past its stop opens, is first observed at 3.0005, and settles back to its stop. For `package_changed`: the canonical MJCF edited after loading, an included file edited, and an include replaced by a symlink out of the package. None of them opened or left a mapping. |
 | `reference-robots/<robot>/mujoco-startup.json` (CI) | Geodude and ADA opened from their installed wheels: mapping, runtime version, and exact time after 10 steps. |
 | `installed-conformance/imports-mujoco.json` (CI) | The `[mujoco]` wheel in a clean environment: what importing the integration loads, and that the gate passes. |
 

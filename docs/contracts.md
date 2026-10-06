@@ -152,8 +152,11 @@ or task logic.
 - `recover()` attempts to clear a fault. Success arrives as a later `ok` health event.
 - `step()` is called only on manual runtimes. `close()` is idempotent and safe after a
   failed or partial `open`.
-- A runtime must reject (`rejected`) a trajectory whose first waypoint differs from the
-  current joint positions.
+- A runtime must reject (`rejected`), with `start_mismatch`, a trajectory whose first
+  waypoint is more than `START_TOLERANCE` from the current joint positions.
+- A runtime clamps every position setpoint it applies to the joints' limits, and lists
+  each clamp as a `clipped` `Modification`. Only a trajectory starting from a joint
+  resting past its stop produces such setpoints, so the runtime sends the stop itself.
 - **Direct answers keep causal time.** The stamps on `submit` and `observe` answers may
   not precede the latest runtime time the context accepted. A manual runtime answers
   at the current tick. An external runtime's answer may be later, and then advances
@@ -412,6 +415,10 @@ inspected before any runtime opens. The runtime confirms which are available in
 
 1. It is structurally valid; construction guarantees this.
 2. Its components and joints exist, in the declared order, and it is within limits.
+   One exception: a trajectory's first waypoint may lie up to `START_TOLERANCE` (1e-3,
+   in joint units) outside a joint's limits. It describes where the joints are, and a
+   joint resting on its stop reads slightly past it. Every later waypoint, and every
+   other command, must be within limits.
 3. The capability is declared (`unsupported_command`).
 4. The capability is available now (`unavailable_command` or `unavailable_channel`).
 
@@ -488,7 +495,8 @@ reference implementation of the runtime contract.
 - **Trajectories** start on the next tick, are sampled by linear interpolation, and
   succeed when their last waypoint is applied. A trajectory whose first waypoint is
   more than `START_TOLERANCE` from the observed positions is rejected
-  (`start_mismatch`).
+  (`start_mismatch`). Setpoints past a joint's limits are clamped, with a `clipped`
+  modification.
 - **Chunks** apply their latest due step on each tick.
 - **Faults.** If a tick lists `expected_applied` and the applied commands differ, the
   runtime faults with `replay_divergence`. Stepping past the last tick faults with
@@ -597,6 +605,7 @@ environment installs the wheel with the `mujoco` extra, runs the gate with
 | `artifacts/test_gate_finds_backend_imports_in_every_form/gate-forms.json` | Planted eager, lazy, `from`, aliased, multiline, dotted, and `import_module` backend imports, each failing the gate with its module, line, and dependency. An integration subpackage importing its own backend passes; one importing another backend, and a core module importing an integration, fail. |
 | MuJoCo runtime artifacts | See *Evidence* in [mujoco.md](mujoco.md). |
 | `artifacts/test_direct_responses_keep_causal_time/` | An external runtime's answers advancing `now`, a deadline counted from acceptance, a regressing answer causing a breach, and a manual runtime answering ahead of its tick being rolled back. |
+| `artifacts/test_replay_starts_a_trajectory_from_a_joint_resting_past_its_stop/trace.jsonl` | A replay recorded 0.5 mrad past a stop: a trajectory starting there succeeds, and only its first applied setpoint is clamped, with a `clipped` modification on that joint. |
 | `artifacts/test_applied_commands_stay_within_ownership/` | Applied commands on another source's arm, and beyond limits, both causing a breach. Nothing misleading is published, and every execution fails and releases ownership. |
 | `artifacts/test_invalid_submit_answer_is_rolled_back/rollback-report.json` | A submit answered for the wrong execution: the runtime is told to cancel that exact execution first, nothing stays live, and nothing is committed. |
 | `artifacts/test_read_trace_enforces_whole_trace_invariants/` | Broken traces (gaps, repeats, reordering, time going back, a foreign clock, a mismatched payload stamp, negative time), each rejected with a code and line, and a truncated trace accepted. |

@@ -324,7 +324,9 @@ the uv version. The script then runs two public commands, and opens the runtime:
   --target`. The installer lays out the wheel, including any `.data` relocation, and
   the command runs from an empty directory with that target as the only location of
   the package.
-- `MujocoRuntime` on the installed package, in the same isolation, stepped 10 times.
+- `MujocoRuntime` on the installed package, in the same isolation, stepped 10 times. It
+  starts from the pin's `keyframe` when there is one: a model's default state need not be
+  a valid start, and `MujocoRuntime` refuses one outside the joint limits.
   It writes `mujoco-startup.json`, the mapping in [mujoco.md](mujoco.md), and requires
   exact time and a package loaded from the install.
 

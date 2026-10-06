@@ -8,6 +8,7 @@ and runtime-confirmed capabilities.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 from ssrobot._wire import ArrayValue
 from ssrobot.commands import (
@@ -25,8 +26,48 @@ from ssrobot.commands import (
 from ssrobot.conventions import Pose
 from ssrobot.description import CommandCapability, JointGroup, RobotDescription
 from ssrobot.errors import CapabilityError, ValidationError
+from ssrobot.execution import Modification, ModificationKind
 from ssrobot.observations import VECTOR_QUANTITIES, Observation, ObservationRequest, Quantity
 from ssrobot.runtime import RuntimeInfo
+
+START_TOLERANCE = 1e-3
+"""How far, in joint units, a trajectory's first waypoint may be from where the joints
+are. A runtime rejects a larger gap with ``start_mismatch``. The first waypoint may also
+lie this far outside a joint's limits, because it describes where the joint is: a joint
+resting on its stop reads slightly past it."""
+
+
+def clamp_positions(
+    description: RobotDescription, command: InstantCommand
+) -> tuple[InstantCommand, tuple[Modification, ...]]:
+    """A position command with every value moved inside its joint's limits, and a
+    ``clipped`` modification for each value moved.
+
+    Runtimes apply this to every position setpoint. Only a trajectory starting from a
+    joint resting just past its stop produces such values (``START_TOLERANCE``); the
+    setpoint they send is the stop itself.
+    """
+    if not isinstance(command, JointCommand) or command.mode is not JointMode.POSITION:
+        return command, ()
+    values = []
+    modifications = []
+    for name, value in zip(command.joints, command.values, strict=True):
+        limits = description.joint(name).limits
+        low = -math.inf if limits.lower is None else limits.lower
+        high = math.inf if limits.upper is None else limits.upper
+        clamped = min(max(value, low), high)
+        if clamped != value:
+            modifications.append(
+                Modification(
+                    kind=ModificationKind.CLIPPED,
+                    target=name,
+                    detail=f"setpoint {value} limited to the joint's range [{low}, {high}]",
+                )
+            )
+        values.append(clamped)
+    if not modifications:
+        return command, ()
+    return replace(command, values=tuple(values)), tuple(modifications)
 
 
 def check_command(
@@ -60,7 +101,8 @@ def check_command(
         _require(description, info, command.group, CommandKind.JOINT_TRAJECTORY, None)
         group = _check_joint_order(description, command.group, command.joints)
         for i, row in enumerate(command.positions):
-            _check_limits(description, group, JointMode.POSITION, row, f"positions[{i}]")
+            slack = START_TOLERANCE if i == 0 else 0.0
+            _check_limits(description, group, JointMode.POSITION, row, f"positions[{i}]", slack)
         for i, row in enumerate(command.velocities or ()):
             _check_limits(description, group, JointMode.VELOCITY, row, f"velocities[{i}]")
     else:
@@ -124,11 +166,16 @@ def _check_limits(
     mode: JointMode,
     values: tuple[float, ...],
     path: str,
+    slack: float = 0.0,
 ) -> None:
     for name, v in zip(group.joints, values, strict=True):
         limits = description.joint(name).limits
         if mode is JointMode.POSITION:
-            ok = limits.lower is None or limits.upper is None or limits.lower <= v <= limits.upper
+            ok = (
+                limits.lower is None
+                or limits.upper is None
+                or limits.lower - slack <= v <= limits.upper + slack
+            )
             bound = f"[{limits.lower}, {limits.upper}]"
         else:
             cap = limits.velocity if mode is JointMode.VELOCITY else limits.effort

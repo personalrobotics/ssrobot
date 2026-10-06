@@ -55,7 +55,7 @@ from ssrobot import (
     dumps,
     loads,
 )
-from ssrobot.validation import check_command, check_request
+from ssrobot.validation import START_TOLERANCE, check_command, check_request
 from tests.conftest import ROOT
 from tests.support import KinematicRuntime, ObserveOnlyRuntime, bimanual_robot
 
@@ -262,6 +262,18 @@ def test_conventions_accept_valid_and_reject_ambiguous_input(artifacts: Path) ->
             robot, JointCommand(group="right_arm", joints=joints, mode=mode, values=values)
         )
 
+    def trajectory_from(first: float, then: float) -> Callable[[], None]:
+        """A right-arm trajectory whose third joint goes from ``first`` to ``then``."""
+        return lambda: check_command(
+            robot,
+            JointTrajectory(
+                group="right_arm",
+                joints=RIGHT,
+                time_from_start_ns=(0, 1_000_000_000),
+                positions=((0.0, 0.0, first), (0.0, 0.0, then)),
+            ),
+        )
+
     def asset_path(d: dict[str, Any]) -> None:
         d["readings"][rgb_reading]["value"]["path"] = "../escape.bin"
 
@@ -402,6 +414,21 @@ def test_conventions_accept_valid_and_reject_ambiguous_input(artifacts: Path) ->
             "joint_mismatch",
         ),
         ("joint command beyond limits", joint((0.1, 0.2, 4.0)), "out_of_limits"),
+        (
+            "trajectory starting just past a stop, where the joint rests",
+            trajectory_from(math.pi + 0.5 * START_TOLERANCE, math.pi - 0.1),
+            None,
+        ),
+        (
+            "trajectory starting further past a stop",
+            trajectory_from(math.pi + 2 * START_TOLERANCE, math.pi - 0.1),
+            "out_of_limits",
+        ),
+        (
+            "trajectory heading past a stop",
+            trajectory_from(math.pi - 0.1, math.pi + 0.5 * START_TOLERANCE),
+            "out_of_limits",
+        ),
         ("joint command with NaN", joint((0.1, math.nan, 0.3)), "non_finite"),
         (
             "undeclared joint mode",

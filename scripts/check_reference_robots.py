@@ -169,7 +169,7 @@ def inspect_installed(
 STARTUP_STEPS = 10
 
 
-def startup(module: str, out: Path) -> int:
+def startup(module: str, out: Path, keyframe: str | None) -> int:
     """Open MujocoRuntime on the installed ``module``, step it, and write what it bound.
 
     Runs in the isolated inspection process, see ``mujoco_startup``.
@@ -178,7 +178,7 @@ def startup(module: str, out: Path) -> int:
     from ssrobot.mujoco import MujocoRuntime
 
     package = load_installed_package(module)
-    runtime = MujocoRuntime(package)
+    runtime = MujocoRuntime(package, keyframe=keyframe)
     with RobotContext(package.description, runtime) as ctx:
         for _ in range(STARTUP_STEPS):
             ctx.step()
@@ -189,13 +189,14 @@ def startup(module: str, out: Path) -> int:
             "runtime_version": ctx.info.runtime_version,
             "steps": STARTUP_STEPS,
             "time_ns": ctx.now.time_ns,
+            "keyframe": keyframe,
             "mapping": json.loads(dumps(runtime.mapping)),
         }
     out.write_text(json.dumps(record, indent=2) + "\n")
     return 0
 
 
-def mujoco_startup(module: str, out: Path, scratch: Path) -> tuple[bool, str]:
+def mujoco_startup(module: str, keyframe: str | None, out: Path, scratch: Path) -> tuple[bool, str]:
     """Run ``startup`` against the installed package, isolated like ``ssrobot inspect``."""
     result = subprocess.run(
         [
@@ -205,6 +206,7 @@ def mujoco_startup(module: str, out: Path, scratch: Path) -> tuple[bool, str]:
             "--startup",
             module,
             str((out / "mujoco-startup.json").resolve()),
+            *(["--keyframe", keyframe] if keyframe else []),
         ],
         capture_output=True,
         text=True,
@@ -294,7 +296,7 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
     }
     record["structure"] = observed
     compare("structure", {k: expect[k] for k in observed}, observed)
-    add("mujoco_startup", *mujoco_startup(robot["module"], out, scratch))
+    add("mujoco_startup", *mujoco_startup(robot["module"], robot.get("keyframe"), out, scratch))
     return record
 
 
@@ -302,9 +304,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--out", type=Path)
     parser.add_argument("--startup", nargs=2, metavar=("MODULE", "OUT"), help=argparse.SUPPRESS)
+    parser.add_argument("--keyframe", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.startup is not None:
-        return startup(args.startup[0], Path(args.startup[1]))
+        return startup(args.startup[0], Path(args.startup[1]), args.keyframe)
     if args.out is None:
         parser.error("--out is required")
     pins = tomllib.loads(PINS.read_text())
