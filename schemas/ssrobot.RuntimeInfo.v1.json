@@ -91,6 +91,20 @@
             "type": "string"
           },
           "description": "Channel names confirmed available now."
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Scene objects that can be attached, sorted; empty without a scene."
+        },
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Static scene bodies an attachment may allow contact with, sorted."
         }
       },
       "required": [

@@ -22,6 +22,8 @@ from ssrobot import (
     AppliedCommand,
     ArrayValue,
     AssetStore,
+    Attachment,
+    AttachmentViolation,
     CapabilityError,
     ClockMode,
     Diagnostic,
@@ -48,6 +50,7 @@ from ssrobot import (
     RobotContext,
     RobotDescription,
     RuntimeInfo,
+    SceneState,
     SsrobotError,
     StaleRevisionError,
     Timestamp,
@@ -156,8 +159,30 @@ def _examples() -> dict[str, Record]:
         commands=robot.commands[:3],
         channels=("right_arm_q", "head_rgb"),
     )
+    scene = SceneState(
+        revision=2,
+        objects=("box", "cup"),
+        fixtures=("table",),
+        attachments=(
+            Attachment(
+                object="box",
+                end_effector="left_hand",
+                transform=Pose(position=(0.0, 0.0, 0.05), quat_wxyz=(0.0, 1.0, 0.0, 0.0)),
+                allow=("left_tool", "table"),
+                held=False,
+            ),
+        ),
+    )
+    violation = AttachmentViolation(
+        object="box",
+        stamp=Timestamp(clock=SIM, time_ns=40),
+        position_error=0.02,
+        rotation_error=0.1,
+    )
     return {
         **joint_commands,
+        "scene_state": scene,
+        "attachment_violation": violation,
         "runtime_info": runtime_info,
         "trajectory": trajectory,
         "action_chunk": chunk,
@@ -178,7 +203,15 @@ def test_records_round_trip_through_json_and_checked_in_schemas(artifacts: Path)
         decoded = loads(text, type(record), assets)
         assert decoded == record
         assert dumps(decoded, assets) == text
-        if not isinstance(record, RobotDescription | AppliedCommand | Observation | RuntimeInfo):
+        if not isinstance(
+            record,
+            RobotDescription
+            | AppliedCommand
+            | Observation
+            | RuntimeInfo
+            | SceneState
+            | AttachmentViolation,
+        ):
             check_command(robot, record)  # type: ignore[arg-type]
 
     # Image and depth payloads are stored once, by content, outside the JSON.

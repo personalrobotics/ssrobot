@@ -39,8 +39,8 @@ uses them:
 | --- | --- |
 | Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `ResolvedFile`, `SourceItem`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
-| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode` |
-| Runtimes, and those who write them | `Runtime`, `RuntimeInfo`, `RuntimeUpdate`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
+| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment` |
+| Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `RuntimeInfo`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
 | Error handling | `SsrobotError`, `ValidationError`, `CapabilityError`, `OwnershipError`, `StaleRevisionError`, `LifecycleError` |
 
@@ -111,7 +111,7 @@ trace. It validates everything going into the runtime and everything coming out.
 | Member | Behavior |
 | --- | --- |
 | `with ctx:` / `__enter__` | Opens the runtime once, checks its `RuntimeInfo`, and polls it for the current time. If anything fails, it closes the runtime and re-raises. |
-| `__exit__`, `close()` | Cancels unfinished executions (`context_closed`) and closes the runtime. Idempotent. Runs on normal exit and on exceptions. |
+| `__exit__`, `close()` | Detaches every attachment, cancels unfinished executions (`context_closed`), and closes the runtime. Idempotent. Runs on normal exit and on exceptions. |
 | `state`, `info`, `now`, `fault` | Lifecycle state, the opened runtime's `RuntimeInfo`, the latest runtime time, and the fault that put the context in `faulted`, if any. |
 | `observe(request)` | Checks the request against declared and available channels, then checks that the observation answers it on the runtime clock. |
 | `submit(command, *, source="client", timeout_ns=None)` | Validates, takes ownership, and returns a passive `Execution`. Does not advance time. |
@@ -121,6 +121,9 @@ trace. It validates everything going into the runtime and everything coming out.
 | `update()` | Applies the runtime's pending update without advancing a manual clock. |
 | `run_until(execution, *, max_ticks=None, timeout_s=None)` | Returns a finished execution's status at once, with no step, poll, or bound. Otherwise it blocks until the execution finishes or the bound is reached: it steps a manual runtime, needing `max_ticks` or a deadline, and polls an external runtime, needing `timeout_s` of wall-clock time. A handle from another context fails with `unknown_reference`. |
 | `recover()` | Faulted only: asks the runtime to clear its fault, then returns the resulting state. Fails with `unrecoverable` after a runtime contract breach. |
+| `scene` | The current `SceneState`: its revision, the runtime's objects and fixtures, and the attachments. See *Scene*. |
+| `attach(object, end_effector, *, transform=None, allow=None, revision=None, source="client")` | Open only. Declares a scene object held by an end effector and returns the new scene. Changes nothing unless it succeeds. |
+| `detach(object, *, revision=None, source="client")` | Open or faulted. Removes the attachment and its allowances and returns the new scene. |
 | `owners(component)`, `executions` | Every unfinished execution holding any of the component's resources, as `Ownership` entries; and every execution in submission order. |
 
 An `Execution` exposes `id`, `command`, `source`, `components`, `deadline`, `status`,
@@ -185,6 +188,64 @@ enters a deterministic safe state:
 
 A failure during this cleanup is attached to the original error as a note.
 
+### Scene
+
+Task objects belong to the runtime, not the robot description. A runtime with a scene
+lists them in `RuntimeInfo`. The context rejects a runtime that lists objects or
+fixtures without implementing `SceneRuntime` (`undeclared_capability`).
+- `objects` are the bodies that can be attached.
+- `fixtures` are static bodies an attachment may allow contact with.
+
+An **attachment** declares that an end effector holds an object. It is what a planner
+needs to treat the object as part of the robot:
+- The object moves with the end effector at `transform` (its pose in the end
+  effector's frame).
+- It collides with the environment and with the rest of the robot.
+- It may touch the `allow` names, because that contact is the grasp itself.
+
+Declaring an attachment never changes how a runtime simulates or drives anything:
+whether the object actually comes along is the backend's business. The context owns
+the `SceneState`. Deciding *when* an object is held is the client's: the core does no
+grasp detection.
+
+`attach` validates everything before the runtime sees it. Each failure leaves the scene
+as it was.
+
+| Check | Code |
+| --- | --- |
+| the object is one of `RuntimeInfo.objects` | `unknown_reference` |
+| the end effector is declared | `unknown_reference` |
+| each `allow` name is a description frame or a fixture | `unknown_reference` |
+| `allow` repeats no name | `duplicate_name` |
+| `transform` is a `Pose` | `wrong_type` |
+| the object is not already attached | `already_attached` |
+| `revision`, when given, is the current one | `stale_revision` (`StaleRevisionError`) |
+
+- **`transform`.** Omitted, the runtime resolves it to where the object is now.
+- **`allow`.** Omitted, it is every description frame at or below the end effector's
+  gripper mount (`Gripper.frame`), or the end effector's own frame for a tool. It is
+  recorded sorted.
+- **The runtime's answer.** `SceneRuntime.attach(attachment, resolve)` may refuse with
+  an `SsrobotError`. Otherwise it must return the same attachment, with only the
+  transform filled in when `resolve` is true. Any other answer is a contract breach.
+  The context then also tells the runtime to detach the object.
+- **`detach`** fails with `not_attached` or `stale_revision`.
+
+Every committed change increments `revision` and is traced as a `scene` record.
+
+**Violations.** A runtime reports an `AttachmentViolation` once, in its update, when a
+held object leaves its declared transform. The context:
+- traces it;
+- marks the attachment `held: false` and increments the revision;
+- keeps the attachment until the client detaches it.
+
+A violation for an object that is not attached, or already marked, is a contract
+breach.
+
+**Lifetime.** Attachments are not owned by executions. `cancel`, `stop`, timeouts and
+faults leave them in place. Closing the context detaches every attachment, and that
+is traced, before executions are cancelled.
+
 ## Lifecycle, ownership, and execution
 
 ### Context states
@@ -192,8 +253,8 @@ A failure during this cleanup is attached to the original error as a note.
 | State | Entered by | Allowed operations |
 | --- | --- | --- |
 | `created` | construction | `__enter__`, `close` |
-| `open` | a successful `__enter__`; `recover()` or an `ok` health event while faulted | `observe`, `submit`, `cancel`, `stop`, `step`, `update`, `run_until`, `close` |
-| `faulted` | a `faulted` health event, or a runtime contract breach | `observe`, `cancel`, `stop`, `step`, `update`, `run_until`, `recover`, `close` |
+| `open` | a successful `__enter__`; `recover()` or an `ok` health event while faulted | `observe`, `submit`, `cancel`, `stop`, `step`, `update`, `run_until`, `attach`, `detach`, `close` |
+| `faulted` | a `faulted` health event, or a runtime contract breach | `observe`, `cancel`, `stop`, `step`, `update`, `run_until`, `detach`, `recover`, `close` |
 | `closed` | `close()`, `__exit__`, or a failed `__enter__` | `close` (no-op) |
 
 Anything else fails deterministically with `LifecycleError`. The code is `faulted`
@@ -364,6 +425,10 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 
 - **Description revision.** The description fingerprint. A runtime reports the
   fingerprint it bound, and a mismatch at open fails with `stale_description`.
+- **Scene revision.** `SceneState.revision`, an integer per context. It starts at 0
+  when the context opens and increments on every attach, detach, and violation. Passing
+  `revision=` to `attach` or `detach` makes the call fail with `stale_revision` if the
+  scene changed since.
 
 ### Wire form
 
@@ -477,10 +542,13 @@ Every event becomes one `TraceRecord`, passed synchronously to each sink in orde
 | --- | --- |
 | `schema`, `version` | `ssrobot.TraceRecord`, 1 |
 | `sequence` | 0, 1, 2, … with no gaps |
-| `kind` | `opened`, `observed`, `submitted`, `status`, `applied`, `health`, `stepped`, `closed` |
+| `kind` | `opened`, `observed`, `submitted`, `status`, `applied`, `health`, `scene`, `violation`, `stepped`, `closed` |
 | `clock`, `time_ns` | Runtime time of the event. Runtime events use their own stamps, and everything else uses the context's `now`. Never decreases along a trace. |
-| `source` | The submitter for `submitted` and `applied`, `runtime:<name>` for what the runtime reported, and `context` for the context's own decisions |
-| `payload` | `RuntimeInfo`, `Observation`, `Submission`, `ExecutionStatus`, `AppliedCommand`, or `RuntimeHealth` by kind; none for `stepped` and `closed` |
+| `source` | The submitter for `submitted` and `applied` and for a client's `scene` change, `runtime:<name>` for what the runtime reported, and `context` for the context's own decisions |
+| `payload` | `RuntimeInfo`, `Observation`, `Submission`, `ExecutionStatus`, `AppliedCommand`, `RuntimeHealth`, `SceneState`, or `AttachmentViolation` by kind; none for `stepped` and `closed` |
+
+A context whose runtime has a scene traces its initial `SceneState` right after
+`opened`. A runtime without one adds no `scene` records.
 
 Within one record, a payload's own stamp equals the record's `clock` and `time_ns`,
 `RuntimeInfo.clock` equals `clock`, and a submission's deadline is on the same clock
@@ -582,10 +650,11 @@ environment installs the wheel with the `mujoco` extra, runs the gate with
 
 | Artifact | Shows |
 | --- | --- |
-| `artifacts/test_records_round_trip_through_json_and_checked_in_schemas/` | Joint commands in all three modes, runtime info, trajectory, action chunk, multimodal observation, applied command, and description, each in wire form with its out-of-line image and depth assets. Each validates against `schemas/` and decodes to an equal value. |
+| `artifacts/test_records_round_trip_through_json_and_checked_in_schemas/` | Joint commands in all three modes, runtime info, trajectory, action chunk, multimodal observation, applied command, scene state with an attachment, attachment violation, and description, each in wire form with its out-of-line image and depth assets. Each validates against `schemas/` and decodes to an equal value. |
 | `artifacts/test_joint_command_schema_fixes_the_unit_of_values_by_mode/joint-command-units.json` | For position, velocity, and effort commands: the mode, the single unit the schema resolves for `values`, and the unit after decoding. |
 | `artifacts/test_conventions_accept_valid_and_reject_ambiguous_input/conventions-report.json` | Every valid and invalid convention case with its expected and actual diagnostic code and path. Covers the MuJoCo, URDF, and ROS timestamp conversions, chunk clocks against manual and external runtimes, and execution-record identifiers. |
 | `artifacts/test_replay_runtime_passes_the_conformance_scenario/run/` | The ReplayRuntime conformance `trace.jsonl` and `conformance-report.json`. The test re-reads them and checks every line against the schema, contiguous sequence numbers, time that never decreases, legal transitions, all five terminal states, and that each applied command is attributed to its submitter. A second run in `rerun/` is byte-identical. |
+| `artifacts/test_scene_runtimes_that_break_their_contract/scene-breach-report.json` | A scene runtime that changes the transform or allow set it was given, or reports a violation for an object that is not attached, is a contract breach. Nothing is committed and the runtime is told to detach. A runtime that lists objects without implementing `SceneRuntime` is refused at open. |
 | `artifacts/test_replay_faults_on_divergence_and_exhaustion/trace.jsonl` | A replay that diverges from its recording, recovers, then runs out of ticks. |
 | `artifacts/test_example_package_loads_identically_wherever_it_lives[<name>]/` | For each example package: its description, a semantic summary (manipulators, their joints, frames, end effectors and grippers, composite groups, sensors, qualified names), and its package report. Each validates against `schemas/`. The same content loads identically from a copy and as an installed Python package. |
 | `artifacts/test_overlapping_groups_share_ownership/ownership-report.json` | `owners("left_arm_with_lift")` when unowned, completely owned, partially owned, and shared, plus a different source refused on the composite's joints. |
