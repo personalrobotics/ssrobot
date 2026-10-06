@@ -191,6 +191,16 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
     urdf = load_package(ROOT / "tests" / "fixtures" / "packages" / "urdf_arm")
     odd_timestep = load_package(_with_timestep(tmp_path, "0.000333333333"))
     altered = dataclasses.replace(package, description=_altered(package.description))
+    bent_root = tmp_path / "bent"
+    shutil.copytree(FIXTURE, bent_root)
+    arm_xml = bent_root / "arm.xml"
+    arm_xml.write_text(
+        arm_xml.read_text().replace(
+            "  </keyframe>",
+            '    <key name="bent" qpos="0.5 -2.5 0.25 0.02 0.02"/>\n  </keyframe>',
+        )
+    )
+    bent = load_package(bent_root)  # elbow at -2.5, outside its [-2, 2] range
 
     def drifted() -> tuple[RobotDescription, MujocoRuntime]:
         monkeypatch.setattr(mujoco, "__version__", "3.13.0")
@@ -216,6 +226,10 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
         "description disagrees with MuJoCo": (
             "model_mismatch",
             lambda: (altered.description, MujocoRuntime(altered)),
+        ),
+        "keyframe outside the joint limits": (
+            "invalid_initial_state",
+            lambda: (bent.description, MujocoRuntime(bent, keyframe="bent")),
         ),
         "zero substeps": (
             "invalid_substeps",
@@ -261,6 +275,7 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
         assert outcome.get("code") == outcome["expected"], (case, outcome)
         assert not outcome.get("opened") and not outcome.get("mapping_available"), (case, outcome)
     assert report["description disagrees with MuJoCo"]["path"] == "joints[elbow]"
+    assert report["keyframe outside the joint limits"]["path"] == "joints[elbow]"
     assert [
         report[case]["path"]
         for case in (

@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import itertools
 import json
+import math
 from pathlib import Path
 
 import jsonschema
 
 from ssrobot import (
+    AppliedCommand,
     ContextState,
     ExecutionState,
     ExecutionStatus,
@@ -34,6 +36,7 @@ from ssrobot import (
     read_trace,
 )
 from ssrobot.conformance import CheckOutcome, ConformanceReport, main, reference_robot
+from ssrobot.validation import START_TOLERANCE
 from tests.conftest import ROOT
 
 # The execution transition table in docs/contracts.md, restated as an oracle.
@@ -107,11 +110,49 @@ def test_replay_runtime_passes_the_conformance_scenario(artifacts: Path) -> None
     assert {states[-1] for states in history.values()} == TERMINAL
 
 
-def _held(time_ns: int) -> tuple[Reading, ...]:
-    stamp = Timestamp(clock="replay:divergence", time_ns=time_ns)
-    return tuple(
-        Reading(channel=f"{arm}_arm_q", stamp=stamp, value=(0.0, 0.0)) for arm in ("left", "right")
+def _held(
+    time_ns: int, left: tuple[float, float] = (0.0, 0.0), clock: str = "replay:divergence"
+) -> tuple[Reading, ...]:
+    stamp = Timestamp(clock=clock, time_ns=time_ns)
+    return (
+        Reading(channel="left_arm_q", stamp=stamp, value=left),
+        Reading(channel="right_arm_q", stamp=stamp, value=(0.0, 0.0)),
     )
+
+
+def test_replay_starts_a_trajectory_from_a_joint_resting_past_its_stop(artifacts: Path) -> None:
+    """#96: a joint resting on its stop reads slightly past it. A trajectory may start
+    there; the runtime clamps that first setpoint to the stop and says so."""
+    robot = reference_robot()
+    resting = (math.pi + 0.5 * START_TOLERANCE, 0.0)
+    clock = "replay:stop"
+    script = ReplayScript(
+        clock=clock,
+        ticks=tuple(
+            ReplayTick(time_ns=t, readings=_held(t, resting, clock)) for t in (0, 10, 20, 30)
+        ),
+    )
+    trajectory = JointTrajectory(
+        group="left_arm",
+        joints=("left_j1", "left_j2"),
+        time_from_start_ns=(0, 20),
+        positions=(resting, (math.pi - 0.1, 0.0)),
+    )
+    with (
+        JsonlTrace(artifacts / "trace.jsonl") as trace,
+        RobotContext(robot, ReplayRuntime(script), sinks=[trace]) as ctx,
+    ):
+        status = ctx.run_until(ctx.submit(trajectory), max_ticks=3)
+    applied = [
+        r.payload
+        for r in read_trace(artifacts / "trace.jsonl")
+        if isinstance(r.payload, AppliedCommand)
+    ]
+    assert status.state is ExecutionState.SUCCEEDED
+    first = applied[0]
+    assert isinstance(first.applied, JointCommand) and first.applied.values[0] == math.pi
+    assert [(m.kind.value, m.target) for m in first.modifications] == [("clipped", "left_j1")]
+    assert all(not a.modifications for a in applied[1:])
 
 
 def test_replay_faults_on_divergence_and_exhaustion(artifacts: Path) -> None:

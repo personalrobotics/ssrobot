@@ -54,8 +54,8 @@ from ssrobot.mujoco._model import (
 )
 from ssrobot.observations import Observation, ObservationRequest, Quantity, Reading
 from ssrobot.package import ModelFormat, RobotPackage
-from ssrobot.replay import START_TOLERANCE
 from ssrobot.runtime import RuntimeEvent, RuntimeInfo, RuntimeUpdate
+from ssrobot.validation import START_TOLERANCE, clamp_positions
 
 
 @dataclass(frozen=True)
@@ -223,7 +223,9 @@ class MujocoRuntime:
                 if not done:
                     self._status(execution, ExecutionState.ACTIVE, applied_at)
             for command in due:
+                command, clamped = clamp_positions(self._described(), command)
                 applied, modifications = self._apply(command)
+                modifications = clamped + modifications
                 self._events.append(
                     AppliedCommand(
                         execution=execution,
@@ -331,9 +333,27 @@ class MujocoRuntime:
                     path="keyframe",
                 )
             mujoco.mj_resetDataKeyframe(model, data, key)
-        for (joint, mode), drive in self._drives.items():
+        for joint in description.joints:
+            q = float(data.qpos[self._joints[joint.name].qpos_address])
+            low, high = joint.limits.lower, joint.limits.upper
+            if (
+                low is not None
+                and high is not None
+                and not (low - START_TOLERANCE <= q <= high + START_TOLERANCE)
+            ):
+                start = (
+                    f"keyframe {self._keyframe!r}"
+                    if self._keyframe
+                    else "the model's default state"
+                )
+                raise ValidationError(
+                    "invalid_initial_state",
+                    f"{joint.name}={q:.6g} is outside [{low}, {high}] in {start}",
+                    path=f"joints[{joint.name}]",
+                )
+        for (joint_name, mode), drive in self._drives.items():
             if mode is JointMode.POSITION:  # hold where it starts, rather than at ctrl 0
-                q = float(data.qpos[self._joints[joint].qpos_address])
+                q = float(data.qpos[self._joints[joint_name].qpos_address])
                 data.ctrl[drive.id] = drive.clip(drive.ctrl_for(q))[0]
         mujoco.mj_forward(model, data)
         self._model, self._data, self._description = model, data, description

@@ -36,10 +36,7 @@ from ssrobot.execution import (
 )
 from ssrobot.observations import Observation, ObservationRequest, Quantity, Reading
 from ssrobot.runtime import RuntimeEvent, RuntimeInfo, RuntimeUpdate
-
-START_TOLERANCE = 1e-3
-"""Largest difference, in joint units, between a trajectory's first waypoint and the
-observed joint positions before the trajectory is rejected with ``start_mismatch``."""
+from ssrobot.validation import START_TOLERANCE, clamp_positions
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -200,6 +197,7 @@ class ReplayRuntime:
             return
         self._tick += 1
         now = self._now()
+        assert self._description is not None
         applied: list[InstantCommand] = []
         for execution, running in list(self._running.items()):
             due, finished = self._due(running, now.time_ns)
@@ -210,12 +208,17 @@ class ReplayRuntime:
                 if not finished:
                     self._status(execution, ExecutionState.ACTIVE)
             for command in due:
+                command, modifications = clamp_positions(self._description, command)
                 self._events.append(
                     AppliedCommand(
-                        execution=execution, stamp=now, requested=running.command, applied=command
+                        execution=execution,
+                        stamp=now,
+                        requested=running.command,
+                        applied=command,
+                        modifications=modifications,
                     )
                 )
-            applied += due
+                applied.append(command)
             if finished:
                 del self._running[execution]
                 self._status(execution, ExecutionState.SUCCEEDED)

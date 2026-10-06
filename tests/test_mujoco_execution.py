@@ -24,6 +24,7 @@ from ssrobot import (
     read_trace,
 )
 from ssrobot.mujoco import MujocoRuntime
+from ssrobot.validation import START_TOLERANCE
 from tests.conftest import ROOT
 
 FIXTURE = ROOT / "examples" / "packages" / "mujoco_arm"
@@ -52,6 +53,12 @@ def _trajectory(start: tuple[float, ...], duration_ns: int) -> JointTrajectory:
         joints=ARM,
         time_from_start_ns=(0, duration_ns // 2, duration_ns),
         positions=(start, middle, GOAL),
+    )
+
+
+def _trajectory_to(start: tuple[float, ...], goal: tuple[float, ...]) -> JointTrajectory:
+    return JointTrajectory(
+        group="arm", joints=ARM, time_from_start_ns=(0, 1_000_000_000), positions=(start, goal)
     )
 
 
@@ -116,6 +123,23 @@ def _gripper_to(opening: float) -> Scenario:
     return scenario
 
 
+def _stop_and_back(ctx: RobotContext) -> dict[str, Any]:
+    """Drive the elbow onto its lower stop, where gravity rests it slightly past the
+    limit, then send a trajectory that starts from where it rests."""
+    _settle(ctx)
+    start = _arm(ctx)
+    lower = (start[0], -2.0, start[2])  # arm.xml: elbow range="-2 2"
+    down = ctx.run_until(ctx.submit(_trajectory_to(start, lower)), max_ticks=2_000)
+    _settle(ctx, 300)
+    resting = _arm(ctx)
+    back = ctx.run_until(ctx.submit(_trajectory_to(resting, start)), max_ticks=2_000)
+    return {
+        "to_stop": down.state.value,
+        "resting_elbow": resting[1],
+        "back_out": back.state.value,
+    }
+
+
 def _cancel(ctx: RobotContext) -> dict[str, Any]:
     _settle(ctx)
     execution = ctx.submit(_trajectory(_arm(ctx), 2_000_000_000))
@@ -161,6 +185,7 @@ SCENARIOS: dict[str, tuple[Scenario, dict[str, Any], Callable[[Path], None] | No
     "gripper": (_gripper, {}, None),
     "gripper_range_limited": (_gripper_to(1.0), {}, NARROW_LEFT),
     "gripper_reversed": (_gripper_to(0.25), {}, REVERSED),
+    "stop_and_back": (_stop_and_back, {}, None),
     "cancel": (_cancel, {}, None),
     "timeout": (_timeout, {}, None),
     "goal_not_reached": (_unreachable, {"goal_tolerance": 0.0, "settle_ns": 0}, None),
@@ -266,6 +291,18 @@ def test_mujoco_executes_trajectories_chunks_and_grippers(artifacts: Path, tmp_p
     last = [v for time, v in _applied(artifacts / "cancel" / "trace.jsonl")][-1]
     held = cancel["final"]["arm_q"]
     assert max(abs(q - s) for q, s in zip(held, last, strict=True)) <= 0.02
+
+    # A joint resting on its stop reads past it, and can still be sent a trajectory (#96).
+    stop = results["stop_and_back"]
+    assert stop["to_stop"] == "succeeded" and stop["back_out"] == "succeeded"
+    assert -2.0 - START_TOLERANCE < stop["resting_elbow"] < -2.0
+    # Its first setpoint is clamped to the stop, and only that one.
+    clipped = [
+        [(m.kind.value, m.target) for m in r.payload.modifications]
+        for r in read_trace(artifacts / "stop_and_back" / "trace.jsonl")
+        if isinstance(r.payload, AppliedCommand) and r.payload.modifications
+    ]
+    assert clipped == [[("clipped", "elbow")]]
 
     assert results["timeout"]["status"] == "timed_out"
     assert results["goal_not_reached"] == {
