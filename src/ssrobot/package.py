@@ -295,16 +295,18 @@ def assemble_package(
     files = [] if manifest_path is None else [resolver.record("manifest", manifest_path)]
     loaded: LoadedModel | None = None
     for entry in manifest.models:
+        # Every model is loaded, so the files any runtime may compile (includes, meshes,
+        # textures) are resolved inside the package and hashed. Only the canonical model
+        # describes the robot.
         target = resolver.resolve(entry.path)
         files.append(resolver.record(f"model:{entry.name}", target))
+        model = _load_model(entry, target, resolver)
+        files += [
+            ResolvedFile(role=f"model:{entry.name}:{f.role}", path=f.path, sha256=f.sha256)
+            for f in model.files
+        ]
         if entry.name == manifest.canonical_model:
-            loaded = _load_model(entry, target, resolver)
-            files += [
-                ResolvedFile(role=f"model:{entry.name}:{f.role}", path=f.path, sha256=f.sha256)
-                for f in loaded.files
-            ]
-        elif entry.srdf is not None:
-            files.append(resolver.record(f"model:{entry.name}:srdf", resolver.resolve(entry.srdf)))
+            loaded = model
     for directory_ref in manifest.assets:
         files.append(resolver.record("assets", resolver.resolve(directory_ref, directory=True)))
     for kind, entries in (("profile", manifest.profiles), ("calibration", manifest.calibrations)):

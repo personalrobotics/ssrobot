@@ -542,6 +542,12 @@ URDF_CASES: dict[str, tuple[Callable[[Path], None], str | None]] = {
         _edit("arm.urdf", 'filename="meshes/link.stl"', 'filename="../../hosts"'),
         "path_escape",
     ),
+    "MuJoCo model of the package including a file outside it": (
+        _edit(
+            "arm_mujoco.xml", "  <actuator>", '  <include file="../../outside.xml"/>\n  <actuator>'
+        ),
+        "path_escape",
+    ),
     "SRDF for another robot": (
         _edit("arm.srdf", '<robot name="urdf_arm">', '<robot name="other">'),
         "srdf_mismatch",

@@ -12,6 +12,17 @@ format = "urdf"
 path = "arm.urdf"
 srdf = "arm.srdf"
 
+# The same arm for MuJoCo. The URDF above is canonical; this only executes it.
+[[models]]
+name = "mujoco"
+format = "mjcf"
+path = "arm_mujoco.xml"
+
+[[profiles]]
+name = "sim"
+runtime = "mujoco"
+path = "mujoco.toml"
+
 [[semantics.grippers]]
 name = "fingers"
 frame = "hand"
@@ -28,3 +39,14 @@ group = "arm"
 base_frame = "base_link"
 tool_frame = "flange"
 end_effector = "gripper"
+
+[[semantics.commands]]
+component = "arm"
+kind = "joint_trajectory"
+
+[[semantics.channels]]
+name = "arm_q"
+quantity = "joint_position"
+source = "arm"
+shape = [4]
+dtype = "float64"

@@ -54,13 +54,15 @@ from ssrobot.mujoco._model import (
     force_torque_sensors,
     joint_actuators,
     load_profile,
+    model_signature,
+    select_model,
     select_profile,
     ssrobot_version,
     unchanged,
     versions,
 )
 from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
-from ssrobot.package import ModelFormat, RobotPackage
+from ssrobot.package import RobotPackage
 from ssrobot.runtime import RuntimeEvent, RuntimeInfo, RuntimeUpdate
 from ssrobot.validation import START_TOLERANCE, clamp_positions
 
@@ -306,14 +308,6 @@ class MujocoRuntime:
 
     def _open(self, description: RobotDescription) -> RuntimeInfo:
         package = self._package
-        manifest = package.manifest
-        entry = next(m for m in manifest.models if m.name == manifest.canonical_model)
-        if entry.format is not ModelFormat.MJCF:
-            raise CapabilityError(
-                "unsupported_model_format",
-                f"MujocoRuntime loads MJCF models, not {entry.format.value}",
-                path=entry.path,
-            )
         fingerprint = description.fingerprint()
         if fingerprint != package.description.fingerprint():
             raise StaleRevisionError(
@@ -333,12 +327,14 @@ class MujocoRuntime:
         # Compile only what was loaded and hashed: check before, and again after, in case
         # a file changed while MuJoCo or the profile was read.
         unchanged(package)
+        profile = MujocoProfile() if profile_entry is None else load_profile(package, profile_entry)
+        entry = select_model(package, profile, profile_entry)
         try:
             model = mujoco.MjModel.from_xml_path(str(package.root / entry.path))
         except ValueError as e:
             raise ValidationError("model_compile_failed", str(e), path=entry.path) from None
-        profile = MujocoProfile() if profile_entry is None else load_profile(package, profile_entry)
         unchanged(package)
+        keyframe = self._keyframe if self._keyframe is not None else profile.keyframe
         timestep_ns = round(float(model.opt.timestep) * 1e9)
         if timestep_ns < 1 or abs(float(model.opt.timestep) * 1e9 - timestep_ns) > 1e-3:
             raise ValidationError(
@@ -369,14 +365,14 @@ class MujocoRuntime:
         channels = tuple(self._bind_channel(model, description, c) for c in description.channels)
 
         data = mujoco.MjData(model)
-        if self._keyframe is None:
+        if keyframe is None:
             mujoco.mj_resetData(model, data)
         else:
-            key = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, self._keyframe)
+            key = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, keyframe)
             if key < 0:
                 raise ValidationError(
                     "unknown_keyframe",
-                    f"the model has no keyframe {self._keyframe!r}",
+                    f"the model has no keyframe {keyframe!r}",
                     path="keyframe",
                 )
             mujoco.mj_resetDataKeyframe(model, data, key)
@@ -388,16 +384,26 @@ class MujocoRuntime:
                 and high is not None
                 and not (low - START_TOLERANCE <= q <= high + START_TOLERANCE)
             ):
-                start = (
-                    f"keyframe {self._keyframe!r}"
-                    if self._keyframe
-                    else "the model's default state"
-                )
+                start = f"keyframe {keyframe!r}" if keyframe else "the model's default state"
                 raise ValidationError(
                     "invalid_initial_state",
                     f"{joint.name}={q:.6g} is outside [{low}, {high}] in {start}",
                     path=f"joints[{joint.name}]",
                 )
+        # A keyframe and the named configuration of the same name are one pose.
+        for configuration in description.configurations:
+            if configuration.name != keyframe:
+                continue
+            group = description.group(configuration.group)
+            for joint_name, expected in zip(group.joints, configuration.positions, strict=True):
+                q = float(data.qpos[self._joints[joint_name].qpos_address])
+                if abs(q - expected) > START_TOLERANCE:
+                    raise ValidationError(
+                        "model_mismatch",
+                        f"keyframe {keyframe!r} puts {joint_name} at {q:.6g}; the "
+                        f"configuration of that name puts it at {expected:.6g}",
+                        path=f"configurations[{configuration.name}]",
+                    )
         for (joint_name, mode), drive in self._drives.items():
             if mode is JointMode.POSITION:  # hold where it starts, rather than at ctrl 0
                 q = float(data.qpos[self._joints[joint_name].qpos_address])
@@ -417,10 +423,13 @@ class MujocoRuntime:
             mujoco=MUJOCO_VERSION,
             description=fingerprint,
             model=entry.path,
+            model_name=entry.name,
+            model_format=entry.format,
+            model_signature=model_signature(package, entry.name),
             profile=None if profile_entry is None else profile_entry.path,
             timestep_ns=timestep_ns,
             substeps=self._substeps,
-            keyframe=self._keyframe,
+            keyframe=keyframe,
             frames=frames,
             joints=joints,
             actuators=actuators,

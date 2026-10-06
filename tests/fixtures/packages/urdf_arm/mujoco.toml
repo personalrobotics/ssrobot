@@ -1,11 +1,12 @@
-# MujocoRuntime settings for arm.xml: the keyframe it starts in, and which control values
-# close and open the gripper.
+# MujocoRuntime settings: compile arm_mujoco.xml, not the canonical URDF, and start at
+# the SRDF's "home" state.
 schema = "ssrobot.MujocoProfile"
 version = 1
+model = "mujoco"
 keyframe = "home"
 
 [[grippers]]
-gripper = "gripper"
+gripper = "fingers"
 actuators = [
   { actuator = "left_finger", closed = 0.0, open = 0.04 },
   { actuator = "right_finger", closed = 0.0, open = 0.04 },
