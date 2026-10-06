@@ -453,13 +453,13 @@ def test_mujoco_compiles_the_profiles_model_against_the_canonical_description(
         )
         status = ctx.run_until(ctx.submit(move), max_ticks=3_000)
     mapping = runtime.mapping
-    model_file = next(f for f in package.files if f.role == "model:mujoco")
-    report = {
+    report: dict[str, Any] = {
         "canonical_model": package.manifest.canonical_model,
         "compiled": {
             "name": mapping.model_name,
+            "format": mapping.model_format.value,
             "path": mapping.model,
-            "sha256": mapping.model_sha256,
+            "signature": mapping.model_signature,
         },
         "description": mapping.description,
         "keyframe": mapping.keyframe,
@@ -468,12 +468,41 @@ def test_mujoco_compiles_the_profiles_model_against_the_canonical_description(
     }
     (artifacts / "multi-artifact.json").write_text(json.dumps(report, indent=2) + "\n")
     assert report["canonical_model"] == "urdf"
-    assert report["compiled"] == {
+    assert {k: v for k, v in report["compiled"].items() if k != "signature"} == {
         "name": "mujoco",
+        "format": "mjcf",
         "path": "arm_mujoco.xml",
-        "sha256": model_file.sha256,
     }
     assert mapping.description == package.description.fingerprint()
     home = next(c for c in package.description.configurations if c.name == "home")
     assert mapping.keyframe == "home" and tuple(start) == home.positions
     assert status.state.value == "succeeded"
+
+
+def test_mujoco_model_signature_covers_every_file_the_model_brings_in(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    """#105: two packages that differ only in an included file compile differently and
+    have different model signatures; the same package in another directory does not."""
+
+    def mapping(root: Path) -> dict[str, Any]:
+        package = load_package(root)
+        runtime = MujocoRuntime(package)
+        with RobotContext(package.description, runtime):
+            pass
+        root_xml = next(f.sha256 for f in package.files if f.role == "model:mjcf")
+        return {"root_xml_sha256": root_xml, **_json(runtime.mapping)}
+
+    original = shutil.copytree(FIXTURE, tmp_path / "original")
+    moved = shutil.copytree(FIXTURE, tmp_path / "elsewhere" / "moved")
+    edited = shutil.copytree(FIXTURE, tmp_path / "edited")
+    actuators = edited / "actuators.xml"
+    assert 'kp="20"' in actuators.read_text()
+    actuators.write_text(actuators.read_text().replace('kp="20"', 'kp="21"', 1))
+    mappings = {"original": mapping(original), "moved": mapping(moved), "edited": mapping(edited)}
+    for name, value in mappings.items():
+        (artifacts / f"{name}-mapping.json").write_text(json.dumps(value, indent=2) + "\n")
+
+    assert mappings["edited"]["root_xml_sha256"] == mappings["original"]["root_xml_sha256"]
+    assert mappings["edited"]["model_signature"] != mappings["original"]["model_signature"]
+    assert mappings["moved"] == mappings["original"]

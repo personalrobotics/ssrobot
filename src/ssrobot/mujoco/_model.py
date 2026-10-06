@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import hashlib
 import importlib.metadata
 import tomllib
 from dataclasses import dataclass, field
@@ -196,7 +197,14 @@ class MujocoMapping(Value):
     description: str = field(metadata=meta("Fingerprint of the bound description."))
     model: str = field(metadata=meta("Compiled model path, relative to the package root."))
     model_name: str = field(metadata=meta("The package model entry that was compiled."))
-    model_sha256: str = field(metadata=meta("SHA-256 of the compiled model file."))
+    model_format: ModelFormat = field(metadata=meta("Format of the compiled model."))
+    model_signature: str = field(
+        metadata=meta(
+            "SHA-256 over the compiled model's own file and every file it brings in "
+            "(includes, meshes, textures, height fields, skins), by role, package-relative "
+            "path, and hash."
+        )
+    )
     profile: str | None = field(metadata=meta("Profile path, relative to the package root."))
     timestep_ns: int = field(metadata=meta("MuJoCo physics timestep.", unit="ns"))
     substeps: int = field(metadata=meta("Physics steps per control tick.", unit="count"))
@@ -454,6 +462,21 @@ def force_torque_sensors(model: Any, site: int) -> tuple[int, int] | None:
     if len(forces) != 1 or len(torques) != 1:
         return None
     return forces[0], torques[0]
+
+
+def model_signature(package: RobotPackage, name: str) -> str:
+    """A model's identity: every file the package recorded for it, by role,
+    package-relative path, and hash. The same content in another directory gives the
+    same signature; a change to any included or referenced file changes it."""
+    records = sorted(
+        (f.role, f.path, f.sha256)
+        for f in package.files
+        if f.role == f"model:{name}" or f.role.startswith(f"model:{name}:")
+    )
+    digest = hashlib.sha256()
+    for record in records:
+        digest.update("\t".join(record).encode() + b"\n")
+    return digest.hexdigest()
 
 
 def select_model(

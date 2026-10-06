@@ -109,9 +109,20 @@ URDF, or ssrobot's own format. MuJoCo compiles one MJCF model of the package:
 
 A package can therefore keep URDF and SRDF as its source of semantics and give MuJoCo
 its own MJCF artifact. That artifact is cross-checked against the canonical description
-like any other (see *Mapping*), so a renamed joint or a different frame tree fails with
-`model_mismatch` before the runtime is ready. `runtime.mapping` records the compiled
-model's entry name, path, and SHA-256.
+like any other (see *Mapping*), so a renamed joint, a different frame tree, a different
+joint type, or different limits fail with `model_mismatch` before the runtime is ready.
+
+**The cross-check does not cover joint axes or fixed transforms.** The description
+holds topology and limits, not geometry. An artifact that differs from the canonical
+model only in a joint's axis or a link's offset therefore opens, and planning from the
+canonical model could disagree with what MuJoCo executes. Until #106 defines that
+check, the package author is responsible for keeping the two artifacts kinematically
+equal.
+
+`runtime.mapping` records the compiled model's entry name, format, path, and signature.
+The signature is a SHA-256 over every file the package recorded for that model: its own
+file and each include, mesh, texture, height field, and skin, by role, package-relative
+path, and hash. A change to any of them changes it, and moving the package does not.
 
 ## Start keyframe
 
@@ -282,7 +293,8 @@ loop is an application that calls `step()`; it is not a different runtime mode.
 | `artifacts/test_mujoco_observes_robot_state_sensors_and_cameras/observations.json`, `trace.jsonl`, `assets/` | Every robot channel, at open and after settling, with its binding. They are checked against an independently compiled model: the `tcp` pose in `base` within 1e-9; the centre depth pixel within 2 mm of a ray cast along the camera's optical axis; the wrist force, in world, equal to the hand's weight within 2%; and each joint's effort equal to its gravity torque. The RGB image is not one flat colour. A second run gives byte-identical files and image assets. |
 | `artifacts/test_mujoco_leaves_unbacked_channels_unconfirmed/unconfirmed.json` | A wrench channel whose site has no MuJoCo force and torque sensors: unconfirmed (`no_force_torque_sensors`), and observing it is refused. |
 | `artifacts/test_mujoco_rejects_unexecutable_commands/rejections.json` | `start_mismatch`, an unconfirmed velocity command, a chunk commanding the arm and the overlapping `wrist_only` group, and each profile failure, with its code and path. That covers a gripper profile naming the arm's actuator (`actuator_alias`) and no reachable opening. A zero-gear wrist opens with the arm's and wrist's position commands unconfirmed and their reasons recorded. |
-| `artifacts/test_mujoco_compiles_the_profiles_model_against_the_canonical_description/multi-artifact.json` | The `urdf_arm` fixture, whose canonical model is URDF and SRDF, opened through the MJCF its profile names, with no `keyframe` argument. It records the compiled entry, path, and SHA-256, and the URDF's description fingerprint. It starts at the profile's `home`, equal to the SRDF state of that name, and a trajectory succeeds. |
+| `artifacts/test_mujoco_compiles_the_profiles_model_against_the_canonical_description/multi-artifact.json` | The `urdf_arm` fixture, whose canonical model is URDF and SRDF, opened through the MJCF its profile names, with no `keyframe` argument. It records the compiled entry, format, path, and signature, and the URDF's description fingerprint. It starts at the profile's `home`, equal to the SRDF state of that name, and a trajectory succeeds. |
+| `artifacts/test_mujoco_model_signature_covers_every_file_the_model_brings_in/{original,moved,edited}-mapping.json` | Three copies of the example: unchanged, moved to another directory, and with one gain changed in the included `actuators.xml`. The edited copy has the same root-file hash but a different model signature, and the moved copy's mapping is identical to the original's. |
 | `artifacts/test_mujoco_runtime_refuses_mismatches_before_commands/startup-failures.json` | Each code in *Opening*, plus `invalid_substeps`, with its path and message, including a keyframe with the elbow outside its range (`invalid_initial_state`). Model selection fails four ways: a profile naming a missing model (`invalid_profile`) or the URDF (`unsupported_model_format`); two MJCF models and no choice (`ambiguous_model`); and an MJCF artifact with a renamed joint (`model_mismatch` at `joints[j3]`). An artifact edited after loading fails with `package_changed`, and a keyframe disagreeing with its configuration with `model_mismatch` at `configurations[home]`. A keyframe with the wrist 0.5 mrad past its stop opens, is first observed at 3.0005, and settles back to its stop. For `package_changed`: the canonical MJCF edited after loading, an included file edited, and an include replaced by a symlink out of the package. None of them opened or left a mapping. |
 | `reference-robots/<robot>/mujoco-startup.json` (CI) | Geodude and ADA opened from their installed wheels: mapping, runtime version, and exact time after 10 steps. |
 | `installed-conformance/imports-mujoco.json` (CI) | The `[mujoco]` wheel in a clean environment: what importing the integration loads, and that the gate passes. |
