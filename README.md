@@ -56,7 +56,7 @@ with ssrobot.RobotContext(package.description, MujocoRuntime(package, keyframe="
 
 ## Target v0.1
 
-Observations beyond joint state (M2), planning (M3), and policies (M4) are not
+Objects in the scene and snapshots (M2), planning (M3), and policies (M4) are not
 implemented yet. The planning-only, policy-only, and hybrid examples in
 [docs/architecture.md](docs/architecture.md) show the target v0.1 behavior.
 

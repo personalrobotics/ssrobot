@@ -9,7 +9,9 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 import mujoco
+import numpy as np
 
+from ssrobot._wire import ArrayValue, DType
 from ssrobot.commands import (
     ActionChunk,
     Command,
@@ -40,11 +42,14 @@ from ssrobot.mujoco._model import (
     Binder,
     ChannelBinding,
     CommandBinding,
+    FrameBinding,
     JointBinding,
     MujocoMapping,
+    MujocoObject,
     MujocoProfile,
     actuator,
     driven_joints,
+    force_torque_sensors,
     joint_actuators,
     load_profile,
     select_profile,
@@ -52,7 +57,7 @@ from ssrobot.mujoco._model import (
     unchanged,
     versions,
 )
-from ssrobot.observations import Observation, ObservationRequest, Quantity, Reading
+from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
 from ssrobot.package import ModelFormat, RobotPackage
 from ssrobot.runtime import RuntimeEvent, RuntimeInfo, RuntimeUpdate
 from ssrobot.validation import START_TOLERANCE, clamp_positions
@@ -141,6 +146,10 @@ class MujocoRuntime:
         self._joints: dict[str, JointBinding] = {}
         self._drives: dict[tuple[str, JointMode], Actuator] = {}
         self._grippers: dict[str, _Gripper] = {}
+        self._frames: dict[str, FrameBinding] = {}
+        self._wrenches: dict[str, tuple[int, int]] = {}  # channel: force, torque sensordata
+        self._cameras: dict[str, int] = {}  # image channel: MuJoCo camera id
+        self._renderers: dict[tuple[int, int], Any] = {}  # (height, width): Renderer
         self._running: dict[str, _Running] = {}
         self._events: list[RuntimeEvent] = []
 
@@ -162,6 +171,9 @@ class MujocoRuntime:
             raise
 
     def close(self) -> None:
+        for renderer in self._renderers.values():
+            renderer.close()
+        self._renderers.clear()
         self._model = None
         self._data = None
         self._running.clear()
@@ -180,8 +192,24 @@ class MujocoRuntime:
             elif spec.quantity is Quantity.JOINT_VELOCITY:
                 joints = d.group(spec.source).joints
                 value = tuple(float(data.qvel[self._joints[j].dof_address]) for j in joints)
+            elif spec.quantity is Quantity.JOINT_EFFORT:
+                joints = d.group(spec.source).joints
+                value = tuple(
+                    float(data.qfrc_actuator[self._joints[j].dof_address]) for j in joints
+                )
             elif spec.quantity is Quantity.GRIPPER_OPENING:
                 value = (self._opening(spec.source),)
+            elif spec.quantity is Quantity.POSE:
+                assert spec.frame is not None
+                value = self._pose(spec.source, spec.frame)
+            elif spec.quantity is Quantity.WRENCH and channel in self._wrenches:
+                force, torque = self._wrenches[channel]
+                value = tuple(float(v) for v in data.sensordata[force : force + 3]) + tuple(
+                    float(v) for v in data.sensordata[torque : torque + 3]
+                )
+            elif channel in self._cameras:
+                readings.append(Reading(channel=channel, stamp=now, value=self._image(spec)))
+                continue
             else:
                 raise CapabilityError("unavailable_channel", f"{channel!r} is not bound")
             readings.append(Reading(channel=channel, stamp=now, value=value))
@@ -317,9 +345,9 @@ class MujocoRuntime:
         self._grippers = self._bind_grippers(model, description, profile, profile_entry)
         commands = tuple(self._bind_command(c, by_joint, actuators) for c in description.commands)
         _check_aliases(description, commands)
-        channels = tuple(
-            self._bind_channel(c.name, c.quantity, c.source) for c in description.channels
-        )
+        self._frames = {f.name: f for f in frames}
+        self._wrenches, self._cameras = {}, {}
+        channels = tuple(self._bind_channel(model, description, c) for c in description.channels)
 
         data = mujoco.MjData(model)
         if self._keyframe is None:
@@ -519,21 +547,71 @@ class MujocoRuntime:
             unavailable=unavailable,
         )
 
-    def _bind_channel(self, name: str, quantity: Quantity, source: str) -> ChannelBinding:
+    def _bind_channel(
+        self, model: Any, description: RobotDescription, spec: ChannelSpec
+    ) -> ChannelBinding:
+        """Confirm a declared channel if the model can produce it, and record how."""
+        quantity, source = spec.quantity, spec.source
         unavailable = None
         if quantity is Quantity.GRIPPER_OPENING and source not in self._grippers:
             unavailable = _unavailable(
                 "no_gripper_profile", "the MuJoCo profile does not map this gripper", source
             )
+        elif quantity is Quantity.WRENCH:
+            frame = self._frames[description.sensor(source).frame]
+            found = (
+                force_torque_sensors(model, frame.id) if frame.object is MujocoObject.SITE else None
+            )
+            if frame.object is not MujocoObject.SITE:
+                unavailable = _unavailable(
+                    "not_a_mujoco_site", f"{frame.name!r} is a MuJoCo {frame.object.value}", source
+                )
+            elif found is None:
+                unavailable = _unavailable(
+                    "no_force_torque_sensors",
+                    f"site {frame.name!r} needs exactly one MuJoCo force and one torque sensor",
+                    source,
+                )
+            else:
+                self._wrenches[spec.name] = found
+        elif quantity in (Quantity.RGB_IMAGE, Quantity.DEPTH_IMAGE):
+            unavailable = self._bind_camera(model, description, spec)
         elif quantity not in (
             Quantity.JOINT_POSITION,
             Quantity.JOINT_VELOCITY,
+            Quantity.JOINT_EFFORT,
             Quantity.GRIPPER_OPENING,
+            Quantity.POSE,
         ):
-            unavailable = _unavailable(
-                "unsupported_quantity", f"{quantity.value} in MuJoCo arrives with #16", source
+            unavailable = _unavailable(  # pragma: no cover - every quantity is handled
+                "unsupported_quantity", f"{quantity.value} is not supported in MuJoCo", source
             )
-        return ChannelBinding(name=name, quantity=quantity, unavailable=unavailable)
+        return ChannelBinding(name=spec.name, quantity=quantity, unavailable=unavailable)
+
+    def _bind_camera(
+        self, model: Any, description: RobotDescription, spec: ChannelSpec
+    ) -> Diagnostic | None:
+        source = spec.source
+        frame = self._frames[description.sensor(source).frame]
+        if frame.object is not MujocoObject.CAMERA:
+            return _unavailable(
+                "not_a_mujoco_camera", f"{frame.name!r} is a MuJoCo {frame.object.value}", source
+            )
+        height, width = spec.shape[0], spec.shape[1]
+        limit = (int(model.vis.global_.offheight), int(model.vis.global_.offwidth))
+        if height > limit[0] or width > limit[1]:
+            return _unavailable(
+                "image_too_large",
+                f"{height}x{width} exceeds the model's offscreen buffer {limit[0]}x{limit[1]}",
+                source,
+            )
+        if (height, width) not in self._renderers:
+            try:
+                self._renderers[(height, width)] = mujoco.Renderer(model, height, width)
+            except (RuntimeError, mujoco.FatalError) as e:  # no OpenGL context here
+                return _unavailable("rendering_unavailable", str(e), source)
+        self._cameras[spec.name] = frame.id
+        return None
 
     # -- Execution -------------------------------------------------------------------
 
@@ -614,6 +692,50 @@ class MujocoRuntime:
                     command.group,
                 ),
             )
+
+    def _world(self, frame: str) -> tuple[Any, Any]:
+        """A frame's world position and orientation quaternion (wxyz)."""
+        data, binding = self._open_data(), self._frames[frame]
+        quat = np.empty(4)
+        if binding.object is MujocoObject.BODY:
+            return data.xpos[binding.id], data.xquat[binding.id]
+        matrix = (
+            data.site_xmat[binding.id]
+            if binding.object is MujocoObject.SITE
+            else data.cam_xmat[binding.id]
+        )
+        mujoco.mju_mat2Quat(quat, matrix)
+        position = (
+            data.site_xpos[binding.id]
+            if binding.object is MujocoObject.SITE
+            else data.cam_xpos[binding.id]
+        )
+        return position, quat
+
+    def _pose(self, source: str, frame: str) -> tuple[float, ...]:
+        """``source``'s pose expressed in ``frame``: position, then unit quaternion wxyz."""
+        (p_source, q_source), (p_frame, q_frame) = self._world(source), self._world(frame)
+        inverse, quat, position = np.empty(4), np.empty(4), np.empty(3)
+        mujoco.mju_negQuat(inverse, q_frame)
+        mujoco.mju_rotVecQuat(position, np.asarray(p_source) - np.asarray(p_frame), inverse)
+        mujoco.mju_mulQuat(quat, inverse, q_source)
+        mujoco.mju_normalize4(quat)
+        return tuple(float(v) for v in position) + tuple(float(v) for v in quat)
+
+    def _image(self, spec: ChannelSpec) -> ArrayValue:
+        """Render a camera channel now: RGB as uint8, or depth in metres along the
+        optical axis as float32."""
+        renderer = self._renderers[(spec.shape[0], spec.shape[1])]
+        depth = spec.quantity is Quantity.DEPTH_IMAGE
+        if depth:
+            renderer.enable_depth_rendering()
+        renderer.update_scene(self._open_data(), camera=self._cameras[spec.name])
+        pixels = renderer.render()
+        if depth:
+            renderer.disable_depth_rendering()
+        dtype = DType.FLOAT32 if depth else DType.UINT8
+        array = np.ascontiguousarray(pixels, dtype=np.float32 if depth else np.uint8)
+        return ArrayValue(dtype=dtype, shape=tuple(array.shape), data=array.tobytes())
 
     def _opening(self, gripper: str) -> float:
         """The mean opening of a gripper's actuators, from their lengths, in [0, 1]."""

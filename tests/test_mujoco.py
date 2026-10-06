@@ -112,7 +112,16 @@ def test_mujoco_runtime_resolves_and_steps_the_package(artifacts: Path) -> None:
         ("gripper", "gripper"),
         ("wrist_only", "joint"),
     ]
-    assert lifecycle["info"]["channels"] == ["arm_q", "arm_qd", "gripper_opening"]
+    assert lifecycle["info"]["channels"] == [
+        "arm_q",
+        "arm_qd",
+        "gripper_opening",
+        "arm_qf",
+        "tcp_pose",
+        "wrist_wrench",
+        "wrist_rgb",
+        "wrist_depth",
+    ]
     unconfirmed = {
         (c["component"], c["kind"], c["mode"]): c["unavailable"]["code"]
         for c in mapping["commands"]

@@ -436,6 +436,15 @@ inspected before any runtime opens. The runtime confirms which are available in
 | `depth_image` | `camera` sensor | (h, w) | float32 | m along optical z |
 
 Vector quantities are read as tuples of floats. Images are read as `ArrayValue`.
+
+- **Wrench sign.** A `wrench` is the force, then the torque, that the sensor's parent
+  side exerts on its child side, expressed in the sensor frame. A wrist sensor at rest
+  therefore reads the hand's weight, supported upward. Every runtime reports this
+  convention, converting from its hardware's if it differs.
+- **Camera frames.** A `camera` sensor's frame is the camera's own frame, and a `pose`
+  reading of it reports that frame. Its images are in the optical frame: x right, y
+  down, z forward, with depth along that z. A runtime documents how the two relate for
+  its backend.
 `RobotContext.observe` rejects a gripper opening outside `[0, 1]` with `out_of_limits`
 at `readings.<channel>`, so an out-of-range value never reaches the caller. Pose
 readings must carry a unit quaternion.

@@ -11,6 +11,10 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      # MuJoCo renders camera channels headless through OSMesa.
+      MUJOCO_GL: osmesa
+      PYOPENGL_PLATFORM: osmesa
     strategy:
       fail-fast: false
       matrix:
@@ -20,6 +24,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: ${{ matrix.python }}
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libosmesa6
       - run: uv sync --locked
       - run: uv run ruff format --check .
       - run: uv run ruff check .
