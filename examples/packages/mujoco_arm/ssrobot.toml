@@ -118,6 +118,14 @@ shape = [7]
 dtype = "float64"
 
 [[semantics.channels]]
+name = "camera_pose"
+quantity = "pose"
+source = "wrist_camera"
+frame = "world"
+shape = [7]
+dtype = "float64"
+
+[[semantics.channels]]
 name = "wrist_wrench"
 quantity = "wrench"
 source = "wrist_ft"

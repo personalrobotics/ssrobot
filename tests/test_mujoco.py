@@ -118,6 +118,7 @@ def test_mujoco_runtime_resolves_and_steps_the_package(artifacts: Path) -> None:
         "gripper_opening",
         "arm_qf",
         "tcp_pose",
+        "camera_pose",
         "wrist_wrench",
         "wrist_rgb",
         "wrist_depth",

@@ -33,6 +33,7 @@ CHANNELS = (
     "arm_qf",
     "gripper_opening",
     "tcp_pose",
+    "camera_pose",
     "wrist_wrench",
     "wrist_rgb",
     "wrist_depth",
@@ -136,10 +137,14 @@ def test_mujoco_observes_robot_state_sensors_and_cameras(artifacts: Path, tmp_pa
     assert np.allclose(pose[:3], expected_position, atol=1e-9)
     assert np.allclose(rotation.reshape(3, 3), expected_rotation, atol=1e-9)
 
-    camera = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist_camera")
-    axis = -data.cam_xmat[camera].reshape(3, 3)[:, 2]  # MuJoCo cameras look along -z
+    # The camera's reported pose is its optical frame, so the depth at the image centre
+    # is the distance along that pose's z axis to the first surface (#103).
+    camera_pose = np.array(first["camera_pose"])
+    optical = np.empty(9)
+    mujoco.mju_quat2Mat(optical, camera_pose[3:])
+    axis = optical.reshape(3, 3)[:, 2]
     hit = np.zeros(1, dtype=np.int32)
-    distance = mujoco.mj_ray(model, data, data.cam_xpos[camera], axis, None, 1, -1, hit)
+    distance = mujoco.mj_ray(model, data, camera_pose[:3], axis, None, 1, -1, hit)
     depth = _array(first["wrist_depth"])
     centre = depth[depth.shape[0] // 2, depth.shape[1] // 2]
     assert distance > 0 and abs(centre - distance) < 2e-3, (centre, distance)

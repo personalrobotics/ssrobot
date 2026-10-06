@@ -441,10 +441,12 @@ Vector quantities are read as tuples of floats. Images are read as `ArrayValue`.
   side exerts on its child side, expressed in the sensor frame. A wrist sensor at rest
   therefore reads the hand's weight, supported upward. Every runtime reports this
   convention, converting from its hardware's if it differs.
-- **Camera frames.** A `camera` sensor's frame is the camera's own frame, and a `pose`
-  reading of it reports that frame. Its images are in the optical frame: x right, y
-  down, z forward, with depth along that z. A runtime documents how the two relate for
-  its backend.
+- **Camera frames.** A `camera` sensor's frame is its optical frame, as *Poses and
+  frames* defines: x right, y down, z forward. A `pose` reading of the camera, its
+  images, and its depth, measured along that z, all use it. A runtime converts its
+  backend's own camera convention, so a consumer back-projects every runtime's depth the
+  same way.
+
 `RobotContext.observe` rejects a gripper opening outside `[0, 1]` with `out_of_limits`
 at `readings.<channel>`, so an out-of-range value never reaches the caller. Pose
 readings must carry a unit quaternion.

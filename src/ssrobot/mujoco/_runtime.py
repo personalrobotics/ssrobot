@@ -82,6 +82,10 @@ class _Running:
     ended_ns: int | None = None  # a trajectory: when its last waypoint was applied
 
 
+_OPTICAL = np.array([0.0, 1.0, 0.0, 0.0])
+"""A half-turn about x: MuJoCo's camera frame (-z forward, y up) to the optical frame."""
+
+
 def _rendering_problem() -> str | None:
     """Why MuJoCo cannot render here, when that is known before trying.
 
@@ -712,7 +716,12 @@ class MujocoRuntime:
             )
 
     def _world(self, frame: str) -> tuple[Any, Any]:
-        """A frame's world position and orientation quaternion (wxyz)."""
+        """A frame's world position and orientation quaternion (wxyz).
+
+        A camera's frame is its optical frame (x right, y down, z forward), the one its
+        images are in. MuJoCo's camera frame looks along -z with y up, so it is turned a
+        half-turn about x.
+        """
         data, binding = self._open_data(), self._frames[frame]
         quat = np.empty(4)
         if binding.object is MujocoObject.BODY:
@@ -723,6 +732,9 @@ class MujocoRuntime:
             else data.cam_xmat[binding.id]
         )
         mujoco.mju_mat2Quat(quat, matrix)
+        if binding.object is MujocoObject.CAMERA:
+            native = quat.copy()
+            mujoco.mju_mulQuat(quat, native, _OPTICAL)
         position = (
             data.site_xpos[binding.id]
             if binding.object is MujocoObject.SITE

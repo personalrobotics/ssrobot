@@ -162,7 +162,7 @@ Channels are confirmed the same way:
 - `joint_effort` reads `qfrc_actuator` at the group's joints: the force the actuators
   apply to each joint.
 - `pose` reports `source` in `frame`, from the two frames' world poses. A body's pose is
-  its frame, a site's its own, and a camera's MuJoCo's camera frame.
+  its frame, a site's its own, and a camera's its optical frame (below).
 - `wrench` needs the sensor's frame to be a MuJoCo site with exactly one `force` and one
   `torque` sensor. It reads them in the site frame, which is the contract's sign
   convention (otherwise `not_a_mujoco_site`, `no_force_torque_sensors`).
@@ -174,9 +174,11 @@ Channels are confirmed the same way:
   a display, MuJoCo's default GLFW backend would abort the process, so the runtime does
   not try it: set `MUJOCO_GL=egl` or `MUJOCO_GL=osmesa` to render headless.
 
-MuJoCo cameras look along their frame's −z with y up, so the contract's optical frame
-(x right, y down, z forward) is the camera frame rotated 180° about x. RGB is uint8.
-Depth is float32 metres along the optical axis.
+MuJoCo's own camera frame looks along −z with y up. The runtime reports a camera's frame
+as the contract's optical frame instead (x right, y down, z forward): MuJoCo's frame
+turned a half-turn about x. Its `pose` readings, images, and depth therefore agree, and
+a consumer back-projects depth from the camera's pose with no MuJoCo-specific step. RGB
+is uint8. Depth is float32 metres along the optical z axis.
 
 **Sampling.** `observe` reads the state at the current tick: every reading, images
 included, is stamped `now` and reflects the same state. A stepped simulation therefore
