@@ -8,6 +8,7 @@ import itertools
 import math
 import os
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -66,7 +67,7 @@ from ssrobot.mujoco._model import (
 from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
 from ssrobot.package import RobotPackage
 from ssrobot.runtime import RuntimeEvent, RuntimeInfo, RuntimeUpdate
-from ssrobot.scene import Attachment, AttachmentViolation
+from ssrobot.scene import Attachment, AttachmentViolation, TrackedAttachment
 from ssrobot.validation import START_TOLERANCE, clamp_positions
 
 
@@ -371,7 +372,7 @@ class MujocoRuntime:
 
     # -- Scene -----------------------------------------------------------------------
 
-    def attach(self, attachment: Attachment, resolve: bool) -> Attachment:
+    def attach(self, attachment: Attachment, resolve: bool) -> TrackedAttachment:
         """Track an attachment; with ``resolve``, at the object's current transform.
 
         A given transform must match where the object is now, within the attach
@@ -395,7 +396,7 @@ class MujocoRuntime:
                     path="transform",
                 )
         self._attached[attachment.object] = _Tracked(attachment=attachment)
-        return attachment
+        return TrackedAttachment(attachment=attachment, stamp=self._now())
 
     def detach(self, object: str) -> None:
         self._attached.pop(object, None)
@@ -426,6 +427,7 @@ class MujocoRuntime:
         profile = MujocoProfile() if profile_entry is None else load_profile(package, profile_entry)
         entry = select_model(package, profile, profile_entry)
         objects: dict[str, str] = {}  # top-level scene body: "object" or "fixture"
+        scene_sha256 = None
         try:
             if self._scene is None:
                 model = mujoco.MjModel.from_xml_path(str(package.root / entry.path))
@@ -434,7 +436,7 @@ class MujocoRuntime:
         except ValueError as e:
             raise ValidationError("model_compile_failed", str(e), path=entry.path) from None
         if self._scene is not None:
-            model, objects = _compose(spec, self._scene)
+            model, objects, scene_sha256 = _compose(spec, self._scene)
         unchanged(package)
         keyframe = self._keyframe if self._keyframe is not None else profile.keyframe
         timestep_ns = round(float(model.opt.timestep) * 1e9)
@@ -548,11 +550,7 @@ class MujocoRuntime:
             substeps=self._substeps,
             keyframe=keyframe,
             scene=None if self._scene is None else str(self._scene),
-            scene_sha256=(
-                None
-                if self._scene is None
-                else hashlib.sha256(self._scene.read_bytes()).hexdigest()
-            ),
+            scene_sha256=scene_sha256,
             objects=tuple(sorted(self._objects)),
             fixtures=fixtures,
             frames=frames,
@@ -949,12 +947,30 @@ _BODY = mujoco.mjtObj.mjOBJ_BODY
 _FREE = mujoco.mjtJoint.mjJNT_FREE
 
 
-def _compose(spec: Any, scene: Path) -> tuple[Any, dict[str, str]]:
-    """Compile the robot with a scene's bodies; return the model and each top-level scene
-    body's kind: ``object`` (one free joint) or ``fixture`` (no joints)."""
+def _compose(spec: Any, scene: Path) -> tuple[Any, dict[str, str], str]:
+    """Compile the robot with a scene's bodies. Return the model, each top-level scene
+    body's kind (``object``, one free joint; ``fixture``, no joints), and the SHA-256 of
+    the scene bytes, which are exactly what was compiled.
+
+    A scene must be one self-contained file for now: an include, mesh, texture, or other
+    file reference would be compiled without being part of the recorded identity.
+    """
     try:
-        child = mujoco.MjSpec.from_file(str(scene))
-    except ValueError as e:
+        raw = scene.read_bytes()
+        root = ET.fromstring(raw)
+    except (OSError, ET.ParseError) as e:
+        raise ValidationError("invalid_scene", str(e), path="scene") from None
+    for element in root.iter():
+        referenced = [k for k in element.attrib if k.startswith("file")]
+        if element.tag == "include" or referenced:
+            raise ValidationError(
+                "invalid_scene",
+                f"<{element.tag}> refers to another file; a scene must be self-contained",
+                path="scene",
+            )
+    try:
+        child = mujoco.MjSpec.from_string(raw.decode())
+    except (ValueError, UnicodeDecodeError) as e:
         raise ValidationError("invalid_scene", str(e), path="scene") from None
     kinds = {}
     for body in child.worldbody.bodies:
@@ -980,7 +996,7 @@ def _compose(spec: Any, scene: Path) -> tuple[Any, dict[str, str]]:
         message = str(e).strip()
         code = "scene_conflict" if "repeated name" in message else "invalid_scene"
         raise ValidationError(code, message, path="scene") from None
-    return model, kinds
+    return model, kinds, hashlib.sha256(raw).hexdigest()
 
 
 def _check_aliases(description: RobotDescription, commands: tuple[CommandBinding, ...]) -> None:

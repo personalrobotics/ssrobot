@@ -40,7 +40,7 @@ uses them:
 | Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `ResolvedFile`, `SourceItem`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
 | Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment` |
-| Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `RuntimeInfo`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
+| Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `TrackedAttachment`, `RuntimeInfo`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
 | Error handling | `SsrobotError`, `ValidationError`, `CapabilityError`, `OwnershipError`, `StaleRevisionError`, `LifecycleError` |
 
@@ -219,6 +219,8 @@ as it was.
 | `allow` repeats no name | `duplicate_name` |
 | `transform` is a `Pose` | `wrong_type` |
 | the object is not already attached | `already_attached` |
+| `revision`, when given, is an integer (not a bool) | `wrong_type` |
+| `revision`, when given, is not negative | `out_of_limits` |
 | `revision`, when given, is the current one | `stale_revision` (`StaleRevisionError`) |
 
 - **`transform`.** Omitted, the runtime resolves it to where the object is now.
@@ -226,10 +228,15 @@ as it was.
   gripper mount (`Gripper.frame`), or the end effector's own frame for a tool. It is
   recorded sorted.
 - **The runtime's answer.** `SceneRuntime.attach(attachment, resolve)` may refuse with
-  an `SsrobotError`. Otherwise it must return the same attachment, with only the
-  transform filled in when `resolve` is true. Any other answer is a contract breach.
-  The context then also tells the runtime to detach the object.
-- **`detach`** fails with `not_attached` or `stale_revision`.
+  an `SsrobotError`. Otherwise it returns a `TrackedAttachment`:
+  - the same attachment, with only the transform filled in when `resolve` is true;
+  - stamped with when the object was measured or checked.
+
+  The stamp is a direct answer, so it keeps causal time like `submit` and `observe`
+  answers: an external runtime's stamp may advance `now`, and the `scene` record is
+  stamped with it. Any other answer is a contract breach, and the context then also
+  tells the runtime to detach the object.
+- **`detach`** fails with `not_attached`, or with the same `revision` checks.
 
 Every committed change increments `revision` and is traced as a `scene` record.
 
@@ -654,7 +661,7 @@ environment installs the wheel with the `mujoco` extra, runs the gate with
 | `artifacts/test_joint_command_schema_fixes_the_unit_of_values_by_mode/joint-command-units.json` | For position, velocity, and effort commands: the mode, the single unit the schema resolves for `values`, and the unit after decoding. |
 | `artifacts/test_conventions_accept_valid_and_reject_ambiguous_input/conventions-report.json` | Every valid and invalid convention case with its expected and actual diagnostic code and path. Covers the MuJoCo, URDF, and ROS timestamp conversions, chunk clocks against manual and external runtimes, and execution-record identifiers. |
 | `artifacts/test_replay_runtime_passes_the_conformance_scenario/run/` | The ReplayRuntime conformance `trace.jsonl` and `conformance-report.json`. The test re-reads them and checks every line against the schema, contiguous sequence numbers, time that never decreases, legal transitions, all five terminal states, and that each applied command is attributed to its submitter. A second run in `rerun/` is byte-identical. |
-| `artifacts/test_scene_runtimes_that_break_their_contract/scene-breach-report.json` | A scene runtime that changes the transform or allow set it was given, or reports a violation for an object that is not attached, is a contract breach. Nothing is committed and the runtime is told to detach. A runtime that lists objects without implementing `SceneRuntime` is refused at open. |
+| `artifacts/test_scene_runtimes_that_break_their_contract/scene-breach-report.json`, `external-attach-trace.jsonl` | An external runtime that measures the object at 100 ns advances the context to 100 ns, and the `scene` record is stamped then. An attach answer stamped before the context's time, or at a later tick of a manual clock, is a contract breach. So is a scene runtime that changes the transform or allow set it was given, or reports a violation for an object that is not attached. Nothing is committed and the runtime is told to detach. A runtime that lists objects without implementing `SceneRuntime` is refused at open. |
 | `artifacts/test_replay_faults_on_divergence_and_exhaustion/trace.jsonl` | A replay that diverges from its recording, recovers, then runs out of ticks. |
 | `artifacts/test_example_package_loads_identically_wherever_it_lives[<name>]/` | For each example package: its description, a semantic summary (manipulators, their joints, frames, end effectors and grippers, composite groups, sensors, qualified names), and its package report. Each validates against `schemas/`. The same content loads identically from a copy and as an installed Python package. |
 | `artifacts/test_overlapping_groups_share_ownership/ownership-report.json` | `owners("left_arm_with_lift")` when unowned, completely owned, partially owned, and shared, plus a different source refused on the composite's joints. |

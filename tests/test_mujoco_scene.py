@@ -211,6 +211,9 @@ def _refusals(ctx: RobotContext) -> dict[str, str]:
         "transform_not_a_pose": lambda: ctx.attach("box", "hand", transform=(0, 0, 0)),  # type: ignore[arg-type]
         "transform_far_from_box": lambda: ctx.attach("box", "hand", transform=far),
         "stale_revision": lambda: ctx.attach("box", "hand", revision=7),
+        "boolean_revision": lambda: ctx.attach("box", "hand", revision=False),
+        "float_revision": lambda: ctx.detach("box", revision=0.0),  # type: ignore[arg-type]
+        "negative_revision": lambda: ctx.detach("box", revision=-1),
         "detach_unattached": lambda: ctx.detach("box"),
     }
     codes = {}
@@ -252,6 +255,9 @@ def test_invalid_attachments_and_scenes_change_nothing(artifacts: Path, tmp_path
         "scene_conflict": '<body name="link1"><freejoint/><geom size=".02"/></body>',
         "articulated_object": '<body name="door"><joint type="hinge"/><geom size=".02"/></body>',
         "unnamed_body": '<body><freejoint/><geom size=".02"/></body>',
+        "scene_include": '<include file="object.xml"/>',
+        "scene_mesh_file": '<body name="cup"><freejoint/><geom type="mesh" mesh="cup"/></body>'
+        '</worldbody><asset><mesh name="cup" file="cup.stl"/></asset><worldbody>',
     }
     for name, body in scenes.items():
         runtime = MujocoRuntime(package, scene=_variant(tmp_path, name, body))
@@ -268,6 +274,9 @@ def test_invalid_attachments_and_scenes_change_nothing(artifacts: Path, tmp_path
         "transform_not_a_pose": "wrong_type",
         "transform_far_from_box": "attachment_mismatch",
         "stale_revision": "stale_revision",
+        "boolean_revision": "wrong_type",
+        "float_revision": "wrong_type",
+        "negative_revision": "out_of_limits",
         "detach_unattached": "not_attached",
         "attached_with_fixture": "pedestal,tcp",
         "already_attached": "already_attached",
@@ -275,4 +284,6 @@ def test_invalid_attachments_and_scenes_change_nothing(artifacts: Path, tmp_path
         "scene_conflict": "scene_conflict",
         "articulated_object": "invalid_scene",
         "unnamed_body": "invalid_scene",
+        "scene_include": "invalid_scene",
+        "scene_mesh_file": "invalid_scene",
     }

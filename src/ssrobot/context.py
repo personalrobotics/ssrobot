@@ -36,7 +36,7 @@ from ssrobot.execution import (
 )
 from ssrobot.observations import Observation, ObservationRequest
 from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime
-from ssrobot.scene import Attachment, AttachmentViolation, SceneState
+from ssrobot.scene import Attachment, AttachmentViolation, SceneState, TrackedAttachment
 from ssrobot.trace import TraceKind, TracePayload, TraceRecord, TraceSink
 from ssrobot.validation import check_applied, check_command, check_observation, check_request
 
@@ -360,19 +360,20 @@ class RobotContext:
         requested = Attachment(
             object=object, end_effector=end_effector, transform=transform, allow=allowed
         )
-        tracked = self._scene_runtime.attach(requested, resolve)
-        # Nothing is committed until the runtime's answer is valid.
+        answer = self._scene_runtime.attach(requested, resolve)
+        # Nothing is committed until the runtime's answer is valid; on a breach the
+        # runtime is told to stop tracking what it was just handed.
+        tracked = answer.attachment if isinstance(answer, TrackedAttachment) else None
         if (
-            not isinstance(tracked, Attachment)
+            tracked is None
             or replace(tracked, transform=transform) != requested
             or (not resolve and tracked.transform != transform)
         ):
-            error = self._breach(f"attach of {object!r} answered {tracked!r}")
-            try:
-                self._scene_runtime.detach(object)  # it may have started tracking
-            except Exception as cleanup:
-                error.add_note(f"detaching {object!r} also failed: {cleanup!r}")
-            raise error
+            raise self._abandon(object, self._breach(f"attach of {object!r} answered {answer!r}"))
+        try:
+            self._accept_direct(answer.stamp)  # the transform was measured then
+        except ValidationError as error:
+            raise self._abandon(object, error) from None
         attachments = sorted((*scene.attachments, tracked), key=lambda a: a.object)
         return self._commit(replace(scene, attachments=tuple(attachments)), source)
 
@@ -569,9 +570,23 @@ class RobotContext:
     def _scene_runtime(self) -> SceneRuntime:
         return cast(SceneRuntime, self._runtime)
 
+    def _abandon(self, object: str, error: ValidationError) -> ValidationError:
+        """Tell the runtime to stop tracking an attachment it was just handed."""
+        try:
+            self._scene_runtime.detach(object)
+        except Exception as cleanup:
+            error.add_note(f"detaching {object!r} also failed: {cleanup!r}")
+        return error
+
     def _current_scene(self, revision: int | None) -> SceneState:
         scene = self.scene
-        if revision is not None and revision != scene.revision:
+        if revision is None:
+            return scene
+        if isinstance(revision, bool) or not isinstance(revision, int):
+            raise ValidationError("wrong_type", "revision must be an integer", path="revision")
+        if revision < 0:
+            raise ValidationError("out_of_limits", "revision must be >= 0", path="revision")
+        if revision != scene.revision:
             raise StaleRevisionError(
                 "stale_revision",
                 f"the scene is at revision {scene.revision}, not {revision}",

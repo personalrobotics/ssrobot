@@ -18,7 +18,7 @@ from ssrobot.description import CommandCapability, RobotDescription
 from ssrobot.errors import ValidationError
 from ssrobot.execution import AppliedCommand, ExecutionStatus, RuntimeHealth
 from ssrobot.observations import Observation, ObservationRequest
-from ssrobot.scene import Attachment, AttachmentViolation
+from ssrobot.scene import Attachment, AttachmentViolation, TrackedAttachment
 
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 
@@ -141,8 +141,9 @@ class SceneRuntime(Runtime, Protocol):
     revisions first and owns the resulting ``SceneState``.
     """
 
-    def attach(self, attachment: Attachment, resolve: bool) -> Attachment:
-        """Start tracking ``attachment``; return it as tracked.
+    def attach(self, attachment: Attachment, resolve: bool) -> TrackedAttachment:
+        """Start tracking ``attachment``; return it as tracked, stamped like any direct
+        answer.
 
         With ``resolve``, its transform is replaced by the object's current pose in the
         end effector's frame; otherwise it is kept. Raises ``SsrobotError``, changing

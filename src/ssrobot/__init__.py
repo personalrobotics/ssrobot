@@ -83,7 +83,7 @@ from ssrobot.package import (
 from ssrobot.replay import ReplayRuntime, ReplayScript, ReplayTick
 from ssrobot.resources import ResolvedFile, SourceItem
 from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime
-from ssrobot.scene import Attachment, AttachmentViolation, SceneState
+from ssrobot.scene import Attachment, AttachmentViolation, SceneState, TrackedAttachment
 from ssrobot.trace import JsonlTrace, TraceKind, TraceRecord, read_trace
 
 __all__ = [
@@ -171,6 +171,7 @@ __all__ = [
     "Timestamp",
     "TraceKind",
     "TraceRecord",
+    "TrackedAttachment",
     "ValidationError",
     "Value",
     "dumps",

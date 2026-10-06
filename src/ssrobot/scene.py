@@ -44,6 +44,15 @@ class Attachment(Value):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class TrackedAttachment(Value):
+    """A scene runtime's answer to an attach: the attachment it now tracks, and when it
+    measured or checked the object against it, on the runtime clock."""
+
+    attachment: Attachment = field(metadata=meta("The attachment as tracked."))
+    stamp: Timestamp = field(metadata=meta("When the transform was measured or checked."))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class SceneState(Record):
     """A context's scene: the objects it can hold and what it holds now."""
 

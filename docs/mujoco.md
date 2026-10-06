@@ -78,7 +78,7 @@ only checks its arguments. It compiles nothing and starts no thread:
 | `package_changed` | The package on disk is no longer the one that was loaded. The package is loaded again from its root under the same containment rules, and every recorded file is compared, by hash, with what the `RobotPackage` recorded. That covers the manifest, the model, includes, and assets, before and again after MuJoCo compiles. A changed, missing, or new file, or a path that now escapes the root, fails, naming the path. |
 | `unsupported_backend_version` | The installed MuJoCo distribution, the loaded module, or the compiled library is not exactly `MUJOCO_VERSION` (3.14.0). This is the version sscbirrt's native adapter is built against. |
 | `model_compile_failed` | MuJoCo cannot compile the model. |
-| `invalid_scene` | The scene cannot be read or compiled with the robot, or a top-level scene body is unnamed or has joints other than one free joint. |
+| `invalid_scene` | The scene cannot be read or compiled with the robot, refers to another file (see *Scene and attachments*), or has a top-level body that is unnamed or has joints other than one free joint. |
 | `scene_conflict` | A scene name repeats one of the robot model's. |
 | `invalid_timestep` | The model's timestep is not a whole number of nanoseconds. |
 | `model_mismatch` | MuJoCo's compiled model disagrees with the description (see *Mapping*), or the start keyframe disagrees with the named configuration of the same name (`configurations[<name>]`; see *Start keyframe*). The path names the entity. |
@@ -143,8 +143,12 @@ within `START_TOLERANCE`. The two describe one pose and may not drift apart.
 
 ## Scene and attachments
 
-`scene` names an MJCF file that is application data, not part of the robot package. At
-open, the runtime composes it with the robot's model, attaching the scene's world body
+`scene` names an MJCF file that is application data, not part of the robot package.
+For now it must be self-contained: an `<include>`, or any `file` attribute on a mesh,
+texture, height field, skin, or other asset, fails with `invalid_scene`. Otherwise the
+compiled simulation could depend on files that the recorded identity does not cover.
+The runtime reads the file once, hashes those bytes, and compiles exactly them. At
+open, it composes the scene with the robot's model, attaching the scene's world body
 to the robot's with no name prefix:
 - **Objects** are the scene's top-level bodies with exactly one free joint. They can be
   attached.
@@ -170,8 +174,8 @@ first time either tolerance is exceeded, the runtime reports one `AttachmentViol
 with both errors. The allow set is recorded for planners and is not applied to MuJoCo's
 contacts, since excluding finger contacts would remove the grip itself.
 
-`runtime.mapping` records the scene path as given, the SHA-256 of the scene file's own
-bytes (its includes are not covered), and its objects and fixtures.
+`runtime.mapping` records the scene path as given, the SHA-256 of the bytes that were
+compiled, which identify the scene completely, and its objects and fixtures.
 
 A friction grasp in MuJoCo creeps under soft contacts. The example arm therefore uses
 elliptic friction cones with `impratio="10"`, as MuJoCo recommends for grasping. That
@@ -340,7 +344,7 @@ loop is an application that calls `step()`; it is not a different runtime mode.
 | `artifacts/test_mujoco_model_signature_covers_every_file_the_model_brings_in/{original,moved,edited}-mapping.json` | Three copies of the example: unchanged, moved to another directory, and with one gain changed in the included `actuators.xml`. The edited copy has the same root-file hash but a different model signature, and the moved copy's mapping is identical to the original's. |
 | `artifacts/test_mujoco_runtime_refuses_mismatches_before_commands/startup-failures.json` | Each code in *Opening*, plus `invalid_substeps`, with its path and message, including a keyframe with the elbow outside its range (`invalid_initial_state`). Model selection fails four ways: a profile naming a missing model (`invalid_profile`) or the URDF (`unsupported_model_format`); two MJCF models and no choice (`ambiguous_model`); and an MJCF artifact with a renamed joint (`model_mismatch` at `joints[j3]`). An artifact edited after loading fails with `package_changed`, and a keyframe disagreeing with its configuration with `model_mismatch` at `configurations[home]`. A keyframe with the wrist 0.5 mrad past its stop opens, is first observed at 3.0005, and settles back to its stop. For `package_changed`: the canonical MJCF edited after loading, an included file edited, and an include replaced by a symlink out of the package. None of them opened or left a mapping. |
 | `artifacts/test_grasp_carry_release_and_drop_are_traced/{carry,drop}/trace.jsonl`, `summary.json` | The example arm with `examples/scenes/pedestal.xml`. **Carry:** the box starts on the pedestal and the hand closes on it. `attach("box", "hand")` resolves the transform and allows `gripper`, `left_finger`, `right_finger`, and `tcp`. Friction alone lifts the box, swings it 0.6 rad aside and back, and releases it just above the pedestal, where it lands within 1 cm of its start. There is no violation, and detach empties the scene. **Drop:** the hand opens after lifting without detaching. One `violation` is traced, the attachment turns `held: false` and stays, and closing detaches it. `scene` records run at revisions 0 to 2 (carry) and 0 to 3 (drop). A second run gives byte-identical files. |
-| `artifacts/test_invalid_attachments_and_scenes_change_nothing/refusals.json` | Each refused `attach` and `detach`, with its code, leaving the scene unchanged: an unknown object, a fixture as object, an unknown end effector or allow name, a repeated allow name, a non-pose transform, a transform far from the box (`attachment_mismatch`), a stale revision (`StaleRevisionError`), already attached, and not attached. A fixture may be allowed. Scenes that reuse a robot name (`scene_conflict`), or have an articulated or unnamed body (`invalid_scene`), fail at open. |
+| `artifacts/test_invalid_attachments_and_scenes_change_nothing/refusals.json` | Each refused `attach` and `detach`, with its code, leaving the scene unchanged: an unknown object, a fixture as object, an unknown end effector or allow name, a repeated allow name, a non-pose transform, a transform far from the box (`attachment_mismatch`), a stale revision (`StaleRevisionError`), a boolean or float revision (`wrong_type`) and a negative one (`out_of_limits`), already attached, and not attached. A fixture may be allowed. Scenes that reuse a robot name (`scene_conflict`), have an articulated or unnamed body, or refer to another file through an include or a mesh file (`invalid_scene`) fail at open. |
 | `reference-robots/<robot>/mujoco-startup.json` (CI) | Geodude and ADA opened from their installed wheels: mapping, runtime version, and exact time after 10 steps. |
 | `installed-conformance/imports-mujoco.json` (CI) | The `[mujoco]` wheel in a clean environment: what importing the integration loads, and that the gate passes. |
 

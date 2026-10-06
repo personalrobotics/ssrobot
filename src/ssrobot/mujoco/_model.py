@@ -213,7 +213,8 @@ class MujocoMapping(Value):
         default=None, metadata=meta("Scene file composed with the model, as given, if any.")
     )
     scene_sha256: str | None = field(
-        default=None, metadata=meta("SHA-256 of the scene file's own bytes, if any.")
+        default=None,
+        metadata=meta("SHA-256 of the scene file, which is self-contained and was compiled."),
     )
     objects: tuple[str, ...] = field(
         default=(), metadata=meta("Scene bodies with a free joint: attachable objects.")

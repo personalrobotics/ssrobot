@@ -30,7 +30,9 @@ from ssrobot import (
     RobotContext,
     RobotDescription,
     RuntimeInfo,
+    Timestamp,
     TraceKind,
+    TrackedAttachment,
     ValidationError,
     load_package,
     read_trace,
@@ -271,18 +273,29 @@ class _SceneScripted(ScriptedRuntime):
     """A scripted runtime with one object and one fixture, whose attach answers a test
     may tamper with."""
 
-    def __init__(self, tamper: Callable[[Attachment], Attachment] | None = None) -> None:
-        super().__init__(clock_mode=ClockMode.MANUAL, clock="sim:scripted")
+    def __init__(
+        self,
+        tamper: Callable[[Attachment], Attachment] | None = None,
+        *,
+        clock_mode: ClockMode = ClockMode.MANUAL,
+        answer_ns: int | None = None,
+    ) -> None:
+        super().__init__(clock_mode=clock_mode, clock="sim:scripted")
         self.tamper = tamper
+        self.answer_ns = answer_ns  # when the attach answer says it measured the object
         self.tracked: list[str] = []
 
     def open(self, description: RobotDescription) -> RuntimeInfo:
         return replace(super().open(description), objects=("box",), fixtures=("pedestal",))
 
-    def attach(self, attachment: Attachment, resolve: bool) -> Attachment:
+    def attach(self, attachment: Attachment, resolve: bool) -> TrackedAttachment:
         self.calls.append(f"attach {attachment.object}")
         self.tracked.append(attachment.object)
-        return attachment if self.tamper is None else self.tamper(attachment)
+        if self.answer_ns is not None:
+            self.now_ns = max(self.now_ns, self.answer_ns)
+        stamp = Timestamp(clock=self.clock, time_ns=self.answer_ns or self.now_ns)
+        tracked = attachment if self.tamper is None else self.tamper(attachment)
+        return TrackedAttachment(attachment=tracked, stamp=stamp)
 
     def detach(self, object: str) -> None:
         self.calls.append(f"detach {object}")
@@ -331,6 +344,31 @@ def test_scene_runtimes_that_break_their_contract(artifacts: Path) -> None:
             ctx.update()
         report["violation_unattached"] = [breach.value.code, ctx.state.value]
 
+    # Resolving a transform is a direct answer: on an external clock it may advance the
+    # context's time, and the scene change is recorded then.
+    trace_path = artifacts / "external-attach-trace.jsonl"
+    runtime = _SceneScripted(clock_mode=ClockMode.EXTERNAL, answer_ns=100)
+    with JsonlTrace(trace_path) as trace, RobotContext(robot, runtime, sinks=[trace]) as ctx:
+        ctx.attach("box", "hand")
+        report["external_resolve"] = {
+            "now": ctx.now.time_ns,
+            "scene": [[r.kind.value, r.time_ns] for r in read_trace(trace_path)],
+        }
+    late = {"manual_later_tick": (ClockMode.MANUAL, 10), "external_earlier": None}
+    for name, setup in late.items():
+        if setup is None:  # an answer stamped before the context's latest time
+            runtime = _SceneScripted(clock_mode=ClockMode.EXTERNAL)
+            runtime.now_ns = 50
+        else:
+            runtime = _SceneScripted(clock_mode=setup[0], answer_ns=setup[1])
+        with RobotContext(robot, runtime) as ctx:
+            if setup is None:
+                ctx.update()
+                runtime.now_ns = 0
+            with pytest.raises(ValidationError) as breach:
+                ctx.attach("box", "hand")
+            report[name] = [breach.value.code, ctx.scene.revision, list(runtime.tracked)]
+
     with pytest.raises(CapabilityError) as missing:
         RobotContext(robot, _ObjectsWithoutAttach(clock_mode=ClockMode.MANUAL)).__enter__()
     report["objects_without_attach"] = missing.value.code
@@ -346,4 +384,7 @@ def test_scene_runtimes_that_break_their_contract(artifacts: Path) -> None:
         "changed_allow": ["runtime_contract", []],
         "violation_unattached": ["runtime_contract", "faulted"],
         "objects_without_attach": "undeclared_capability",
+        "external_resolve": {"now": 100, "scene": [["opened", 0], ["scene", 0], ["scene", 100]]},
+        "manual_later_tick": ["runtime_contract", 0, []],
+        "external_earlier": ["runtime_contract", 0, []],
     }
