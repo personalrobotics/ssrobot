@@ -354,6 +354,12 @@ class MujocoRuntime:
         for (joint_name, mode), drive in self._drives.items():
             if mode is JointMode.POSITION:  # hold where it starts, rather than at ctrl 0
                 q = float(data.qpos[self._joints[joint_name].qpos_address])
+                # A start just past a stop is held at the stop, like any other setpoint.
+                limits = description.joint(joint_name).limits
+                if limits.lower is not None:
+                    q = max(q, limits.lower)
+                if limits.upper is not None:
+                    q = min(q, limits.upper)
                 data.ctrl[drive.id] = drive.clip(drive.ctrl_for(q))[0]
         mujoco.mj_forward(model, data)
         self._model, self._data, self._description = model, data, description
