@@ -1,4 +1,4 @@
-# The two full reference robots (#12). Each pin is the first commit of the robot's
+# The two full reference robots (#12). Each pin is a reviewed commit of the robot's
 # asset repository whose package carries an ssrobot.toml. The packages own their
 # manifests; ssrobot only pins and validates them. scripts/check_reference_robots.py
 # reads this file.
@@ -6,18 +6,17 @@
 [[robots]]
 name = "geodude"
 repository = "personalrobotics/geodude_assets"
-commit = "859913c46582796c704a8cdbf1761fc30f8a85cb"
+commit = "13752c2351b7dd94e4d0f16c055b0946c6d08d7a"
 module = "geodude_assets"
 package_root = "src/geodude_assets"
-# No keyframe: this commit's "ready" puts wrist_1 outside the joint limits, fixed in
-# geodude_assets#20; the model's default state is within them. Moving this pin is #95.
+# No keyframe: the package's MuJoCo profile starts it at "ready" (#95).
 
 # Structural facts the report must show. They are checked through the public report,
 # never by robot-specific code.
 [robots.expect]
 # The reviewed semantic identity. Any change to the description, intended or not,
 # must update this fingerprint in review.
-fingerprint = "e3d6fbe0c7d22907a31ee6abbce4a8537794a18518f7e6e56bc4417c78f7a7ec"
+fingerprint = "bf011c66918d8c088b91c1f6c8c69b6bfb2fae13fb7dd6b1b19591dc9a27c193"
 model_format = "mjcf"
 license = "MIT"
 manipulators = 4
@@ -25,6 +24,9 @@ grippers = 2
 end_effectors = 2
 prismatic_joints = 2
 revolute_or_continuous_joints = 28
+# What MujocoRuntime confirms from the package's declarations, and drives (#95).
+confirmed_commands = 10
+confirmed_channels = 12
 
 [[robots]]
 name = "ada"
@@ -45,3 +47,6 @@ grippers = 1
 end_effectors = 1
 prismatic_joints = 0
 revolute_or_continuous_joints = 10
+# ADA declares no commands or channels yet (parked, #95).
+confirmed_commands = 0
+confirmed_channels = 0

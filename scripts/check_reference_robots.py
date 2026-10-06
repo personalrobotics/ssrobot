@@ -169,6 +169,107 @@ def inspect_installed(
 STARTUP_STEPS = 10
 
 
+GRIPPER_TOLERANCE = 0.05  # how close a gripper's observed opening must come to 0 or 1
+GRIPPER_REACH_TICKS = 2_000  # the most a gripper may take to come within tolerance
+GRIPPER_SETTLE_TICKS = 500  # then held, before its settled opening is recorded
+
+
+def drive(ctx: Any) -> dict[str, dict[str, Any]]:
+    """Exercise every confirmed trajectory and gripper capability once.
+
+    Each trajectory group moves from where it is a small step toward the middle of each
+    joint's range, over one second, and succeeds when the runtime reports it reached the
+    goal. Each gripper closes, then opens, and succeeds only when its own
+    ``gripper_opening`` channel is observed to reach each end, within tolerance, and
+    stay there after settling: a gripper command
+    succeeds as soon as its target is applied, so that alone would not show the
+    fingers moved. Returns, per capability, its state and what was observed.
+    """
+    from ssrobot import (
+        CommandKind,
+        GripperCommand,
+        JointTrajectory,
+        ObservationRequest,
+        Quantity,
+    )
+
+    description = ctx.description
+
+    def positions() -> dict[str, float]:
+        out: dict[str, float] = {}
+        for spec in description.channels:
+            if spec.name in ctx.info.channels and spec.quantity is Quantity.JOINT_POSITION:
+                value = ctx.observe(ObservationRequest(channels=(spec.name,))).readings[0].value
+                out.update(zip(description.group(spec.source).joints, value, strict=True))
+        return out
+
+    def opening_channel(gripper: str) -> str | None:
+        return next(
+            (
+                s.name
+                for s in description.channels
+                if s.name in ctx.info.channels
+                and s.quantity is Quantity.GRIPPER_OPENING
+                and s.source == gripper
+            ),
+            None,
+        )
+
+    results: dict[str, dict[str, Any]] = {}
+    for capability in ctx.info.commands:
+        if capability.kind is CommandKind.JOINT_TRAJECTORY:
+            joints = description.group(capability.component).joints
+            now = positions()
+            if not all(j in now for j in joints):
+                results[f"trajectory {capability.component}"] = {"state": "unobserved"}
+                continue
+            goal = []
+            for name in joints:
+                joint, q = description.joint(name), now[name]
+                step = 0.02 if joint.kind.value == "prismatic" else 0.1
+                low, high = joint.limits.lower, joint.limits.upper
+                middle = q + 1.0 if low is None or high is None else (low + high) / 2
+                goal.append(q + (step if middle >= q else -step))
+            move = JointTrajectory(
+                group=capability.component,
+                joints=joints,
+                time_from_start_ns=(0, 1_000_000_000),
+                positions=(tuple(now[j] for j in joints), tuple(goal)),
+            )
+            status = ctx.run_until(ctx.submit(move), max_ticks=5_000)
+            results[f"trajectory {capability.component}"] = {"state": status.state.value}
+        elif capability.kind is CommandKind.GRIPPER:
+            channel = opening_channel(capability.component)
+            if channel is None:
+                results[f"gripper {capability.component}"] = {"state": "unobserved"}
+                continue
+            request = ObservationRequest(channels=(channel,))
+            observed = []
+            for opening in (0.0, 1.0):
+                command = GripperCommand(gripper=capability.component, opening=opening)
+                ctx.run_until(ctx.submit(command), max_ticks=10)
+                value = ctx.observe(request).readings[0].value[0]
+                for _ in range(GRIPPER_REACH_TICKS):
+                    if abs(value - opening) <= GRIPPER_TOLERANCE:
+                        break
+                    ctx.step()
+                    value = ctx.observe(request).readings[0].value[0]
+                for _ in range(GRIPPER_SETTLE_TICKS):
+                    ctx.step()
+                observed.append(ctx.observe(request).readings[0].value[0])
+            reached = all(
+                abs(value - opening) <= GRIPPER_TOLERANCE
+                for value, opening in zip(observed, (0.0, 1.0), strict=True)
+            )
+            results[f"gripper {capability.component}"] = {
+                "state": "succeeded" if reached else "not_reached",
+                "requested": [0.0, 1.0],
+                "observed": observed,
+                "tolerance": GRIPPER_TOLERANCE,
+            }
+    return results
+
+
 def startup(module: str, out: Path, keyframe: str | None) -> int:
     """Open MujocoRuntime on the installed ``module``, step it, and write what it bound.
 
@@ -190,8 +291,10 @@ def startup(module: str, out: Path, keyframe: str | None) -> int:
             "steps": STARTUP_STEPS,
             "time_ns": ctx.now.time_ns,
             "keyframe": keyframe,
+            "confirmed": {"commands": len(ctx.info.commands), "channels": len(ctx.info.channels)},
             "mapping": json.loads(dumps(runtime.mapping)),
         }
+        record["driven"] = drive(ctx)
     out.write_text(json.dumps(record, indent=2) + "\n")
     return 0
 
@@ -296,7 +399,22 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
     }
     record["structure"] = observed
     compare("structure", {k: expect[k] for k in observed}, observed)
-    add("mujoco_startup", *mujoco_startup(robot["module"], robot.get("keyframe"), out, scratch))
+    started, detail = mujoco_startup(robot["module"], robot.get("keyframe"), out, scratch)
+    add("mujoco_startup", started, detail)
+    if not started:
+        return record
+    startup_record = json.loads((out / "mujoco-startup.json").read_text())
+    compare(
+        "mujoco_confirmed",
+        {"commands": expect["confirmed_commands"], "channels": expect["confirmed_channels"]},
+        startup_record["confirmed"],
+    )
+    driven = startup_record["driven"]
+    add(
+        "mujoco_drive",
+        all(result["state"] == "succeeded" for result in driven.values()),
+        f"{len(driven)} capabilities: {driven}" if driven else "no commands to drive",
+    )
     return record
 
 
