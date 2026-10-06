@@ -3,3 +3,6 @@ __pycache__/
 .venv/
 *.egg-info/
 dist/
+
+# MuJoCo writes its warnings here, e.g. on macOS when rendering depth.
+MUJOCO_LOG.TXT

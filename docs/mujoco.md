@@ -37,14 +37,15 @@ Implemented:
 - lifecycle, the mapping from the description to the compiled model, and the manual
   clock (#14);
 - joint, trajectory, gripper, and chunk commands, and joint-state and gripper-opening
-  channels (#15).
+  channels (#15);
+- joint effort, poses, wrenches, and RGB and depth images (#16).
 
 Still to come:
 
 | Issue | Adds |
 | --- | --- |
 | #85 | Base twist commands, for Opendubs |
-| #16 | Effort readings, cameras, force-torque sensors, poses, and objects |
+| follow-up to #16 | Object state, contacts, and marking privileged simulator state, with scene composition |
 | #17 | Attachments, and enforcement of collision allowances: which pairs MuJoCo's filtering (weld groups, explicit pairs and excludes, and affinity masks) already prevents, and how the rest are applied |
 | #18 | Snapshots |
 
@@ -158,7 +159,31 @@ Channels are confirmed the same way:
 - `gripper_opening` needs the profile. It inverts the profile's map from the
   actuators' lengths, `(L − L_closed) / (L_open − L_closed)`, clipped to [0, 1] and
   averaged over the gripper's actuators.
-- Any other quantity is `unsupported_quantity` until #16.
+- `joint_effort` reads `qfrc_actuator` at the group's joints: the force the actuators
+  apply to each joint.
+- `pose` reports `source` in `frame`, from the two frames' world poses. A body's pose is
+  its frame, a site's its own, and a camera's its optical frame (below).
+- `wrench` needs the sensor's frame to be a MuJoCo site with exactly one `force` and one
+  `torque` sensor. It reads them in the site frame, which is the contract's sign
+  convention (otherwise `not_a_mujoco_site`, `no_force_torque_sensors`).
+- `rgb_image` and `depth_image` need the sensor's frame to be a MuJoCo camera
+  (`not_a_mujoco_camera`), and the channel's height and width to fit the model's
+  offscreen buffer (`image_too_large`). They render through one `mujoco.Renderer` per
+  size, created at open and freed at close. Where no OpenGL context can be made, they
+  stay unconfirmed (`rendering_unavailable`) instead of failing open. On Linux without
+  a display, MuJoCo's default GLFW backend would abort the process, so the runtime does
+  not try it: set `MUJOCO_GL=egl` or `MUJOCO_GL=osmesa` to render headless.
+
+MuJoCo's own camera frame looks along −z with y up. The runtime reports a camera's frame
+as the contract's optical frame instead (x right, y down, z forward): MuJoCo's frame
+turned a half-turn about x. Its `pose` readings, images, and depth therefore agree, and
+a consumer back-projects depth from the camera's pose with no MuJoCo-specific step. RGB
+is uint8. Depth is float32 metres along the optical z axis.
+
+**Sampling.** `observe` reads the state at the current tick: every reading, images
+included, is stamped `now` and reflects the same state. A stepped simulation therefore
+observes deterministically on one platform. Rendered pixels may differ between GL
+backends and platforms, so only their geometry, not their bytes, is portable.
 
 ## Profile
 
@@ -224,6 +249,8 @@ loop is an application that calls `step()`; it is not a different runtime mode.
 | --- | --- |
 | `artifacts/test_mujoco_runtime_resolves_and_steps_the_package/mapping.json`, `lifecycle.json` | The `mujoco_arm` example's full mapping and bindings. Position, trajectory, and gripper commands and three channels confirmed; the velocity command not, as `no_velocity_actuators`, and refused. Exact time over four ticks of five substeps, identical across two opens. Close is idempotent. One runtime, reused: a failed reopen leaves no mapping, and a successful one gives the same mapping again. |
 | `artifacts/test_mujoco_executes_trajectories_chunks_and_grippers/<scenario>/trace.jsonl`, `final-state.json` | Nine scenarios, each from the `home` keyframe. Trajectory: succeeds within `goal_tolerance`. Chunk: an arm and gripper command per step, one application per tick of the latest due step. Gripper: closes to at most 0.05 and opens to at least 0.95. Range-limited gripper (left finger's control range halved): opening 1 is applied as 0.5, `clipped`, and the hand settles within 0.05 of 0.5. Reversed profile: 0.25 applied and reached. Stop and back: the elbow, driven onto its lower stop, rests 0.43 mrad past it, and a trajectory starting there succeeds, with only its first setpoint clamped. The changed packages are under `packages/`. Cancel: nothing applied after it, and the arm holds within 0.02 of its last setpoint. Timeout: `timed_out`. Zero tolerance and settle time: `goal_not_reached`. A second run gives byte-identical files. |
+| `artifacts/test_mujoco_observes_robot_state_sensors_and_cameras/observations.json`, `trace.jsonl`, `assets/` | Every robot channel, at open and after settling, with its binding. They are checked against an independently compiled model: the `tcp` pose in `base` within 1e-9; the centre depth pixel within 2 mm of a ray cast along the camera's optical axis; the wrist force, in world, equal to the hand's weight within 2%; and each joint's effort equal to its gravity torque. The RGB image is not one flat colour. A second run gives byte-identical files and image assets. |
+| `artifacts/test_mujoco_leaves_unbacked_channels_unconfirmed/unconfirmed.json` | A wrench channel whose site has no MuJoCo force and torque sensors: unconfirmed (`no_force_torque_sensors`), and observing it is refused. |
 | `artifacts/test_mujoco_rejects_unexecutable_commands/rejections.json` | `start_mismatch`, an unconfirmed velocity command, a chunk commanding the arm and the overlapping `wrist_only` group, and each profile failure, with its code and path. That covers a gripper profile naming the arm's actuator (`actuator_alias`) and no reachable opening. A zero-gear wrist opens with the arm's and wrist's position commands unconfirmed and their reasons recorded. |
 | `artifacts/test_mujoco_runtime_refuses_mismatches_before_commands/startup-failures.json` | Each code in *Opening*, plus `invalid_substeps`, with its path and message, including a keyframe with the elbow outside its range (`invalid_initial_state`). A keyframe with the wrist 0.5 mrad past its stop opens, is first observed at 3.0005, and settles back to its stop. For `package_changed`: the canonical MJCF edited after loading, an included file edited, and an include replaced by a symlink out of the package. None of them opened or left a mapping. |
 | `reference-robots/<robot>/mujoco-startup.json` (CI) | Geodude and ADA opened from their installed wheels: mapping, runtime version, and exact time after 10 steps. |

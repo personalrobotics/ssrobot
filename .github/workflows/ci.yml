@@ -11,6 +11,10 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      # MuJoCo renders camera channels headless through OSMesa.
+      MUJOCO_GL: osmesa
+      PYOPENGL_PLATFORM: osmesa
     strategy:
       fail-fast: false
       matrix:
@@ -20,6 +24,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: ${{ matrix.python }}
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libosmesa6
       - run: uv sync --locked
       - run: uv run ruff format --check .
       - run: uv run ruff check .
@@ -61,6 +66,17 @@ jobs:
           sed -n '/^### Simulation in MuJoCo/,/^## /p' README.md | sed -n '/^```python$/,/^```$/p' | sed '1d;$d' > "$RUNNER_TEMP/readme_mujoco.py"
           clean-mujoco/bin/python -P "$RUNNER_TEMP/readme_mujoco.py" | tee "$RUNNER_TEMP/readme_mujoco.txt"
           grep -q '^succeeded ' "$RUNNER_TEMP/readme_mujoco.txt"
+      - name: Without a display or MUJOCO_GL, camera channels are unconfirmed, not fatal
+        working-directory: ${{ github.workspace }}
+        run: >-
+          clean-mujoco/bin/python -P -c "import ssrobot;
+          from ssrobot.mujoco import MujocoRuntime;
+          p = ssrobot.load_package('examples/packages/mujoco_arm');
+          r = MujocoRuntime(p);
+          ctx = ssrobot.RobotContext(p.description, r); ctx.__enter__();
+          why = {b.name: b.unavailable.code for b in r.mapping.channels if b.unavailable};
+          ctx.close(); print(why);
+          assert why == {'wrist_rgb': 'rendering_unavailable', 'wrist_depth': 'rendering_unavailable'}, why"
       - name: Conformance from the installed wheel
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/clean/bin/python -m ssrobot.conformance --out $GITHUB_WORKSPACE/artifacts/installed-conformance

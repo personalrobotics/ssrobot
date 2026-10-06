@@ -46,6 +46,11 @@ name = "wrist_camera"
 kind = "camera"
 frame = "wrist_camera"
 
+[[semantics.sensors]]
+name = "wrist_ft"
+kind = "force_torque"
+frame = "ft_site"
+
 [[semantics.collision_allowances]]
 frame_a = "link1"
 frame_b = "link3"
@@ -96,3 +101,47 @@ quantity = "gripper_opening"
 source = "gripper"
 shape = [1]
 dtype = "float64"
+
+[[semantics.channels]]
+name = "arm_qf"
+quantity = "joint_effort"
+source = "arm"
+shape = [3]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "tcp_pose"
+quantity = "pose"
+source = "tcp"
+frame = "base"
+shape = [7]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "camera_pose"
+quantity = "pose"
+source = "wrist_camera"
+frame = "world"
+shape = [7]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "wrist_wrench"
+quantity = "wrench"
+source = "wrist_ft"
+shape = [6]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "wrist_rgb"
+quantity = "rgb_image"
+source = "wrist_camera"
+shape = [48, 64, 3]
+dtype = "uint8"
+
+[[semantics.channels]]
+name = "wrist_depth"
+quantity = "depth_image"
+source = "wrist_camera"
+shape = [48, 64]
+dtype = "float32"

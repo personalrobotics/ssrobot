@@ -424,6 +424,23 @@ def driven_joints(model: Any, i: int) -> frozenset[str] | None:
     return frozenset(joints)
 
 
+def force_torque_sensors(model: Any, site: int) -> tuple[int, int] | None:
+    """The sensordata addresses of a site's MuJoCo force and torque sensors, if it has
+    exactly one of each."""
+    found: dict[int, list[int]] = {}
+    for i in range(model.nsensor):
+        if (
+            int(model.sensor_objtype[i]) == int(mujoco.mjtObj.mjOBJ_SITE)
+            and int(model.sensor_objid[i]) == site
+        ):
+            found.setdefault(int(model.sensor_type[i]), []).append(int(model.sensor_adr[i]))
+    forces = found.get(int(mujoco.mjtSensor.mjSENS_FORCE), [])
+    torques = found.get(int(mujoco.mjtSensor.mjSENS_TORQUE), [])
+    if len(forces) != 1 or len(torques) != 1:
+        return None
+    return forces[0], torques[0]
+
+
 def select_profile(package: RobotPackage, requested: str | None) -> ProfileEntry | None:
     """The named MuJoCo profile, or the package's only one, or None if it has none."""
     entries = [p for p in package.manifest.profiles if p.runtime == "mujoco"]
