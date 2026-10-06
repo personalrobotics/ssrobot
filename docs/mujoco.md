@@ -170,8 +170,9 @@ Channels are confirmed the same way:
   (`not_a_mujoco_camera`), and the channel's height and width to fit the model's
   offscreen buffer (`image_too_large`). They render through one `mujoco.Renderer` per
   size, created at open and freed at close. Where no OpenGL context can be made, they
-  stay unconfirmed (`rendering_unavailable`) instead of failing open. On a headless
-  machine set `MUJOCO_GL=egl` or `MUJOCO_GL=osmesa`.
+  stay unconfirmed (`rendering_unavailable`) instead of failing open. On Linux without
+  a display, MuJoCo's default GLFW backend would abort the process, so the runtime does
+  not try it: set `MUJOCO_GL=egl` or `MUJOCO_GL=osmesa` to render headless.
 
 MuJoCo cameras look along their frame's −z with y up, so the contract's optical frame
 (x right, y down, z forward) is the camera frame rotated 180° about x. RGB is uint8.

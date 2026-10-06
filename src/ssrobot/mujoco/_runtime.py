@@ -5,6 +5,8 @@ from __future__ import annotations
 import bisect
 import itertools
 import math
+import os
+import sys
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -78,6 +80,19 @@ class _Running:
     command: Command
     started_ns: int | None = None
     ended_ns: int | None = None  # a trajectory: when its last waypoint was applied
+
+
+def _rendering_problem() -> str | None:
+    """Why MuJoCo cannot render here, when that is known before trying.
+
+    MuJoCo's default backend on Linux, GLFW, needs a display; without one, creating a
+    renderer aborts the process rather than raising, so it must not be attempted.
+    """
+    backend = os.environ.get("MUJOCO_GL", "glfw").lower()
+    display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    if sys.platform.startswith("linux") and backend == "glfw" and not display:
+        return "no display for MuJoCo's GLFW backend; set MUJOCO_GL=egl or MUJOCO_GL=osmesa"
+    return None
 
 
 def _is_int(value: object) -> bool:
@@ -606,9 +621,12 @@ class MujocoRuntime:
                 source,
             )
         if (height, width) not in self._renderers:
+            problem = _rendering_problem()
+            if problem is not None:
+                return _unavailable("rendering_unavailable", problem, source)
             try:
                 self._renderers[(height, width)] = mujoco.Renderer(model, height, width)
-            except (RuntimeError, mujoco.FatalError) as e:  # no OpenGL context here
+            except (ImportError, RuntimeError, mujoco.FatalError) as e:  # no OpenGL context
                 return _unavailable("rendering_unavailable", str(e), source)
         self._cameras[spec.name] = frame.id
         return None
