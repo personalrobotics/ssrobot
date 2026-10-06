@@ -40,7 +40,7 @@ from ssrobot.mujoco import MujocoRuntime
 
 package = ssrobot.load_package("examples/packages/mujoco_arm")
 arm_q = ssrobot.ObservationRequest(channels=("arm_q",))
-with ssrobot.RobotContext(package.description, MujocoRuntime(package, keyframe="home")) as ctx:
+with ssrobot.RobotContext(package.description, MujocoRuntime(package)) as ctx:  # at home
     start = ctx.observe(arm_q).readings[0].value
     move = ssrobot.JointTrajectory(
         group="arm",

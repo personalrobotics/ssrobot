@@ -80,6 +80,33 @@ Every format produces the same `KinematicModel`, plus whatever semantics the fil
 carries. That model is merged with the manifest's `semantics`. A name declared in both
 is a duplicate and fails.
 
+**Several models.** A package may list several models, for example URDF and SRDF as its
+canonical source of semantics, plus an MJCF for MuJoCo. Every listed model is loaded,
+so all its files are resolved inside the package, hashed, and reported, and a model
+ssrobot cannot load fails the package. Only the canonical model builds the description.
+Runtimes choose the model they execute through their profile, and cross-check it
+against that description ([mujoco.md](mujoco.md)):
+
+```toml
+canonical_model = "urdf"                 # the semantics: groups, states, limits
+
+[[models]]
+name = "urdf"
+format = "urdf"
+path = "arm.urdf"
+srdf = "arm.srdf"
+
+[[models]]                               # what MuJoCo compiles
+name = "mujoco"
+format = "mjcf"
+path = "arm_mujoco.xml"
+
+[[profiles]]                             # names the "mujoco" model and a start keyframe
+name = "sim"
+runtime = "mujoco"
+path = "mujoco.toml"
+```
+
 **What loaders keep, and what they don't.** The description holds topology, joint
 limits, and semantics. Loaders resolve every file a model refers to: includes, meshes,
 textures, height fields, skins, and the SRDF. Each must stay inside the package, and

@@ -16,9 +16,11 @@ from ssrobot import (
     JointCommand,
     JointLimits,
     JointMode,
+    JointTrajectory,
     ObservationRequest,
     RobotContext,
     RobotDescription,
+    RobotPackage,
     SsrobotError,
     dumps,
     load_package,
@@ -149,10 +151,33 @@ def _with_timestep(tmp_path: Path, timestep: str) -> Path:
 Opener = Callable[[], tuple[RobotDescription, MujocoRuntime]]
 
 
-def _changed_after_loading(tmp_path: Path, name: str, change: Callable[[Path], None]) -> Opener:
-    """A copy of the fixture, loaded now and changed on disk when the case runs."""
+URDF_ARM = ROOT / "tests" / "fixtures" / "packages" / "urdf_arm"
+URDF_MUJOCO_ENTRY = """
+# The same arm for MuJoCo. The URDF above is canonical; this only executes it.
+[[models]]
+name = "mujoco"
+format = "mjcf"
+path = "arm_mujoco.xml"
+"""
+
+
+def _edited(tmp_path: Path, name: str, source: Path, *edits: tuple[str, str, str]) -> RobotPackage:
+    """A copy of ``source`` with each (file, old, new) replacement made, then loaded."""
     root = tmp_path / name
-    shutil.copytree(FIXTURE, root)
+    shutil.copytree(source, root)
+    for file, old, new in edits:
+        path = root / file
+        assert old in path.read_text(), (file, old)
+        path.write_text(path.read_text().replace(old, new))
+    return load_package(root)
+
+
+def _changed_after_loading(
+    tmp_path: Path, name: str, change: Callable[[Path], None], source: Path = FIXTURE
+) -> Opener:
+    """A copy of ``source``, loaded now and changed on disk when the case runs."""
+    root = tmp_path / name
+    shutil.copytree(source, root)
     loaded = load_package(root)
 
     def make() -> tuple[RobotDescription, MujocoRuntime]:
@@ -199,7 +224,40 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
     """Each mismatch fails while opening, with a stable code, and leaves nothing open."""
     package = load_package(FIXTURE)
     other = load_package(ROOT / "examples" / "packages" / "minimal_arm").description
-    urdf = load_package(ROOT / "tests" / "fixtures" / "packages" / "urdf_arm")
+    urdf = _edited(
+        tmp_path,
+        "urdf_only",
+        URDF_ARM,
+        ("ssrobot.toml", URDF_MUJOCO_ENTRY, ""),
+        ("mujoco.toml", 'model = "mujoco"\n', ""),
+    )
+    no_model = _edited(tmp_path, "no_model", URDF_ARM, ("mujoco.toml", '"mujoco"', '"missing"'))
+    urdf_model = _edited(tmp_path, "urdf_model", URDF_ARM, ("mujoco.toml", '"mujoco"', '"urdf"'))
+    two_mjcf = _edited(
+        tmp_path,
+        "two_mjcf",
+        URDF_ARM,
+        ("mujoco.toml", 'model = "mujoco"\n', ""),
+        (
+            "ssrobot.toml",
+            URDF_MUJOCO_ENTRY,
+            URDF_MUJOCO_ENTRY + '\n[[models]]\nname = "mujoco_too"\nformat = "mjcf"\n'
+            'path = "arm_mujoco.xml"\n',
+        ),
+    )
+    renamed = _edited(
+        tmp_path,
+        "renamed",
+        URDF_ARM,
+        ("arm_mujoco.xml", 'joint name="j3"', 'joint name="j3x"'),
+        ("arm_mujoco.xml", 'name="j3" joint="j3"', 'name="j3" joint="j3x"'),
+    )
+    disagreeing = _edited(
+        tmp_path,
+        "disagreeing",
+        FIXTURE,
+        ("ssrobot.toml", "positions = [0.5, -1.0, 0.25]", "positions = [0.5, -1.0, 0.3]"),
+    )
     odd_timestep = load_package(_with_timestep(tmp_path, "0.000333333333"))
     altered = dataclasses.replace(package, description=_altered(package.description))
     bent_root = tmp_path / "bent"
@@ -232,9 +290,38 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
             "stale_description",
             lambda: (other, MujocoRuntime(package)),
         ),
-        "URDF package": (
+        "URDF package with no MJCF model": (
             "unsupported_model_format",
             lambda: (urdf.description, MujocoRuntime(urdf)),
+        ),
+        "profile names a model the package lacks": (
+            "invalid_profile",
+            lambda: (no_model.description, MujocoRuntime(no_model)),
+        ),
+        "profile names the URDF model": (
+            "unsupported_model_format",
+            lambda: (urdf_model.description, MujocoRuntime(urdf_model)),
+        ),
+        "two MJCF models and no choice": (
+            "ambiguous_model",
+            lambda: (two_mjcf.description, MujocoRuntime(two_mjcf)),
+        ),
+        "MJCF artifact disagrees with the canonical URDF": (
+            "model_mismatch",
+            lambda: (renamed.description, MujocoRuntime(renamed)),
+        ),
+        "MJCF artifact edited after loading": (
+            "package_changed",
+            _changed_after_loading(
+                tmp_path,
+                "artifact_edited",
+                _edit("arm_mujoco.xml", 'range="-2 2"', 'range="-2 1.9"'),
+                source=URDF_ARM,
+            ),
+        ),
+        "keyframe disagrees with the configuration of its name": (
+            "model_mismatch",
+            lambda: (disagreeing.description, MujocoRuntime(disagreeing)),
         ),
         "unknown keyframe": (
             "unknown_keyframe",
@@ -317,6 +404,24 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
         assert not outcome.get("opened") and not outcome.get("mapping_available"), (case, outcome)
     assert report["description disagrees with MuJoCo"]["path"] == "joints[elbow]"
     assert report["keyframe outside the joint limits"]["path"] == "joints[elbow]"
+    assert {
+        case: report[case]["path"]
+        for case in (
+            "profile names a model the package lacks",
+            "profile names the URDF model",
+            "two MJCF models and no choice",
+            "MJCF artifact disagrees with the canonical URDF",
+            "MJCF artifact edited after loading",
+            "keyframe disagrees with the configuration of its name",
+        )
+    } == {
+        "profile names a model the package lacks": "mujoco.toml: model",
+        "profile names the URDF model": "arm.urdf",
+        "two MJCF models and no choice": "models",
+        "MJCF artifact disagrees with the canonical URDF": "joints[j3]",
+        "MJCF artifact edited after loading": "arm_mujoco.xml",
+        "keyframe disagrees with the configuration of its name": "configurations[home]",
+    }
     edge_report = report["keyframe just past a stop"]
     assert edge_report["initial_wrist"] == 3.0005
     assert 3.0 - 1e-4 <= edge_report["settled_wrist"] <= 3.0 + 1e-5
@@ -328,3 +433,47 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
             "include replaced by a symlink out of the package",
         )
     ] == ["arm.xml", "actuators.xml", "actuators.xml"]
+
+
+def test_mujoco_compiles_the_profiles_model_against_the_canonical_description(
+    artifacts: Path,
+) -> None:
+    """#94, #98: a package whose canonical model is URDF runs in MuJoCo through the MJCF
+    its profile names, starting at the profile's keyframe, which agrees with the SRDF
+    state of the same name."""
+    package = load_package(URDF_ARM)
+    runtime = MujocoRuntime(package)  # no keyframe: the profile's applies
+    arm = package.description.group("arm").joints
+    with RobotContext(package.description, runtime) as ctx:
+        start = ctx.observe(ObservationRequest(channels=("arm_q",))).readings[0].value
+        assert isinstance(start, tuple)
+        goal = (0.5, 0.0, 0.0, 1.0)
+        move = JointTrajectory(
+            group="arm", joints=arm, time_from_start_ns=(0, 1_000_000_000), positions=(start, goal)
+        )
+        status = ctx.run_until(ctx.submit(move), max_ticks=3_000)
+    mapping = runtime.mapping
+    model_file = next(f for f in package.files if f.role == "model:mujoco")
+    report = {
+        "canonical_model": package.manifest.canonical_model,
+        "compiled": {
+            "name": mapping.model_name,
+            "path": mapping.model,
+            "sha256": mapping.model_sha256,
+        },
+        "description": mapping.description,
+        "keyframe": mapping.keyframe,
+        "start": list(start),
+        "trajectory": status.state.value,
+    }
+    (artifacts / "multi-artifact.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert report["canonical_model"] == "urdf"
+    assert report["compiled"] == {
+        "name": "mujoco",
+        "path": "arm_mujoco.xml",
+        "sha256": model_file.sha256,
+    }
+    assert mapping.description == package.description.fingerprint()
+    home = next(c for c in package.description.configurations if c.name == "home")
+    assert mapping.keyframe == "home" and tuple(start) == home.positions
+    assert status.state.value == "succeeded"

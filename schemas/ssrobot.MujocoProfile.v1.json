@@ -61,6 +61,28 @@
         "version": {
           "const": 1
         },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The package model MuJoCo compiles. Defaults to the canonical model if it is MJCF, else the package's only MJCF model."
+        },
+        "keyframe": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The keyframe the runtime opens in by default."
+        },
         "grippers": {
           "type": "array",
           "items": {

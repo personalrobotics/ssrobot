@@ -64,7 +64,7 @@ def _independent(arm_q: tuple[float, ...]) -> tuple[Any, Any]:
 def _record(out: Path) -> dict[str, Any]:
     """Observe every channel at open and after settling, with a trace."""
     package = load_package(EXAMPLE)
-    runtime = MujocoRuntime(package, keyframe="home")
+    runtime = MujocoRuntime(package)  # starts at the profile's keyframe, "home"
     request = ObservationRequest(channels=CHANNELS)
     with (
         JsonlTrace(out / "trace.jsonl") as trace,
@@ -122,8 +122,10 @@ def test_mujoco_observes_robot_state_sensors_and_cameras(artifacts: Path, tmp_pa
                 assert reading["value"] == {"dtype": spec.dtype.value, "shape": list(spec.shape)}
     assert all(c["unavailable"] is None for c in record["channels"])
 
-    # At open: the robot is exactly at its keyframe.
+    # At open: the robot is exactly at its keyframe, the package's "home" configuration.
     first = {r.channel: r.value for r in record["first"].readings}
+    home = next(c for c in description.configurations if c.name == "home")
+    assert first["arm_q"] == home.positions
     model, data = _independent(first["arm_q"])
     tcp = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "tcp")
     base = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base")

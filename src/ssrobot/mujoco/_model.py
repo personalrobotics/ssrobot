@@ -14,10 +14,10 @@ from ssrobot._wire import Record, Value, decode, meta
 from ssrobot.commands import CommandKind, JointMode
 from ssrobot.conventions import check_name
 from ssrobot.description import JointKind, RobotDescription
-from ssrobot.errors import SsrobotError, ValidationError
+from ssrobot.errors import CapabilityError, SsrobotError, ValidationError
 from ssrobot.execution import Diagnostic
 from ssrobot.observations import Quantity
-from ssrobot.package import ProfileEntry, RobotPackage, load_package
+from ssrobot.package import ModelEntry, ModelFormat, ProfileEntry, RobotPackage, load_package
 
 MUJOCO_VERSION = "3.14.0"
 """The exact MuJoCo version this runtime is built and checked against."""
@@ -165,11 +165,24 @@ class MujocoProfile(Record):
     SCHEMA = "ssrobot.MujocoProfile"
     VERSION = 1
 
+    model: str | None = field(
+        default=None,
+        metadata=meta(
+            "The package model MuJoCo compiles. Defaults to the canonical model if it is "
+            "MJCF, else the package's only MJCF model."
+        ),
+    )
+    keyframe: str | None = field(
+        default=None, metadata=meta("The keyframe the runtime opens in by default.")
+    )
     grippers: tuple[GripperProfile, ...] = field(
         default=(), metadata=meta("How each commandable gripper maps to its actuators.")
     )
 
     def _validate(self) -> None:
+        for value, path in ((self.model, "model"), (self.keyframe, "keyframe")):
+            if value is not None:
+                check_name(value, path=path)
         names = [g.gripper for g in self.grippers]
         if len(set(names)) != len(names):
             raise ValidationError("invalid_profile", "a gripper is listed twice", path="grippers")
@@ -181,7 +194,9 @@ class MujocoMapping(Value):
 
     mujoco: str = field(metadata=meta("MuJoCo version: installed, loaded, and compiled."))
     description: str = field(metadata=meta("Fingerprint of the bound description."))
-    model: str = field(metadata=meta("Canonical model path, relative to the package root."))
+    model: str = field(metadata=meta("Compiled model path, relative to the package root."))
+    model_name: str = field(metadata=meta("The package model entry that was compiled."))
+    model_sha256: str = field(metadata=meta("SHA-256 of the compiled model file."))
     profile: str | None = field(metadata=meta("Profile path, relative to the package root."))
     timestep_ns: int = field(metadata=meta("MuJoCo physics timestep.", unit="ns"))
     substeps: int = field(metadata=meta("Physics steps per control tick.", unit="count"))
@@ -439,6 +454,48 @@ def force_torque_sensors(model: Any, site: int) -> tuple[int, int] | None:
     if len(forces) != 1 or len(torques) != 1:
         return None
     return forces[0], torques[0]
+
+
+def select_model(
+    package: RobotPackage, profile: MujocoProfile, entry: ProfileEntry | None
+) -> ModelEntry:
+    """The model MuJoCo compiles: the profile's, else the canonical model if it is MJCF,
+    else the package's only MJCF model."""
+    models = {m.name: m for m in package.manifest.models}
+    if profile.model is not None:
+        assert entry is not None  # a profile with a model was loaded from an entry
+        chosen = models.get(profile.model)
+        if chosen is None:
+            raise ValidationError(
+                "invalid_profile",
+                f"the package has no model {profile.model!r}",
+                path=f"{entry.path}: model",
+            )
+        if chosen.format is not ModelFormat.MJCF:
+            raise CapabilityError(
+                "unsupported_model_format",
+                f"MujocoRuntime compiles MJCF models, not {chosen.format.value}",
+                path=chosen.path,
+            )
+        return chosen
+    canonical = models[package.manifest.canonical_model]
+    if canonical.format is ModelFormat.MJCF:
+        return canonical
+    mjcf = [m for m in package.manifest.models if m.format is ModelFormat.MJCF]
+    if len(mjcf) == 1:
+        return mjcf[0]
+    if not mjcf:
+        raise CapabilityError(
+            "unsupported_model_format",
+            f"MujocoRuntime compiles MJCF models; the canonical model is "
+            f"{canonical.format.value} and the package has no MJCF model",
+            path=canonical.path,
+        )
+    raise ValidationError(
+        "ambiguous_model",
+        f"the package has {len(mjcf)} MJCF models; name one as the MuJoCo profile's model",
+        path="models",
+    )
 
 
 def select_profile(package: RobotPackage, requested: str | None) -> ProfileEntry | None:

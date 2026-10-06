@@ -1,0 +1,62 @@
+<!-- The URDF arm for MuJoCo: the same links and joints as arm.urdf, with primitive geoms
+     and masses, so MuJoCo can compile it. The URDF stays the package's canonical model,
+     which describes the robot; MujocoRuntime compiles this file, named by mujoco.toml, and
+     cross-checks it against that description. Like the URDF, every joint origin is at
+     its parent's, so the links coincide; contacts are disabled. -->
+<mujoco model="urdf_arm">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" integrator="implicitfast">
+    <flag contact="disable"/>
+  </option>
+  <default>
+    <joint damping="1"/>
+    <geom type="sphere" size="0.03" mass="0.5"/>
+    <position kp="200" kv="10"/>
+  </default>
+  <worldbody>
+    <body name="base_link">
+      <geom/>
+      <body name="link1">
+        <joint name="j1" axis="0 0 1" range="-3 3"/>
+        <geom/>
+        <body name="link2">
+          <joint name="j2" axis="0 1 0" range="-2 2"/>
+          <geom/>
+          <body name="link3">
+            <joint name="j3" axis="0 1 0" range="-2.5 2.5"/>
+            <geom/>
+            <body name="link4">
+              <joint name="j4" axis="0 0 1"/>
+              <geom/>
+              <body name="flange">
+                <body name="hand">
+                  <body name="left_finger">
+                    <joint name="left_finger_joint" type="slide" axis="0 1 0" range="0 0.04"/>
+                    <geom size="0.01" mass="0.05"/>
+                  </body>
+                  <body name="right_finger">
+                    <joint name="right_finger_joint" type="slide" axis="0 -1 0" range="0 0.04"/>
+                    <geom size="0.01" mass="0.05"/>
+                  </body>
+                  <body name="tcp"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="j1" joint="j1"/>
+    <position name="j2" joint="j2"/>
+    <position name="j3" joint="j3"/>
+    <position name="j4" joint="j4"/>
+    <position name="left_finger" joint="left_finger_joint" ctrlrange="0 0.04"/>
+    <position name="right_finger" joint="right_finger_joint" ctrlrange="0 0.04"/>
+  </actuator>
+  <keyframe>
+    <!-- Agrees with the SRDF's "home" group state for the arm. -->
+    <key name="home" qpos="0 0.5 -0.5 0 0.04 0.04" ctrl="0 0.5 -0.5 0 0.04 0.04"/>
+  </keyframe>
+</mujoco>
