@@ -169,12 +169,21 @@ def inspect_installed(
 STARTUP_STEPS = 10
 
 
-def drive(ctx: Any) -> dict[str, str]:
+GRIPPER_TOLERANCE = 0.05  # how close a gripper's observed opening must come to 0 or 1
+GRIPPER_REACH_TICKS = 2_000  # the most a gripper may take to come within tolerance
+GRIPPER_SETTLE_TICKS = 500  # then held, before its settled opening is recorded
+
+
+def drive(ctx: Any) -> dict[str, dict[str, Any]]:
     """Exercise every confirmed trajectory and gripper capability once.
 
     Each trajectory group moves from where it is a small step toward the middle of each
-    joint's range, over one second; each gripper closes, then opens. Returns each
-    execution's final state.
+    joint's range, over one second, and succeeds when the runtime reports it reached the
+    goal. Each gripper closes, then opens, and succeeds only when its own
+    ``gripper_opening`` channel is observed to reach each end, within tolerance, and
+    stay there after settling: a gripper command
+    succeeds as soon as its target is applied, so that alone would not show the
+    fingers moved. Returns, per capability, its state and what was observed.
     """
     from ssrobot import (
         CommandKind,
@@ -194,13 +203,25 @@ def drive(ctx: Any) -> dict[str, str]:
                 out.update(zip(description.group(spec.source).joints, value, strict=True))
         return out
 
-    results = {}
+    def opening_channel(gripper: str) -> str | None:
+        return next(
+            (
+                s.name
+                for s in description.channels
+                if s.name in ctx.info.channels
+                and s.quantity is Quantity.GRIPPER_OPENING
+                and s.source == gripper
+            ),
+            None,
+        )
+
+    results: dict[str, dict[str, Any]] = {}
     for capability in ctx.info.commands:
         if capability.kind is CommandKind.JOINT_TRAJECTORY:
             joints = description.group(capability.component).joints
             now = positions()
             if not all(j in now for j in joints):
-                results[f"trajectory {capability.component}"] = "unobserved"
+                results[f"trajectory {capability.component}"] = {"state": "unobserved"}
                 continue
             goal = []
             for name in joints:
@@ -216,15 +237,36 @@ def drive(ctx: Any) -> dict[str, str]:
                 positions=(tuple(now[j] for j in joints), tuple(goal)),
             )
             status = ctx.run_until(ctx.submit(move), max_ticks=5_000)
-            results[f"trajectory {capability.component}"] = status.state.value
+            results[f"trajectory {capability.component}"] = {"state": status.state.value}
         elif capability.kind is CommandKind.GRIPPER:
-            states = []
+            channel = opening_channel(capability.component)
+            if channel is None:
+                results[f"gripper {capability.component}"] = {"state": "unobserved"}
+                continue
+            request = ObservationRequest(channels=(channel,))
+            observed = []
             for opening in (0.0, 1.0):
                 command = GripperCommand(gripper=capability.component, opening=opening)
-                states.append(ctx.run_until(ctx.submit(command), max_ticks=10).state.value)
-            results[f"gripper {capability.component}"] = (
-                "succeeded" if set(states) == {"succeeded"} else ",".join(states)
+                ctx.run_until(ctx.submit(command), max_ticks=10)
+                value = ctx.observe(request).readings[0].value[0]
+                for _ in range(GRIPPER_REACH_TICKS):
+                    if abs(value - opening) <= GRIPPER_TOLERANCE:
+                        break
+                    ctx.step()
+                    value = ctx.observe(request).readings[0].value[0]
+                for _ in range(GRIPPER_SETTLE_TICKS):
+                    ctx.step()
+                observed.append(ctx.observe(request).readings[0].value[0])
+            reached = all(
+                abs(value - opening) <= GRIPPER_TOLERANCE
+                for value, opening in zip(observed, (0.0, 1.0), strict=True)
             )
+            results[f"gripper {capability.component}"] = {
+                "state": "succeeded" if reached else "not_reached",
+                "requested": [0.0, 1.0],
+                "observed": observed,
+                "tolerance": GRIPPER_TOLERANCE,
+            }
     return results
 
 
@@ -370,8 +412,8 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
     driven = startup_record["driven"]
     add(
         "mujoco_drive",
-        all(state == "succeeded" for state in driven.values()),
-        f"{len(driven)} executions: {driven}" if driven else "no commands to drive",
+        all(result["state"] == "succeeded" for result in driven.values()),
+        f"{len(driven)} capabilities: {driven}" if driven else "no commands to drive",
     )
     return record
 
