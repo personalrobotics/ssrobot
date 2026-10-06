@@ -352,10 +352,15 @@ the uv version. The script then runs two public commands, and opens the runtime:
   the command runs from an empty directory with that target as the only location of
   the package.
 - `MujocoRuntime` on the installed package, in the same isolation, stepped 10 times. It
-  starts from the pin's `keyframe` when there is one: a model's default state need not be
-  a valid start, and `MujocoRuntime` refuses one outside the joint limits.
-  It writes `mujoco-startup.json`, the mapping in [mujoco.md](mujoco.md), and requires
-  exact time and a package loaded from the install.
+  starts from the package's own start keyframe, or from the pin's `keyframe` for a
+  package that declares none: a model's default state need not be a valid start, and
+  `MujocoRuntime` refuses one outside the joint limits. The number of command
+  capabilities and channels it confirms must equal the pin's `confirmed_commands` and
+  `confirmed_channels`. It then **drives** the robot. Every confirmed trajectory group
+  moves from where it is a small step toward the middle of each joint's range, and
+  every confirmed gripper closes, then opens, and each execution must succeed. It
+  writes `mujoco-startup.json`, holding the mapping in [mujoco.md](mujoco.md) and what
+  was driven, and requires exact time and a package loaded from the install.
 
 It then checks that the report is a valid `ssrobot.PackageReport`, that its fingerprint
 matches its description, that nothing is ambiguous, and that the description
