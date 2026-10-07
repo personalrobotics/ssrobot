@@ -55,8 +55,9 @@ The same description drives a `RobotContext` over `ReplayRuntime`, which
 
 ## Target v0.1 user journeys
 
-None of these run yet. `MujocoRuntime` and snapshots arrive in M2, `ctx.manipulator`
-and planning in M3, and `PolicyRunner` and the LeRobot adapter in M4.
+None of these run yet. `MujocoRuntime`, task scenes, and attachments exist; snapshots
+arrive in M2, `ctx.manipulator` and planning in M3, and `PolicyRunner` and the LeRobot
+adapter in M4.
 
 All three journeys use the same robot package, context, command types, and trace. A
 client that works in one runtime works in another by changing only the runtime
