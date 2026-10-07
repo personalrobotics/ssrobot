@@ -52,11 +52,15 @@ with ssrobot.RobotContext(package.description, MujocoRuntime(package)) as ctx:  
     print(status.state.value, ctx.observe(arm_q).readings[0].value)
 ```
 
+It also observes joint state and effort, frame poses, wrenches, and camera images.
+`MujocoRuntime(package, scene="tabletop.xml")` adds task objects from an MJCF scene.
+`ctx.attach(object, end_effector)` then declares a grasp for planners and the trace
+without changing physics: friction alone holds the object, and a slip is reported.
 [docs/mujoco.md](docs/mujoco.md) describes what it binds and how commands run.
 
 ## Target v0.1
 
-Objects in the scene and snapshots (M2), planning (M3), and policies (M4) are not
+Object state channels and snapshots (M2), planning (M3), and policies (M4) are not
 implemented yet. The planning-only, policy-only, and hybrid examples in
 [docs/architecture.md](docs/architecture.md) show the target v0.1 behavior.
 
