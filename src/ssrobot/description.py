@@ -54,6 +54,9 @@ class JointLimits(Value):
     velocity: float | None = field(
         default=None, metadata=meta("Maximum absolute velocity.", unit="joint/s")
     )
+    acceleration: float | None = field(
+        default=None, metadata=meta("Maximum absolute acceleration.", unit="joint/s^2")
+    )
     effort: float | None = field(
         default=None, metadata=meta("Maximum absolute effort.", unit="joint-effort")
     )
@@ -63,7 +66,7 @@ class JointLimits(Value):
             raise ValidationError("invalid_limits", "lower and upper go together", path="lower")
         if self.lower is not None and self.upper is not None and not self.lower < self.upper:
             raise ValidationError("invalid_limits", "lower must be < upper", path="lower")
-        for name in ("velocity", "effort"):
+        for name in ("velocity", "acceleration", "effort"):
             v = getattr(self, name)
             if v is not None and v <= 0:
                 raise ValidationError("invalid_limits", f"{name} must be positive", path=name)
@@ -298,6 +301,9 @@ class CommandCapability(Value):
             )
 
 
+_LIMIT_FIELDS = ("lower", "upper", "velocity", "acceleration", "effort")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class JointLimitDeclaration(Value):
     """Limits a package declares for one joint, beyond what its model expresses.
@@ -312,15 +318,18 @@ class JointLimitDeclaration(Value):
     velocity: float | None = field(
         default=None, metadata=meta("Maximum absolute velocity.", unit="joint/s")
     )
+    acceleration: float | None = field(
+        default=None, metadata=meta("Maximum absolute acceleration.", unit="joint/s^2")
+    )
     effort: float | None = field(
         default=None, metadata=meta("Maximum absolute effort.", unit="joint-effort")
     )
 
     def _validate(self) -> None:
         check_name(self.joint, path="joint")
-        if all(getattr(self, n) is None for n in ("lower", "upper", "velocity", "effort")):
+        if all(getattr(self, n) is None for n in _LIMIT_FIELDS):
             raise ValidationError("missing_field", "declare at least one limit", path="joint")
-        for name in ("velocity", "effort"):
+        for name in ("velocity", "acceleration", "effort"):
             value = getattr(self, name)
             if value is not None and value <= 0:
                 raise ValidationError("invalid_limits", f"{name} must be positive", path=name)
@@ -330,7 +339,7 @@ class JointLimitDeclaration(Value):
     def apply(self, limits: JointLimits, path: str) -> JointLimits:
         """``limits`` with this declaration's values, which may only tighten them."""
         merged = {}
-        for name in ("lower", "upper", "velocity", "effort"):
+        for name in _LIMIT_FIELDS:
             declared, model = getattr(self, name), getattr(limits, name)
             if declared is not None and model is not None:
                 tighter = declared >= model if name == "lower" else declared <= model

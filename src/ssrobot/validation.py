@@ -107,6 +107,7 @@ def check_command(
         for i, row in enumerate(command.velocities or ()):
             _check_limits(description, group, JointMode.VELOCITY, row, f"velocities[{i}]")
         _check_speeds(description, command)
+        _check_accelerations(description, command)
     else:
         _check_instant(description, command, info, "")
 
@@ -205,6 +206,46 @@ def _check_speeds(description: RobotDescription, trajectory: JointTrajectory) ->
                     "out_of_limits",
                     f"{joint} moves at {float(speed):.6g} between waypoints {i - 1} and {i}, above "
                     f"its velocity limit {cap}",
+                    path=f"positions[{i}]",
+                )
+
+
+def _check_accelerations(description: RobotDescription, trajectory: JointTrajectory) -> None:
+    """Every waypoint's discrete acceleration within each joint's acceleration limit.
+
+    Runtimes interpolate linearly between waypoints, so a trajectory's speed is constant
+    on each segment and changes at waypoints. The change at waypoint i is the speed after
+    it minus the speed before it, over the mean duration of the two segments. A
+    trajectory starts and ends at rest, so the first and last waypoints count the speed
+    change from and to rest, over half their one segment.
+    """
+    times = trajectory.time_from_start_ns
+    caps = [description.joint(j).limits.acceleration for j in trajectory.joints]
+    if all(cap is None for cap in caps):
+        return
+    durations = [times[i] - times[i - 1] for i in range(1, len(times))]
+    positions = trajectory.positions
+    for k, (joint, cap) in enumerate(zip(trajectory.joints, caps, strict=True)):
+        if cap is None:
+            continue
+        # Exact speeds in joint units per nanosecond, with rest before and after.
+        speeds = (
+            [Fraction(0)]
+            + [
+                (Fraction(positions[i + 1][k]) - Fraction(positions[i][k])) / d
+                for i, d in enumerate(durations)
+            ]
+            + [Fraction(0)]
+        )
+        spans = [0, *durations, 0]  # rest before and after: half a segment at each end
+        for i in range(len(times)):
+            mean_ns = Fraction(spans[i] + spans[i + 1], 2)
+            acceleration = abs(speeds[i + 1] - speeds[i]) / mean_ns * 10**18  # per s^2
+            if acceleration > Fraction(cap) * (1 + Fraction(1, 10**9)):
+                raise ValidationError(
+                    "out_of_limits",
+                    f"{joint} accelerates at {float(acceleration):.6g} at waypoint {i}, above "
+                    f"its acceleration limit {cap}",
                     path=f"positions[{i}]",
                 )
 
