@@ -320,6 +320,12 @@ class JointLimitDeclaration(Value):
         check_name(self.joint, path="joint")
         if all(getattr(self, n) is None for n in ("lower", "upper", "velocity", "effort")):
             raise ValidationError("missing_field", "declare at least one limit", path="joint")
+        for name in ("velocity", "effort"):
+            value = getattr(self, name)
+            if value is not None and value <= 0:
+                raise ValidationError("invalid_limits", f"{name} must be positive", path=name)
+        if self.lower is not None and self.upper is not None and not self.lower < self.upper:
+            raise ValidationError("invalid_limits", "lower must be < upper", path="lower")
 
     def apply(self, limits: JointLimits, path: str) -> JointLimits:
         """``limits`` with this declaration's values, which may only tighten them."""
@@ -343,7 +349,10 @@ class JointLimitDeclaration(Value):
                     path=f"{path}.{name}",
                 )
             merged[name] = model if declared is None else declared
-        return JointLimits(**merged)
+        try:
+            return JointLimits(**merged)
+        except ValidationError as e:  # e.g. a tightened lower bound above the model's upper
+            raise ValidationError(e.code, e.message, path=f"{path}.{e.path}") from None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -468,11 +477,12 @@ class RobotDescription(Record):
         for joint in model.joints:
             if joint.name in declared:
                 i, declaration = declared[joint.name]
-                limits = declaration.apply(joint.limits, f"joint_limits[{i}]")
+                path = f"joint_limits[{i}]"
+                limits = declaration.apply(joint.limits, path)
                 try:
                     joint = replace(joint, limits=limits)
                 except ValidationError as e:
-                    raise ValidationError(e.code, e.message, path=f"joint_limits[{i}]") from None
+                    raise ValidationError(e.code, e.message, path=f"{path}.{e.path}") from None
             joints.append(joint)
         return cls(
             name=model.name if name is None else name,

@@ -505,6 +505,19 @@ def test_conventions_accept_valid_and_reject_ambiguous_input(artifacts: Path) ->
             "out_of_limits",
         ),
         ("trajectory at its velocity limit", trajectory_from(0.0, 2.0), None),
+        (
+            "trajectory with a duration too large for a float",
+            lambda: check_command(
+                robot,
+                JointTrajectory(
+                    group="right_arm",
+                    joints=RIGHT,
+                    time_from_start_ns=(0, 10**400),
+                    positions=((0.0, 0.0, 0.0), (0.0, 0.0, 2.5)),
+                ),
+            ),
+            None,
+        ),
         ("joint command with NaN", joint((0.1, math.nan, 0.3)), "non_finite"),
         (
             "undeclared joint mode",

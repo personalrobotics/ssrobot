@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
+from fractions import Fraction
 
 from ssrobot._wire import ArrayValue
 from ssrobot.commands import (
@@ -192,16 +193,17 @@ def _check_speeds(description: RobotDescription, trajectory: JointTrajectory) ->
     times = trajectory.time_from_start_ns
     caps = [description.joint(j).limits.velocity for j in trajectory.joints]
     for i in range(1, len(times)):
-        duration = (times[i] - times[i - 1]) / 1e9
+        duration_ns = times[i] - times[i - 1]  # an exact integer, however large
         before, after = trajectory.positions[i - 1], trajectory.positions[i]
         for joint, cap, a, b in zip(trajectory.joints, caps, before, after, strict=True):
             if cap is None:
                 continue
-            speed = abs(b - a) / duration
-            if speed > cap * (1 + 1e-9):
+            # Exact: |change| / (duration_ns / 1e9) > cap, with a 1e-9 relative allowance.
+            speed = Fraction(abs(b - a)) * 10**9 / duration_ns
+            if speed > Fraction(cap) * (1 + Fraction(1, 10**9)):
                 raise ValidationError(
                     "out_of_limits",
-                    f"{joint} moves at {speed:.6g} between waypoints {i - 1} and {i}, above "
+                    f"{joint} moves at {float(speed):.6g} between waypoints {i - 1} and {i}, above "
                     f"its velocity limit {cap}",
                     path=f"positions[{i}]",
                 )
