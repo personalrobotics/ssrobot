@@ -39,8 +39,8 @@ uses them:
 | --- | --- |
 | Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `ResolvedFile`, `SourceItem`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
-| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment` |
-| Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `TrackedAttachment`, `RuntimeInfo`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
+| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
+| Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
 | Error handling | `SsrobotError`, `ValidationError`, `CapabilityError`, `OwnershipError`, `StaleRevisionError`, `LifecycleError` |
 
@@ -114,7 +114,7 @@ trace. It validates everything going into the runtime and everything coming out.
 | `__exit__`, `close()` | Detaches every attachment, cancels unfinished executions (`context_closed`), and closes the runtime. Idempotent. Runs on normal exit and on exceptions. |
 | `state`, `info`, `now`, `fault` | Lifecycle state, the opened runtime's `RuntimeInfo`, the latest runtime time, and the fault that put the context in `faulted`, if any. |
 | `observe(request)` | Checks the request against declared and available channels, then checks that the observation answers it on the runtime clock. |
-| `submit(command, *, source="client", timeout_ns=None)` | Validates, takes ownership, and returns a passive `Execution`. Does not advance time. |
+| `submit(command, *, source="client", timeout_ns=None, snapshot=None)` | Validates, takes ownership, and returns a passive `Execution`. Does not advance time. With `snapshot`, the snapshot the command was planned on, it is refused (`stale_snapshot`) if the scene has moved past it. |
 | `cancel(execution)` | Cancels one unfinished execution (`canceled`). |
 | `stop(components=None)` | Cancels every unfinished execution touching the components, or all of them (`stopped`). |
 | `step()` | Manual clocks only: advances one control tick, then applies the runtime's update. |
@@ -124,6 +124,8 @@ trace. It validates everything going into the runtime and everything coming out.
 | `scene` | The current `SceneState`: its revision, the runtime's objects and fixtures, and the attachments. See *Scene*. |
 | `attach(object, end_effector, *, transform=None, allow=None, revision=None, source="client")` | Open only. Declares a scene object held by an end effector and returns the new scene. Changes nothing unless it succeeds. |
 | `detach(object, *, revision=None, source="client")` | Open or faulted. Removes the attachment and its allowances and returns the new scene. |
+| `snapshot()` | Open or faulted. Captures a `SceneSnapshot` for planning. See *Snapshots and planning scenes*. |
+| `planning_scene(snapshot, group, *, edge_resolution=0.05)` | Open or faulted. An isolated `PlanningScene` for one joint group over a snapshot. |
 | `owners(component)`, `executions` | Every unfinished execution holding any of the component's resources, as `Ownership` entries; and every execution in submission order. |
 
 An `Execution` exposes `id`, `command`, `source`, `components`, `deadline`, `status`,
@@ -253,6 +255,72 @@ breach.
 faults leave them in place. Closing the context detaches every attachment, and that
 is traced, before executions are cancelled.
 
+### Snapshots and planning scenes
+
+A `SceneSnapshot` is an immutable copy of everything a geometric query reads. It holds:
+- every description joint's position, in description order;
+- every scene object's world pose, as measured, not as declared;
+- the scene's fixtures and attachments, and its revision;
+- its provenance: the description fingerprint, the runtime's name, and `model`, the
+  runtime's opaque identity for the simulated world.
+
+It is a wire record, so it can be stored, sent, and decoded. `fingerprint()` is the
+SHA-256 of its canonical encoding.
+
+`ctx.snapshot()` asks a runtime that implements `SnapshotRuntime`; any other runtime
+fails with `snapshots_unavailable`. The context checks the answer: the runtime's
+description, name, revision, joints, objects, fixtures, and attachments must all match
+its own. The stamp is a direct answer, like `submit`'s. Anything else is a contract
+breach. A good snapshot is traced as a `snapshot` record.
+
+`ctx.planning_scene(snapshot, group, *, edge_resolution=0.05)` materializes a
+`PlanningScene`:
+- **Over one joint group.** The group's joints vary. Every other joint, object, and
+  attachment stays as in the snapshot, and each held object moves with its end effector
+  when that end effector moves with the group.
+- **Isolated and timeless.** A planning scene shares nothing mutable with the live
+  context or with any other scene from the same snapshot. Its queries never advance
+  time.
+- **Planning on the past is fine.** A snapshot from an earlier revision may be
+  materialized. Only applying the result is checked.
+
+Materializing refuses:
+
+| Case | Code |
+| --- | --- |
+| a snapshot of another robot description | `stale_description` (`StaleRevisionError`) |
+| a snapshot from another runtime, or another simulated world | `incompatible_snapshot` |
+| an undeclared group | `unknown_reference` |
+| an `edge_resolution` that is not finite and positive | `out_of_limits` |
+
+| Query | Answer |
+| --- | --- |
+| `forward_kinematics(q, frame)` | `frame`'s world `Pose` at `q`. A camera's frame is its optical frame, as in observations. |
+| `is_valid(q)` | `False` outside joint limits or with any disallowed contact. |
+| `contacts(q)` | Every disallowed `Contact`: `self_collision` or `robot_environment`, naming description frames, objects, fixtures, or `world`, with the signed distance. |
+| `is_edge_valid(q0, q1)` | Whether every configuration on the straight joint-space line is valid. It is checked at both ends and at least every `edge_resolution` in each joint between them. |
+| `native()` | A backend-native checker a planner adapter may use instead, or `None`. Its type is the backend's. |
+
+`q` is one finite value per group joint, in group order: otherwise `shape_mismatch`,
+`non_finite`, or `wrong_type`. An unknown frame fails with `unknown_reference`. The
+context validates every query and every answer the same way for every provider, so a
+provider that answers with the wrong type raises `runtime_contract`. Planning scenes are
+isolated, so this does not fault the live context.
+
+**Contact policy.** These contacts are never disallowed:
+- contacts between frames of a description `CollisionAllowance`;
+- a held object's contacts with the frames and fixtures its attachment allows.
+
+Every other contact of a moving part (the group's subtree, or a held object) is. Parts
+that do not move with the group are environment, so their contacts with each other are
+ignored.
+
+**Applying a plan.** `ctx.submit(command, snapshot=snap)` refuses the command with
+`stale_snapshot` (`StaleRevisionError`) if the description, the runtime, or the scene
+revision has changed since `snap`. Robot motion since then is caught as usual by
+`start_mismatch`. The `Submission` records the snapshot's fingerprint, so a trace links
+each plan to the world it was planned in.
+
 ## Lifecycle, ownership, and execution
 
 ### Context states
@@ -260,8 +328,8 @@ is traced, before executions are cancelled.
 | State | Entered by | Allowed operations |
 | --- | --- | --- |
 | `created` | construction | `__enter__`, `close` |
-| `open` | a successful `__enter__`; `recover()` or an `ok` health event while faulted | `observe`, `submit`, `cancel`, `stop`, `step`, `update`, `run_until`, `attach`, `detach`, `close` |
-| `faulted` | a `faulted` health event, or a runtime contract breach | `observe`, `cancel`, `stop`, `step`, `update`, `run_until`, `detach`, `recover`, `close` |
+| `open` | a successful `__enter__`; `recover()` or an `ok` health event while faulted | `observe`, `submit`, `cancel`, `stop`, `step`, `update`, `run_until`, `attach`, `detach`, `snapshot`, `planning_scene`, `close` |
+| `faulted` | a `faulted` health event, or a runtime contract breach | `observe`, `cancel`, `stop`, `step`, `update`, `run_until`, `detach`, `snapshot`, `planning_scene`, `recover`, `close` |
 | `closed` | `close()`, `__exit__`, or a failed `__enter__` | `close` (no-op) |
 
 Anything else fails deterministically with `LifecycleError`. The code is `faulted`
@@ -435,7 +503,8 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 - **Scene revision.** `SceneState.revision`, an integer per context. It starts at 0
   when the context opens and increments on every attach, detach, and violation. Passing
   `revision=` to `attach` or `detach` makes the call fail with `stale_revision` if the
-  scene changed since.
+  scene changed since. A snapshot records the revision it was captured at, and
+  `submit(snapshot=...)` refuses a stale one with `stale_snapshot`.
 
 ### Wire form
 
@@ -549,10 +618,10 @@ Every event becomes one `TraceRecord`, passed synchronously to each sink in orde
 | --- | --- |
 | `schema`, `version` | `ssrobot.TraceRecord`, 1 |
 | `sequence` | 0, 1, 2, … with no gaps |
-| `kind` | `opened`, `observed`, `submitted`, `status`, `applied`, `health`, `scene`, `violation`, `stepped`, `closed` |
+| `kind` | `opened`, `observed`, `submitted`, `status`, `applied`, `health`, `scene`, `violation`, `snapshot`, `stepped`, `closed` |
 | `clock`, `time_ns` | Runtime time of the event. Runtime events use their own stamps, and everything else uses the context's `now`. Never decreases along a trace. |
 | `source` | The submitter for `submitted` and `applied` and for a client's `scene` change, `runtime:<name>` for what the runtime reported, and `context` for the context's own decisions |
-| `payload` | `RuntimeInfo`, `Observation`, `Submission`, `ExecutionStatus`, `AppliedCommand`, `RuntimeHealth`, `SceneState`, or `AttachmentViolation` by kind; none for `stepped` and `closed` |
+| `payload` | `RuntimeInfo`, `Observation`, `Submission`, `ExecutionStatus`, `AppliedCommand`, `RuntimeHealth`, `SceneState`, `AttachmentViolation`, or `SceneSnapshot` by kind; none for `stepped` and `closed` |
 
 A context whose runtime has a scene traces its initial `SceneState` right after
 `opened`. A runtime without one adds no `scene` records.
@@ -657,11 +726,12 @@ environment installs the wheel with the `mujoco` extra, runs the gate with
 
 | Artifact | Shows |
 | --- | --- |
-| `artifacts/test_records_round_trip_through_json_and_checked_in_schemas/` | Joint commands in all three modes, runtime info, trajectory, action chunk, multimodal observation, applied command, scene state with an attachment, attachment violation, and description, each in wire form with its out-of-line image and depth assets. Each validates against `schemas/` and decodes to an equal value. |
+| `artifacts/test_records_round_trip_through_json_and_checked_in_schemas/` | Joint commands in all three modes, runtime info, trajectory, action chunk, multimodal observation, applied command, scene state with an attachment, attachment violation, scene snapshot, and description, each in wire form with its out-of-line image and depth assets. Each validates against `schemas/` and decodes to an equal value. |
 | `artifacts/test_joint_command_schema_fixes_the_unit_of_values_by_mode/joint-command-units.json` | For position, velocity, and effort commands: the mode, the single unit the schema resolves for `values`, and the unit after decoding. |
 | `artifacts/test_conventions_accept_valid_and_reject_ambiguous_input/conventions-report.json` | Every valid and invalid convention case with its expected and actual diagnostic code and path. Covers the MuJoCo, URDF, and ROS timestamp conversions, chunk clocks against manual and external runtimes, and execution-record identifiers. |
 | `artifacts/test_replay_runtime_passes_the_conformance_scenario/run/` | The ReplayRuntime conformance `trace.jsonl` and `conformance-report.json`. The test re-reads them and checks every line against the schema, contiguous sequence numbers, time that never decreases, legal transitions, all five terminal states, and that each applied command is attributed to its submitter. A second run in `rerun/` is byte-identical. |
 | `artifacts/test_scene_runtimes_that_break_their_contract/scene-breach-report.json`, `external-attach-trace.jsonl` | An external runtime that measures the object at 100 ns advances the context to 100 ns, and the `scene` record is stamped then. An attach answer stamped before the context's time, or at a later tick of a manual clock, is a contract breach. So is a scene runtime that changes the transform or allow set it was given, or reports a violation for an object that is not attached. Nothing is committed and the runtime is told to detach. A runtime that lists objects without implementing `SceneRuntime` is refused at open. |
+| `artifacts/test_snapshot_runtimes_that_break_their_contract/snapshot-breach-report.json` | A snapshot with the wrong revision, a missing object, or a stamp before the context's time is a contract breach. A runtime without snapshots fails with `snapshots_unavailable`. |
 | `artifacts/test_replay_faults_on_divergence_and_exhaustion/trace.jsonl` | A replay that diverges from its recording, recovers, then runs out of ticks. |
 | `artifacts/test_example_package_loads_identically_wherever_it_lives[<name>]/` | For each example package: its description, a semantic summary (manipulators, their joints, frames, end effectors and grippers, composite groups, sensors, qualified names), and its package report. Each validates against `schemas/`. The same content loads identically from a copy and as an installed Python package. |
 | `artifacts/test_overlapping_groups_share_ownership/ownership-report.json` | `owners("left_arm_with_lift")` when unowned, completely owned, partially owned, and shared, plus a different source refused on the composite's joints. |

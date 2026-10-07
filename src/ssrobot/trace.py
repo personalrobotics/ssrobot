@@ -15,7 +15,7 @@ from ssrobot.errors import ValidationError
 from ssrobot.execution import AppliedCommand, ExecutionStatus, RuntimeHealth, Submission
 from ssrobot.observations import Observation
 from ssrobot.runtime import RuntimeInfo
-from ssrobot.scene import AttachmentViolation, SceneState
+from ssrobot.scene import AttachmentViolation, SceneSnapshot, SceneState
 
 
 class TraceKind(enum.StrEnum):
@@ -33,6 +33,8 @@ class TraceKind(enum.StrEnum):
     """The runtime faulted or recovered; payload is the ``RuntimeHealth``."""
     SCENE = "scene"
     """The scene changed; payload is the new ``SceneState``."""
+    SNAPSHOT = "snapshot"
+    """A snapshot was captured; payload is the ``SceneSnapshot``."""
     VIOLATION = "violation"
     """An attached object left its declared transform; payload is the
     ``AttachmentViolation``."""
@@ -51,6 +53,7 @@ TracePayload = (
     | RuntimeHealth
     | SceneState
     | AttachmentViolation
+    | SceneSnapshot
 )
 
 _PAYLOAD: dict[TraceKind, type[Record] | None] = {
@@ -62,6 +65,7 @@ _PAYLOAD: dict[TraceKind, type[Record] | None] = {
     TraceKind.HEALTH: RuntimeHealth,
     TraceKind.SCENE: SceneState,
     TraceKind.VIOLATION: AttachmentViolation,
+    TraceKind.SNAPSHOT: SceneSnapshot,
     TraceKind.STEPPED: None,
     TraceKind.CLOSED: None,
 }
@@ -99,7 +103,12 @@ class TraceRecord(Record):
         payload = self.payload
         if isinstance(
             payload,
-            Observation | ExecutionStatus | AppliedCommand | RuntimeHealth | AttachmentViolation,
+            Observation
+            | ExecutionStatus
+            | AppliedCommand
+            | RuntimeHealth
+            | AttachmentViolation
+            | SceneSnapshot,
         ):
             if payload.stamp.clock != self.clock:
                 raise ValidationError(

@@ -42,6 +42,7 @@ from ssrobot import (
     LifecycleError,
     Modification,
     ModificationKind,
+    ObjectState,
     Observation,
     ObservationRequest,
     Pose,
@@ -50,6 +51,7 @@ from ssrobot import (
     RobotContext,
     RobotDescription,
     RuntimeInfo,
+    SceneSnapshot,
     SceneState,
     SsrobotError,
     StaleRevisionError,
@@ -179,9 +181,29 @@ def _examples() -> dict[str, Record]:
         position_error=0.02,
         rotation_error=0.1,
     )
+    snapshot = SceneSnapshot(
+        description=robot.fingerprint(),
+        runtime="mujoco",
+        model="model-signature:scene-sha256",
+        stamp=Timestamp(clock=SIM, time_ns=40),
+        revision=2,
+        joints=tuple(j.name for j in robot.joints),
+        positions=tuple(0.1 * i for i in range(len(robot.joints))),
+        objects=(
+            ObjectState(
+                name="box", pose=Pose(position=(0.4, 0.0, 0.4), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
+            ),
+            ObjectState(
+                name="cup", pose=Pose(position=(0.5, 0.1, 0.4), quat_wxyz=(0.0, 0.0, 0.0, 1.0))
+            ),
+        ),
+        fixtures=scene.fixtures,
+        attachments=scene.attachments,
+    )
     return {
         **joint_commands,
         "scene_state": scene,
+        "scene_snapshot": snapshot,
         "attachment_violation": violation,
         "runtime_info": runtime_info,
         "trajectory": trajectory,
@@ -210,6 +232,7 @@ def test_records_round_trip_through_json_and_checked_in_schemas(artifacts: Path)
             | Observation
             | RuntimeInfo
             | SceneState
+            | SceneSnapshot
             | AttachmentViolation,
         ):
             check_command(robot, record)  # type: ignore[arg-type]

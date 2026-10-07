@@ -25,11 +25,15 @@ from ssrobot import (
     JointMode,
     JsonlTrace,
     LifecycleError,
+    ObjectState,
     ObservationRequest,
+    PlanningScene,
     Pose,
     RobotContext,
     RobotDescription,
     RuntimeInfo,
+    SceneSnapshot,
+    SceneState,
     Timestamp,
     TraceKind,
     TrackedAttachment,
@@ -387,4 +391,72 @@ def test_scene_runtimes_that_break_their_contract(artifacts: Path) -> None:
         "external_resolve": {"now": 100, "scene": [["opened", 0], ["scene", 0], ["scene", 100]]},
         "manual_later_tick": ["runtime_contract", 0, []],
         "external_earlier": ["runtime_contract", 0, []],
+    }
+
+
+class _SnapshotScripted(_SceneScripted):
+    """A scene runtime whose snapshots a test may tamper with."""
+
+    def __init__(self, tamper: Callable[[SceneSnapshot], SceneSnapshot] | None = None) -> None:
+        super().__init__()
+        self.snapshot_tamper = tamper
+
+    def snapshot(self, scene: SceneState) -> SceneSnapshot:
+        assert self._description is not None
+        joints = tuple(j.name for j in self._description.joints)
+        taken = SceneSnapshot(
+            description=self._description.fingerprint(),
+            runtime="scripted",
+            model="scripted-world",
+            stamp=self.stamp(),
+            revision=scene.revision,
+            joints=joints,
+            positions=(0.0,) * len(joints),
+            objects=(
+                ObjectState(
+                    name="box", pose=Pose(position=(0.4, 0.0, 0.4), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
+                ),
+            ),
+            fixtures=scene.fixtures,
+            attachments=scene.attachments,
+        )
+        return taken if self.snapshot_tamper is None else self.snapshot_tamper(taken)
+
+    def planning_scene(
+        self, snapshot: SceneSnapshot, group: str, edge_resolution: float
+    ) -> PlanningScene:
+        raise AssertionError("not used")
+
+
+def test_snapshot_runtimes_that_break_their_contract(artifacts: Path) -> None:
+    """#18: a snapshot that disagrees with the context's scene, or answers out of causal
+    order, is a breach; a runtime without snapshots is refused before any call."""
+    robot = load_package(ROOT / "examples" / "packages" / "mujoco_arm").description
+    report: dict[str, Any] = {}
+    cases: dict[str, Callable[[SceneSnapshot], SceneSnapshot]] = {
+        "wrong_revision": lambda s: replace(s, revision=s.revision + 1),
+        "missing_object": lambda s: replace(s, objects=()),
+        "earlier_stamp": lambda s: replace(s, stamp=Timestamp(clock=s.stamp.clock, time_ns=0)),
+    }
+    for name, tamper in cases.items():
+        runtime = _SnapshotScripted(tamper)
+        with RobotContext(robot, runtime) as ctx:
+            ctx.step()  # so an answer stamped at 0 precedes the context's time
+            with pytest.raises(ValidationError) as breach:
+                ctx.snapshot()
+            report[name] = [breach.value.code, ctx.state.value]
+    runtime = _SnapshotScripted()
+    with RobotContext(robot, runtime) as ctx:
+        ctx.step()
+        report["honest"] = ctx.snapshot().revision
+    with RobotContext(robot, _SceneScripted()) as ctx, pytest.raises(CapabilityError) as missing:
+        ctx.snapshot()
+    report["without_snapshots"] = missing.value.code
+    _write(artifacts / "snapshot-breach-report.json", report)
+    assert report == {
+        "wrong_revision": ["runtime_contract", "faulted"],
+        "missing_object": ["runtime_contract", "faulted"],
+        "earlier_stamp": ["runtime_contract", "faulted"],
+        "honest": 0,
+        "without_snapshots": "snapshots_unavailable",
     }

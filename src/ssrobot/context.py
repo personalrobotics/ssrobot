@@ -8,6 +8,7 @@ report what happened. The rules are tabulated in docs/contracts.md.
 from __future__ import annotations
 
 import enum
+import math
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
@@ -35,8 +36,16 @@ from ssrobot.execution import (
     Submission,
 )
 from ssrobot.observations import Observation, ObservationRequest
-from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime
-from ssrobot.scene import Attachment, AttachmentViolation, SceneState, TrackedAttachment
+from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime, SnapshotRuntime
+from ssrobot.scene import (
+    Attachment,
+    AttachmentViolation,
+    Contact,
+    PlanningScene,
+    SceneSnapshot,
+    SceneState,
+    TrackedAttachment,
+)
 from ssrobot.trace import TraceKind, TracePayload, TraceRecord, TraceSink
 from ssrobot.validation import check_applied, check_command, check_observation, check_request
 
@@ -63,6 +72,8 @@ ALLOWED_STATES: dict[str, frozenset[ContextState]] = {
     "run_until": frozenset({_S.OPEN, _S.FAULTED}),
     "recover": frozenset({_S.FAULTED}),
     "attach": frozenset({_S.OPEN}),
+    "snapshot": frozenset({_S.OPEN, _S.FAULTED}),
+    "planning_scene": frozenset({_S.OPEN, _S.FAULTED}),
     "detach": frozenset({_S.OPEN, _S.FAULTED}),
 }
 """Context states in which each operation is allowed."""
@@ -390,10 +401,73 @@ class RobotContext:
         remaining = tuple(a for a in scene.attachments if a.object != object)
         return self._commit(replace(scene, attachments=remaining), source)
 
+    def snapshot(self) -> SceneSnapshot:
+        """Capture the robot, the objects, and the scene now, for planning."""
+        info = self._require("snapshot")
+        scene = self.scene
+        taken = self._snapshots.snapshot(scene)
+        if (
+            not isinstance(taken, SceneSnapshot)
+            or taken.description != self._fingerprint
+            or taken.runtime != info.runtime
+            or taken.revision != scene.revision
+            or taken.joints != tuple(j.name for j in self._description.joints)
+            or tuple(o.name for o in taken.objects) != scene.objects
+            or taken.fixtures != scene.fixtures
+            or taken.attachments != scene.attachments
+        ):
+            raise self._breach(f"snapshot answered {taken!r} for scene {scene!r}")
+        self._accept_direct(taken.stamp)
+        self._emit(TraceKind.SNAPSHOT, self._runtime_source, taken, taken.stamp)
+        return taken
+
+    def planning_scene(
+        self, snapshot: SceneSnapshot, group: str, *, edge_resolution: float = 0.05
+    ) -> PlanningScene:
+        """An isolated planning scene for ``group`` over ``snapshot``.
+
+        A snapshot from an earlier revision is allowed: planning on the past is fine, and
+        ``submit(snapshot=...)`` refuses applying the result if the scene has changed.
+        """
+        info = self._require("planning_scene")
+        if not isinstance(snapshot, SceneSnapshot):
+            raise ValidationError("wrong_type", "snapshot must be a SceneSnapshot", path="snapshot")
+        if snapshot.description != self._fingerprint:
+            raise StaleRevisionError(
+                "stale_description", "the snapshot is of another robot description"
+            )
+        if snapshot.runtime != info.runtime:
+            raise ValidationError(
+                "incompatible_snapshot",
+                f"the snapshot was captured by {snapshot.runtime!r}, not {info.runtime!r}",
+                path="snapshot",
+            )
+        joints = self._description.group(group).joints
+        if (
+            isinstance(edge_resolution, bool)
+            or not isinstance(edge_resolution, int | float)
+            or not math.isfinite(edge_resolution)
+            or edge_resolution <= 0
+        ):
+            raise ValidationError(
+                "out_of_limits",
+                "edge_resolution must be finite and positive",
+                path="edge_resolution",
+            )
+        scene = self._snapshots.planning_scene(snapshot, group, float(edge_resolution))
+        if scene.group != group or scene.joints != joints or scene.snapshot != snapshot:
+            raise self._breach(f"planning scene for {group!r} answered another group or snapshot")
+        return _CheckedPlanningScene(self._description, scene)
+
     # -- Commands --------------------------------------------------------------------
 
     def submit(
-        self, command: Command, *, source: str = "client", timeout_ns: int | None = None
+        self,
+        command: Command,
+        *,
+        source: str = "client",
+        timeout_ns: int | None = None,
+        snapshot: SceneSnapshot | None = None,
     ) -> Execution:
         """Validate a command, take ownership of its components, and pass it on.
 
@@ -401,11 +475,15 @@ class RobotContext:
         execution from another source cannot be commanded (``ownership_conflict``); one
         from the same source is superseded and canceled once the runtime accepts the new
         command. ``timeout_ns`` sets a deadline on the runtime clock, counted from when
-        the runtime accepted the command. Does not advance a manual clock.
+        the runtime accepted the command. Does not advance a manual clock. ``snapshot``
+        is the one the command was planned on: if the scene has changed since, the
+        command is refused (``stale_snapshot``), and the trace records which it was.
         """
         info = self._require("submit")
         check_name(source, path="source")
         check_command(self._description, command, info)
+        if snapshot is not None:
+            self._check_current(snapshot)
         now = self.now
         if isinstance(command, ActionChunk):
             end = command.start.time_ns + (len(command.steps) - 1) * command.period_ns
@@ -455,7 +533,11 @@ class RobotContext:
             else Timestamp(clock=accepted.clock, time_ns=accepted.time_ns + timeout_ns)
         )
         submission = Submission(
-            execution=execution_id, source=source, command=command, deadline=deadline
+            execution=execution_id,
+            source=source,
+            command=command,
+            deadline=deadline,
+            snapshot=None if snapshot is None else snapshot.fingerprint(),
         )
         execution = Execution(self, submission, components, resources)
         self._executions[execution_id] = execution
@@ -565,6 +647,33 @@ class RobotContext:
     def _check_own(self, execution: Execution) -> None:
         if self._executions.get(execution.id) is not execution:
             raise ValidationError("unknown_reference", f"{execution.id} is not from this context")
+
+    @property
+    def _snapshots(self) -> SnapshotRuntime:
+        runtime = self._runtime
+        if not (
+            callable(getattr(runtime, "snapshot", None))
+            and callable(getattr(runtime, "planning_scene", None))
+        ):
+            raise CapabilityError("snapshots_unavailable", "this runtime cannot take snapshots")
+        return cast(SnapshotRuntime, runtime)
+
+    def _check_current(self, snapshot: SceneSnapshot) -> None:
+        """Refuse applying what was planned on a snapshot the scene has moved past."""
+        if not isinstance(snapshot, SceneSnapshot):
+            raise ValidationError("wrong_type", "snapshot must be a SceneSnapshot", path="snapshot")
+        scene = self.scene
+        if (
+            snapshot.description != self._fingerprint
+            or snapshot.runtime != self.info.runtime
+            or snapshot.revision != scene.revision
+        ):
+            raise StaleRevisionError(
+                "stale_snapshot",
+                f"the snapshot is of revision {snapshot.revision} of {snapshot.runtime!r}; "
+                f"the scene is at revision {scene.revision} of {self.info.runtime!r}",
+                path="snapshot",
+            )
 
     @property
     def _scene_runtime(self) -> SceneRuntime:
@@ -843,3 +952,89 @@ class RobotContext:
         self._sequence += 1
         for sink in self._sinks:
             sink(record)
+
+
+class _CheckedPlanningScene:
+    """A provider's planning scene behind the context's checks: every configuration is
+    validated on the way in, every answer on the way out, and limits are enforced the
+    same way for every provider."""
+
+    __slots__ = ("_description", "_frames", "_limits", "_scene")
+
+    def __init__(self, description: RobotDescription, scene: PlanningScene) -> None:
+        self._description = description
+        self._scene = scene
+        self._frames = {f.name for f in description.frames}
+        self._limits = tuple(
+            (description.joint(j).limits.lower, description.joint(j).limits.upper)
+            for j in scene.joints
+        )
+
+    @property
+    def group(self) -> str:
+        return self._scene.group
+
+    @property
+    def joints(self) -> tuple[str, ...]:
+        return self._scene.joints
+
+    @property
+    def snapshot(self) -> SceneSnapshot:
+        return self._scene.snapshot
+
+    @property
+    def edge_resolution(self) -> float:
+        return self._scene.edge_resolution
+
+    def forward_kinematics(self, q: Sequence[float], frame: str) -> Pose:
+        configuration = self._configuration(q)
+        if frame not in self._frames:
+            raise ValidationError("unknown_reference", f"unknown frame {frame!r}", path="frame")
+        pose = self._scene.forward_kinematics(configuration, frame)
+        if not isinstance(pose, Pose):
+            raise ValidationError("runtime_contract", f"forward kinematics answered {pose!r}")
+        return pose
+
+    def is_valid(self, q: Sequence[float]) -> bool:
+        configuration = self._configuration(q)
+        return self._within(configuration) and self._answer(self._scene.is_valid(configuration))
+
+    def contacts(self, q: Sequence[float]) -> tuple[Contact, ...]:
+        contacts = self._scene.contacts(self._configuration(q))
+        if not isinstance(contacts, tuple) or not all(isinstance(c, Contact) for c in contacts):
+            raise ValidationError("runtime_contract", f"contacts answered {contacts!r}")
+        return contacts
+
+    def is_edge_valid(self, q0: Sequence[float], q1: Sequence[float]) -> bool:
+        a, b = self._configuration(q0, "q0"), self._configuration(q1, "q1")
+        return self._within(a) and self._within(b) and self._answer(self._scene.is_edge_valid(a, b))
+
+    def native(self) -> object | None:
+        return self._scene.native()
+
+    def _configuration(self, q: Sequence[float], path: str = "q") -> tuple[float, ...]:
+        try:
+            values = tuple(float(v) for v in q)
+        except (TypeError, ValueError):
+            raise ValidationError("wrong_type", f"{path} must be numbers", path=path) from None
+        if len(values) != len(self._limits):
+            raise ValidationError(
+                "shape_mismatch",
+                f"{path} has {len(values)} values for {len(self._limits)} joints",
+                path=path,
+            )
+        if not all(math.isfinite(v) for v in values):
+            raise ValidationError("non_finite", f"{path} must be finite", path=path)
+        return values
+
+    def _within(self, q: tuple[float, ...]) -> bool:
+        return all(
+            (low is None or v >= low) and (high is None or v <= high)
+            for v, (low, high) in zip(q, self._limits, strict=True)
+        )
+
+    @staticmethod
+    def _answer(value: object) -> bool:
+        if not isinstance(value, bool):
+            raise ValidationError("runtime_contract", f"a validity query answered {value!r}")
+        return value
