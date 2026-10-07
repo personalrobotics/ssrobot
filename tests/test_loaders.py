@@ -117,6 +117,32 @@ def _mujoco(body: str, head: str = "") -> str:
 
 
 MJCF_CASES: dict[str, tuple[dict[str, str], str | None]] = {
+    "actuatorfrcrange is the effort limit, inherited from a class": (
+        {
+            "robot.xml": _mujoco(
+                '<body name="a"><joint name="j1" class="strong" range="-1 1"/>'
+                '<body name="b"><joint name="j2" range="-1 1" actuatorfrcrange="-12 87"/>'
+                '<body name="c"><joint name="j3" range="-1 1" actuatorfrcrange="-5 5" '
+                'actuatorfrclimited="false"/></body></body></body>',
+                '<compiler angle="radian"/><default><default class="strong">'
+                '<joint actuatorfrcrange="-150 150"/></default></default>',
+            )
+        },
+        None,
+    ),
+    "actuatorfrcrange not bracketing zero": (
+        {"robot.xml": _mujoco('<body name="a"><joint name="j" actuatorfrcrange="1 5"/></body>')},
+        "invalid_limits",
+    ),
+    "actuatorfrcrange without autolimits": (
+        {
+            "robot.xml": _mujoco(
+                '<body name="a"><joint name="j" actuatorfrcrange="-5 5"/></body>',
+                '<compiler autolimits="false"/>',
+            )
+        },
+        "ambiguous_limits",
+    ),
     "angles default to degrees": (
         {"robot.xml": _mujoco('<body name="a"><joint name="j" range="-90 90"/></body>')},
         None,
@@ -325,6 +351,7 @@ def _summary(d: RobotDescription) -> dict[str, Any]:
             j.name: [j.kind.value, j.parent, j.child, j.limits.lower, j.limits.upper]
             for j in d.joints
         },
+        "efforts": {j.name: j.limits.effort for j in d.joints},
     }
 
 
@@ -374,6 +401,12 @@ def test_mjcf_constructs(artifacts: Path, tmp_path: Path) -> None:
     assert report["exclude between two bodies"]["collision_allowances"] == [
         ["a", "b", "mjcf contact exclude"]
     ]
+    # The larger magnitude of the range; none when the joint is not force-limited.
+    assert report["actuatorfrcrange is the effort limit, inherited from a class"]["efforts"] == {
+        "j1": 150.0,
+        "j2": 87.0,
+        "j3": None,
+    }
 
 
 def _arm_variant(tmp_path: Path, name: str, manifest: str) -> Path:

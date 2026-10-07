@@ -81,7 +81,7 @@ them separately, and `RobotDescription.compose(model, semantics)` joins them.
 | `NamedConfiguration` | Named positions for a group, such as `home` | One position per joint, within limits |
 | `CollisionAllowance` | A static default self-collision exclusion between two frames, such as adjacent links, with an opaque `reason` | Two distinct existing frames, in canonical order `frame_a < frame_b` (build with `CollisionAllowance.between`); no pair repeats. Scoped and attachment-time allowances are runtime state, not part of the description. |
 | `CommandCapability`, `ChannelSpec` | Declared commands and observation channels | See *Capabilities* |
-| `JointLimitDeclaration` | Position, velocity, or effort limits for a `joint` beyond what its model expresses, such as velocity in MJCF. They are applied to the joint when the description is composed, so the description and its fingerprint carry the merged limits. | The joint exists (`unknown_reference`) and has at most one declaration (`duplicate_name`). Each value may add a limit or tighten the model's, never widen it (`widened_limit`); position bounds can only tighten an existing range. |
+| `JointLimitDeclaration` | Position, velocity, acceleration, or effort limits for a `joint` beyond what its model expresses, such as velocity in MJCF. They are applied to the joint when the description is composed, so the description and its fingerprint carry the merged limits. | The joint exists (`unknown_reference`) and has at most one declaration (`duplicate_name`). Each value may add a limit or tighten the model's, never widen it (`widened_limit`); position bounds can only tighten an existing range. |
 
 A single-arm robot needs only frames, joints, one group, and one manipulator; every
 other tuple is empty. Descriptions are frozen and hashable.
@@ -441,7 +441,7 @@ propagates, and leaving the `with` block still closes the runtime.
 | Time, duration | ns | `int` |
 | Linear / angular velocity | m/s, rad/s | `float` |
 | Joint position | rad (revolute, continuous) or m (prismatic) | `float` |
-| Joint velocity, effort | joint unit/s; N·m or N | `float` |
+| Joint velocity, acceleration, effort | joint unit/s; joint unit/s²; N·m or N | `float` |
 | Gripper opening | dimensionless, 0 closed to 1 open | `float` |
 
 Every numeric field in a record declares its unit. Schema generation fails if one does
@@ -572,7 +572,13 @@ inspected before any runtime opens. The runtime confirms which are available in
    other command, must be within limits. A trajectory's speed is checked between
    consecutive waypoints, too: |change| / duration may not exceed a joint's velocity
    limit (`out_of_limits` at `positions[i]`), whether or not the trajectory carries
-   velocities.
+   velocities. So is its acceleration. Runtimes interpolate linearly, so speed is
+   constant on each segment and changes at waypoints. At waypoint i, the change in
+   speed divided by the mean duration of the two neighbouring segments may not exceed a
+   joint's acceleration limit. A trajectory starts and ends at rest, so its first and
+   last waypoints count the change from and to rest over half their segment. Coarse
+   timing therefore fails at its corners, and a dense, smooth profile passes. The
+   arithmetic is exact over integer nanoseconds.
 3. The capability is declared (`unsupported_command`).
 4. The capability is available now (`unavailable_command` or `unavailable_channel`).
 
@@ -752,11 +758,11 @@ environment installs the wheel with the `mujoco` extra, runs the gate with
 | `artifacts/test_end_effector_attachment_is_validated/attachment-report.json` | A hand shared by an arm and its arm-with-lift, a hand on the gripper's rigid body above the gripper frame, and a passive tool, all accepted. A hand naming the other arm's gripper, a gripper mounted on the other arm, and a gripper on a disconnected frame, all rejected with `invalid_chain`. |
 | `artifacts/test_installed_discovery_runs_no_package_code/discovery-report.json` | Dotted and namespace installed packages loading with raising initializers that never run. Bad and missing names fail with stable codes. |
 | `artifacts/test_package_ingress_rejects_bad_packages/ingress-report.json` | Manifest, path, symlink, and semantic mistakes, each rejected with its code and path before any description exists. That includes joint-limit declarations: a non-positive rate or an inverted range is rejected at the manifest field; an unknown joint, a widened limit, an emptied range, or a repeated declaration is rejected at `joint_limits[i]` and its field. |
-| `artifacts/test_declared_joint_limits_change_the_description_and_its_checks/declared-limits.json` | The example MuJoCo arm with and without its declared limits: joint velocities, description fingerprints, the package report's velocity, and whether a 3.2 rad/s and a 2.9 rad/s shoulder trajectory are accepted. Only the declared package rejects the faster one. |
+| `artifacts/test_declared_joint_limits_change_the_description_and_its_checks/declared-limits.json` | The example MuJoCo arm with and without its declared limits: joint velocities, description fingerprints, the package report's velocity, their accelerations, and which shoulder trajectories are accepted. A single segment of 3.2 rad in 1.0 s is too fast. In 1.1 s it is within velocity, but it starts at 5.3 rad/s² from rest, over the 5 rad/s² limit. In 1.3 s it is accepted. A dense 4 rad/s² trapezoid is accepted. The package without declarations accepts all of them. |
 | `artifacts/test_franka_parser_fixture_matches_its_provenance/franka-provenance.json` | The Franka parser fixture's copied files match the hashes pinned in `provenance.json`; its mesh placeholders are exactly the files `panda.xml` names, and all are empty. |
 | `artifacts/test_urdf_textures_are_resolved_and_hashed/urdf-textures.json` | A texture referenced from a top-level and an inline material is hashed and reported once. Missing, escaping, symlink-escaping, and other-package textures are rejected. |
 | `artifacts/test_menagerie_franka_loads_from_its_scene/` | The pinned Menagerie Franka parser fixture loaded from `scene.xml` through its include. Joint limits match Franka's published values, which needs default classes and `childclass`. The report lists 67 resolved meshes, 8 actuators, the tendon, equality, and keyframe, and the `link0`/`link1` exclude as a collision allowance. |
-| `artifacts/test_mjcf_constructs/mjcf-constructs.json` | 35 MJCF cases. Resolved: degrees, classes, `<frame>`, merged unnamed bodies, continuous hinges, includes (including a `<mujocoinclude>` fragment), and body-to-body excludes. Rejected, each with its code: every unsupported construct and bad reference, empty includes, files included twice (directly, nested, re-spelled, or symlinked), unknown classes where they appear, and excludes naming a site or camera. |
+| `artifacts/test_mjcf_constructs/mjcf-constructs.json` | 38 MJCF cases. Resolved: degrees, classes, `<frame>`, merged unnamed bodies, continuous hinges, `actuatorfrcrange` effort limits (also through a class, and not when `actuatorfrclimited` is false), includes (including a `<mujocoinclude>` fragment), and body-to-body excludes. Rejected, each with its code: every unsupported construct and bad reference, empty includes, files included twice (directly, nested, re-spelled, or symlinked), unknown classes where they appear, and excludes naming a site or camera. |
 | `artifacts/test_urdf_with_and_without_srdf/` | The URDF/SRDF arm: chain, explicit-joint, link, and composite groups, group states, collision allowances, and the world virtual joint. URDF alone gives the same kinematics with no semantics. The SRDF gives exactly the semantics a package could write by hand. An SRDF end effector without a package TCP becomes an `ambiguous_end_effector` diagnostic, and a TCP outside its parent link fails. |
 | `artifacts/test_urdf_and_srdf_ingress/urdf-srdf-ingress.json` | 25 cases. URDF, SRDF, and manifest mistakes are each rejected with their code and path, including duplicate groups, unknown passive joints, an end effector parented to its own group, and a parent group without the parent link. A valid passive joint and an end effector without a parent group are accepted. |
 | `artifacts/test_unambiguous_robots_get_the_expected_entities/` | Inference on the Franka, the minimal arm, and the URDF arm without its SRDF, with full package reports. Each adopts exactly the expected arm, gripper, and TCP; the Franka adopts no end effector and says why. |

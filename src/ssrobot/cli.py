@@ -135,15 +135,18 @@ def _summary(package: RobotPackage) -> None:
     for s in d.sensors:
         print(f"  sensor {s.name}: {s.kind.value} at {s.frame}")
     print(f"  {len(d.frames)} frames, {len(d.joints)} joints")
-    rated = [j for j in d.joints if j.limits.velocity is not None]
-    print(
-        f"  velocity limits on {len(rated)} of {len(d.joints)} joints"
-        + "".join(
-            f"\n    {j.name}: {j.limits.velocity:g} "
-            + ("m/s" if j.kind is JointKind.PRISMATIC else "rad/s")
-            for j in rated
-        )
-    )
+    rated = [
+        j for j in d.joints if j.limits.velocity is not None or j.limits.acceleration is not None
+    ]
+    print(f"  rate limits on {len(rated)} of {len(d.joints)} joints")
+    for j in rated:
+        unit = "m" if j.kind is JointKind.PRISMATIC else "rad"
+        rates = []
+        if j.limits.velocity is not None:
+            rates.append(f"{j.limits.velocity:g} {unit}/s")
+        if j.limits.acceleration is not None:
+            rates.append(f"{j.limits.acceleration:g} {unit}/s^2")
+        print(f"    {j.name}: {', '.join(rates)}")
     print(f"  {len(d.collision_allowances)} collision allowances")
     print(f"  {len(d.commands)} command capabilities, {len(d.channels)} channels")
     kinds = Counter(item.kind for item in package.items)

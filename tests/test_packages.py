@@ -438,6 +438,10 @@ CASES: dict[str, tuple[Callable[[Path], None], str | None]] = {
         _declare_limits('joint = "shoulder"\nvelocity = -1.0'),
         "invalid_limits",
     ),
+    "joint acceleration not positive": (
+        _declare_limits('joint = "shoulder"\nacceleration = -5.0'),
+        "invalid_limits",
+    ),
     "joint effort zero": (_declare_limits('joint = "shoulder"\neffort = 0.0'), "invalid_limits"),
     "joint lower above upper": (
         _declare_limits('joint = "shoulder"\nlower = 0.8\nupper = 0.7'),
@@ -631,11 +635,34 @@ def test_declared_joint_limits_change_the_description_and_its_checks(
         )
 
     def outcome(package: RobotPackage, duration_s: float) -> str:
+        return checked(package, shoulder_in(duration_s))
+
+    def checked(package: RobotPackage, trajectory: JointTrajectory) -> str:
         try:
-            check_command(package.description, shoulder_in(duration_s))
+            check_command(package.description, trajectory)
         except SsrobotError as e:
-            return e.code
+            return f"{e.code} at {e.path}"
         return "accepted"
+
+    def trapezoid(samples: int) -> JointTrajectory:
+        """The shoulder turning 1.08 rad from rest to rest in 1.2 s: accelerating at
+        4 rad/s^2 for 0.3 s, cruising at 1.2 rad/s for 0.6 s, and decelerating, sampled
+        every 1.2 / ``samples`` s."""
+
+        def at(t: float) -> float:
+            if t < 0.3:
+                return 2.0 * t * t
+            if t < 0.9:
+                return 0.18 + 1.2 * (t - 0.3)
+            return 1.08 - 2.0 * (1.2 - t) ** 2
+
+        times = [round(i * 1.2e9 / samples) for i in range(samples + 1)]
+        return JointTrajectory(
+            group="arm",
+            joints=("shoulder", "elbow", "wrist"),
+            time_from_start_ns=tuple(times),
+            positions=tuple((at(t / 1e9), -1.0, 0.0) for t in times),
+        )
 
     report = {
         name: {
@@ -645,7 +672,10 @@ def test_declared_joint_limits_change_the_description_and_its_checks(
                 "limits"
             ].get("velocity"),
             "1.0 s (3.2 rad/s)": outcome(package, 1.0),
-            "1.1 s (2.9 rad/s)": outcome(package, 1.1),
+            "1.1 s (2.9 rad/s, 5.3 rad/s^2 from rest)": outcome(package, 1.1),
+            "1.3 s (2.5 rad/s, 3.8 rad/s^2 from rest)": outcome(package, 1.3),
+            "acceleration": {j.name: j.limits.acceleration for j in package.description.joints},
+            "1.08 rad trapezoid, 4 rad/s^2, sampled every 10 ms": checked(package, trapezoid(120)),
         }
         for name, package in (("declared", declared), ("bare", bare))
     }
@@ -662,6 +692,14 @@ def test_declared_joint_limits_change_the_description_and_its_checks(
     assert report["declared"]["fingerprint"] != report["bare"]["fingerprint"]
     assert report["declared"]["report_velocity"] == math.pi
     assert report["bare"]["report_velocity"] is None
-    assert report["declared"]["1.0 s (3.2 rad/s)"] == "out_of_limits"
-    assert report["declared"]["1.1 s (2.9 rad/s)"] == "accepted"
-    assert report["bare"]["1.0 s (3.2 rad/s)"] == "accepted"
+    with_limits, without = report["declared"], report["bare"]
+    assert with_limits["acceleration"]["shoulder"] == 5.0
+    # One straight segment starts from and ends at rest, so its speed jumps at both
+    # waypoints: over half the segment, that is speed / (duration / 2).
+    assert with_limits["1.0 s (3.2 rad/s)"] == "out_of_limits at positions[1]"  # too fast
+    assert (
+        with_limits["1.1 s (2.9 rad/s, 5.3 rad/s^2 from rest)"] == "out_of_limits at positions[0]"
+    )
+    assert with_limits["1.3 s (2.5 rad/s, 3.8 rad/s^2 from rest)"] == "accepted"
+    assert with_limits["1.08 rad trapezoid, 4 rad/s^2, sampled every 10 ms"] == "accepted"
+    assert all(v == "accepted" for k, v in without.items() if k.startswith("1."))

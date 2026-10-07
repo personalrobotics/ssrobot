@@ -16,7 +16,7 @@ package_root = "src/geodude_assets"
 [robots.expect]
 # The reviewed semantic identity. Any change to the description, intended or not,
 # must update this fingerprint in review.
-fingerprint = "bf011c66918d8c088b91c1f6c8c69b6bfb2fae13fb7dd6b1b19591dc9a27c193"
+fingerprint = "5afb80c0d23b70ca7063cbf6fab2ef2322018c1e3cb465b8dc4a69b84162d07e"
 model_format = "mjcf"
 license = "MIT"
 manipulators = 4
@@ -39,7 +39,7 @@ package_root = "src/ada_assets"
 keyframe = "resting"
 
 [robots.expect]
-fingerprint = "20c50727b03f2f513e27dca6ddc888d070fd97e33762d54d402a605c3aaada73"
+fingerprint = "78c9d6eeee4f8cf50a004c87156fc0a7f32602a83aa360ded5cffddabbedd281"
 model_format = "mjcf"
 license = "MIT"
 manipulators = 1

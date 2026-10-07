@@ -271,9 +271,12 @@ class _Loader:
             bounds = (low, high)
         if kind == "slide" and bounds is None:
             raise _fail("unsupported_construct", "slide joints must be limited", joint)
+        effort = self._effort(joint, active)
         try:
             limits = (
-                JointLimits() if bounds is None else JointLimits(lower=bounds[0], upper=bounds[1])
+                JointLimits(effort=effort)
+                if bounds is None
+                else JointLimits(lower=bounds[0], upper=bounds[1], effort=effort)
             )
             return Joint(
                 name=name,
@@ -290,6 +293,43 @@ class _Loader:
             )
         except ValidationError as e:
             raise _fail(e.code, e.message, joint) from None
+
+    def _effort(self, joint: ET.Element, active: str) -> float | None:
+        """The joint's effort limit: the larger magnitude of ``actuatorfrcrange``, which
+        clamps the total actuator force on the joint, when it is limited.
+
+        ``actuatorfrclimited`` follows the same rules as ``limited``.
+        """
+        text = self.defaults.get(joint, "actuatorfrcrange", active)
+        limited = self.defaults.get(joint, "actuatorfrclimited", active) or "auto"
+        if limited == "auto":
+            if not self.autolimits and text is not None:
+                raise _fail(
+                    "ambiguous_limits",
+                    "actuatorfrcrange without actuatorfrclimited='true' while compiler "
+                    "autolimits is false",
+                    joint,
+                )
+            limited = "true" if text is not None else "false"
+        if limited not in ("true", "false"):
+            raise _fail(
+                "malformed_xml",
+                f"actuatorfrclimited must be true, false, or auto, not {limited!r}",
+                joint,
+            )
+        if limited == "false":
+            return None
+        if text is None:
+            raise _fail("invalid_limits", "force-limited joint without actuatorfrcrange", joint)
+        try:
+            low, high = (float(v) for v in text.split())
+        except ValueError:
+            raise _fail(
+                "malformed_xml", f"actuatorfrcrange {text!r} is not two numbers", joint
+            ) from None
+        if not low <= 0 <= high or low == high:
+            raise _fail("invalid_limits", f"actuatorfrcrange {text!r} must bracket zero", joint)
+        return max(-low, high)
 
     def _assets(self) -> None:
         seen: set[Path] = set()

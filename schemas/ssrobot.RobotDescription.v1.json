@@ -330,6 +330,18 @@
           "description": "Maximum absolute velocity.",
           "x-unit": "joint/s"
         },
+        "acceleration": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum absolute acceleration.",
+          "x-unit": "joint/s^2"
+        },
         "effort": {
           "anyOf": [
             {

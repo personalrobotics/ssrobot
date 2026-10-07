@@ -31,20 +31,23 @@ name = "home"
 group = "arm"
 positions = [0.5, -1.0, 0.25]
 
-# MJCF cannot express velocity limits, so the package declares them: the arm's joints at
-# 180 deg/s, like a UR5e's, and the fingers at 0.1 m/s. A declaration may add or tighten a
+# MJCF cannot express velocity or acceleration limits, so the package declares them: the
+# arm's joints at 180 deg/s and 5 rad/s^2, like a UR5e's, and the fingers at 0.1 m/s. A declaration may add or tighten a
 # model limit, never widen one.
 [[semantics.joint_limits]]
 joint = "shoulder"
 velocity = 3.141592653589793
+acceleration = 5.0
 
 [[semantics.joint_limits]]
 joint = "elbow"
 velocity = 3.141592653589793
+acceleration = 5.0
 
 [[semantics.joint_limits]]
 joint = "wrist"
 velocity = 3.141592653589793
+acceleration = 5.0
 
 [[semantics.joint_limits]]
 joint = "left_finger_joint"

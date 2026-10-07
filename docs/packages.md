@@ -70,13 +70,19 @@ the canonical model when the description is composed.
 
 ### Joint limits
 
-A model format may not express every limit: MJCF has no joint velocity limit, and a
-URDF's may be looser than the hardware. A package declares the rest:
+A model format may not express every limit:
+- MJCF has no joint velocity or acceleration limit.
+- URDF has no acceleration limit, and its velocity may be looser than the hardware.
+
+A package declares the rest. Declared limits are the hardware's; planning
+conservatively, such as at half speed, is a choice made per planning request, not by
+lowering the limits here.
 
 ```toml
 [[semantics.joint_limits]]
 joint = "left_lift"
 velocity = 0.1            # m/s for a prismatic joint, rad/s for a revolute one
+acceleration = 0.5        # m/s^2 or rad/s^2
 
 [[semantics.joint_limits]]
 joint = "left_shoulder_pan"
@@ -85,7 +91,8 @@ effort = 150.0
 ```
 
 - **Fields.** Each declaration names a `joint` and any of `lower`, `upper`, `velocity`,
-  and `effort`. Unset fields keep the model's value.
+  `acceleration`, and `effort`. Unset fields keep the model's value. Rates must be
+  positive.
 - **Tighten only.** A declaration may add a limit the model lacks or tighten one it
   has. Widening fails with `widened_limit`. A position range can only be tightened,
   never added to a continuous joint.
@@ -93,7 +100,8 @@ effort = 150.0
   the same joint fails with `duplicate_name`.
 - **Where they show up.** The limits are merged into the description's joints, so they
   are part of its fingerprint and of the `inspect` report. Validation enforces them:
-  every trajectory segment must stay within its joints' velocity limits.
+  every trajectory segment must stay within its joints' velocity limits, and every
+  waypoint within their acceleration limits (see docs/contracts.md, *Capabilities*).
 
 ### Model formats
 
@@ -173,6 +181,11 @@ The loader needs no MuJoCo. It applies MuJoCo's semantics to this subset:
   unlimited hinge continuous, and a limited slide prismatic. Hinge ranges convert from
   degrees when `angle` is `degree`. A `range` without `limited="true"` while
   `autolimits` is false fails with `ambiguous_limits`.
+- A joint's `actuatorfrcrange`, which clamps the total actuator force on it, is its
+  effort limit: the larger magnitude of the range. `actuatorfrclimited` follows the
+  same rules as `limited`. A range that doesn't bracket zero fails with
+  `invalid_limits`. MJCF has no joint velocity or acceleration limit; declare those in
+  the manifest (see *Joint limits*).
 - `<contact><exclude body1 body2>` becomes a collision allowance with reason
   `mjcf contact exclude`. Both names must be MJCF bodies, `world` included; sites and
   cameras are frames but not bodies (`unknown_reference`).
