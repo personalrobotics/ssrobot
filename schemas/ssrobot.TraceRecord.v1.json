@@ -161,6 +161,81 @@
       ],
       "additionalProperties": false
     },
+    "Attachment": {
+      "type": "object",
+      "description": "A scene object declared held by an end effector.",
+      "properties": {
+        "object": {
+          "type": "string",
+          "description": "The held scene object."
+        },
+        "end_effector": {
+          "type": "string",
+          "description": "The end effector holding it."
+        },
+        "transform": {
+          "$ref": "#/$defs/Pose",
+          "description": "The object's pose in the end effector's frame."
+        },
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Robot frames and scene fixtures the object may touch, sorted."
+        },
+        "held": {
+          "type": "boolean",
+          "description": "False once the runtime reported the object left the grasp."
+        }
+      },
+      "required": [
+        "object",
+        "end_effector",
+        "transform",
+        "allow"
+      ],
+      "additionalProperties": false
+    },
+    "AttachmentViolation": {
+      "type": "object",
+      "description": "A runtime's report that an attached object left its declared transform.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.AttachmentViolation"
+        },
+        "version": {
+          "const": 1
+        },
+        "object": {
+          "type": "string",
+          "description": "The attached object."
+        },
+        "stamp": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the tolerance was first exceeded."
+        },
+        "position_error": {
+          "type": "number",
+          "description": "Distance from the declared position.",
+          "x-unit": "m"
+        },
+        "rotation_error": {
+          "type": "number",
+          "description": "Angle from the declared orientation.",
+          "x-unit": "rad"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "object",
+        "stamp",
+        "position_error",
+        "rotation_error"
+      ],
+      "additionalProperties": false
+    },
     "BaseTwistCommand": {
       "type": "object",
       "description": "Planar velocity for a mobile base, expressed in the base's own frame.",
@@ -599,6 +674,58 @@
       ],
       "additionalProperties": false
     },
+    "Pose": {
+      "type": "object",
+      "description": "A rigid transform: the pose of a child frame expressed in a parent frame.",
+      "properties": {
+        "position": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Child origin in parent coordinates.",
+          "x-unit": "m"
+        },
+        "quat_wxyz": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Unit quaternion (w, x, y, z) rotating child axes into parent.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "position",
+        "quat_wxyz"
+      ],
+      "additionalProperties": false
+    },
     "Reading": {
       "type": "object",
       "description": "One channel's value with its own freshness.",
@@ -741,6 +868,20 @@
             "type": "string"
           },
           "description": "Channel names confirmed available now."
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Scene objects that can be attached, sorted; empty without a scene."
+        },
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Static scene bodies an attachment may allow contact with, sorted."
         }
       },
       "required": [
@@ -753,6 +894,52 @@
         "description",
         "commands",
         "channels"
+      ],
+      "additionalProperties": false
+    },
+    "SceneState": {
+      "type": "object",
+      "description": "A context's scene: the objects it can hold and what it holds now.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.SceneState"
+        },
+        "version": {
+          "const": 1
+        },
+        "revision": {
+          "type": "integer",
+          "description": "Increments on every change, from 0 when the context opens.",
+          "x-unit": "count"
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Scene objects that can be attached, sorted."
+        },
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Static scene bodies an attachment may allow contact with, sorted."
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Attachment"
+          },
+          "description": "Current attachments, sorted by object."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "revision",
+        "objects",
+        "fixtures"
       ],
       "additionalProperties": false
     },
@@ -859,6 +1046,8 @@
             "status",
             "applied",
             "health",
+            "scene",
+            "violation",
             "stepped",
             "closed"
           ],
@@ -896,6 +1085,12 @@
             },
             {
               "$ref": "#/$defs/RuntimeHealth"
+            },
+            {
+              "$ref": "#/$defs/SceneState"
+            },
+            {
+              "$ref": "#/$defs/AttachmentViolation"
             },
             {
               "type": "null"

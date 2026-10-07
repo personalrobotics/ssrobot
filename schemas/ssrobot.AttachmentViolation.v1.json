@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.AttachmentViolation v1",
+  "$ref": "#/$defs/AttachmentViolation",
+  "$defs": {
+    "AttachmentViolation": {
+      "type": "object",
+      "description": "A runtime's report that an attached object left its declared transform.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.AttachmentViolation"
+        },
+        "version": {
+          "const": 1
+        },
+        "object": {
+          "type": "string",
+          "description": "The attached object."
+        },
+        "stamp": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the tolerance was first exceeded."
+        },
+        "position_error": {
+          "type": "number",
+          "description": "Distance from the declared position.",
+          "x-unit": "m"
+        },
+        "rotation_error": {
+          "type": "number",
+          "description": "Angle from the declared orientation.",
+          "x-unit": "rad"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "object",
+        "stamp",
+        "position_error",
+        "rotation_error"
+      ],
+      "additionalProperties": false
+    },
+    "Timestamp": {
+      "type": "object",
+      "description": "A point in time on a named clock.",
+      "properties": {
+        "clock": {
+          "type": "string",
+          "description": "Clock identity, e.g. 'sim:geodude-1' or 'ros:/clock'."
+        },
+        "time_ns": {
+          "type": "integer",
+          "description": "Nanoseconds since the clock's epoch.",
+          "x-unit": "ns"
+        }
+      },
+      "required": [
+        "clock",
+        "time_ns"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

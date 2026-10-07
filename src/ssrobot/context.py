@@ -10,12 +10,13 @@ from __future__ import annotations
 import enum
 import time
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import TracebackType
+from typing import cast
 
 from ssrobot.commands import ActionChunk, Command, command_components
-from ssrobot.conventions import ClockMode, Timestamp, check_name
-from ssrobot.description import RobotDescription
+from ssrobot.conventions import ClockMode, Pose, Timestamp, check_name
+from ssrobot.description import EndEffector, RobotDescription
 from ssrobot.errors import (
     CapabilityError,
     LifecycleError,
@@ -34,7 +35,8 @@ from ssrobot.execution import (
     Submission,
 )
 from ssrobot.observations import Observation, ObservationRequest
-from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate
+from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime
+from ssrobot.scene import Attachment, AttachmentViolation, SceneState, TrackedAttachment
 from ssrobot.trace import TraceKind, TracePayload, TraceRecord, TraceSink
 from ssrobot.validation import check_applied, check_command, check_observation, check_request
 
@@ -60,6 +62,8 @@ ALLOWED_STATES: dict[str, frozenset[ContextState]] = {
     "update": frozenset({_S.OPEN, _S.FAULTED}),
     "run_until": frozenset({_S.OPEN, _S.FAULTED}),
     "recover": frozenset({_S.FAULTED}),
+    "attach": frozenset({_S.OPEN}),
+    "detach": frozenset({_S.OPEN, _S.FAULTED}),
 }
 """Context states in which each operation is allowed."""
 
@@ -169,6 +173,7 @@ class RobotContext:
         self._fault: RuntimeHealth | None = None
         self._submissions = 0
         self._breached = False
+        self._scene: SceneState | None = None
 
     # -- Properties ------------------------------------------------------------------
 
@@ -226,6 +231,13 @@ class RobotContext:
         return self._description.resources(components)
 
     @property
+    def scene(self) -> SceneState:
+        """The scene's objects and attachments. Empty for a runtime without a scene."""
+        if self._scene is None:
+            raise LifecycleError("not_open", f"context is {self._state.value}")
+        return self._scene
+
+    @property
     def executions(self) -> tuple[Execution, ...]:
         """Every execution submitted to this context, in order."""
         return tuple(self._executions.values())
@@ -242,7 +254,10 @@ class RobotContext:
             if update.stamp.clock != info.clock:
                 raise self._breach(f"update on clock {update.stamp.clock!r}, not {info.clock!r}")
             self._info, self._now, self._state = info, update.stamp, ContextState.OPEN
+            self._scene = SceneState(revision=0, objects=info.objects, fixtures=info.fixtures)
             self._emit(TraceKind.OPENED, self._runtime_source, info)
+            if info.objects or info.fixtures:
+                self._emit(TraceKind.SCENE, "context", self._scene)
             self._process(update, stepped=False)
         except BaseException as error:
             self._state = ContextState.CLOSED
@@ -269,6 +284,11 @@ class RobotContext:
             self._state = ContextState.CLOSED
             return
         try:
+            scene = self._scene
+            if scene is not None and scene.attachments:
+                for attachment in scene.attachments:
+                    self._scene_runtime.detach(attachment.object)
+                self._commit(replace(scene, attachments=()), "context")
             closing = Diagnostic(code="context_closed", message="the context closed")
             for execution in self._active():
                 self._finish(execution, ExecutionState.CANCELED, closing)
@@ -299,6 +319,76 @@ class RobotContext:
         self._accept_direct(observation.stamp)
         self._emit(TraceKind.OBSERVED, self._runtime_source, observation, observation.stamp)
         return observation
+
+    # -- Scene -----------------------------------------------------------------------
+
+    def attach(
+        self,
+        object: str,
+        end_effector: str,
+        *,
+        transform: Pose | None = None,
+        allow: Iterable[str] | None = None,
+        revision: int | None = None,
+        source: str = "client",
+    ) -> SceneState:
+        """Declare ``object`` held by ``end_effector``; return the new scene.
+
+        ``transform`` is the object's pose in the end effector's frame; by default it is
+        where the object is now. ``allow`` names the robot frames and scene fixtures the
+        object may touch; by default, every frame at or below the end effector's gripper
+        (or the end effector's own frame, for a tool). With ``revision``, the scene must
+        not have changed since then. Nothing changes unless it succeeds. Declaring an
+        attachment never changes how the runtime simulates or drives the robot.
+        """
+        self._require("attach")
+        check_name(source, path="source")
+        scene = self._current_scene(revision)
+        if object not in scene.objects:
+            raise ValidationError(
+                "unknown_reference", f"{object!r} is not a scene object", path="object"
+            )
+        if scene.attachment(object) is not None:
+            raise ValidationError("already_attached", f"{object!r} is already attached")
+        effector = self._description.end_effector(end_effector)
+        allowed = self._allowed(effector, scene, allow)
+        if transform is not None and not isinstance(transform, Pose):
+            raise ValidationError("wrong_type", "transform must be a Pose", path="transform")
+        resolve = transform is None
+        if transform is None:  # a placeholder the runtime replaces
+            transform = Pose(position=(0.0, 0.0, 0.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
+        requested = Attachment(
+            object=object, end_effector=end_effector, transform=transform, allow=allowed
+        )
+        answer = self._scene_runtime.attach(requested, resolve)
+        # Nothing is committed until the runtime's answer is valid; on a breach the
+        # runtime is told to stop tracking what it was just handed.
+        tracked = answer.attachment if isinstance(answer, TrackedAttachment) else None
+        if (
+            tracked is None
+            or replace(tracked, transform=transform) != requested
+            or (not resolve and tracked.transform != transform)
+        ):
+            raise self._abandon(object, self._breach(f"attach of {object!r} answered {answer!r}"))
+        try:
+            self._accept_direct(answer.stamp)  # the transform was measured then
+        except ValidationError as error:
+            raise self._abandon(object, error) from None
+        attachments = sorted((*scene.attachments, tracked), key=lambda a: a.object)
+        return self._commit(replace(scene, attachments=tuple(attachments)), source)
+
+    def detach(
+        self, object: str, *, revision: int | None = None, source: str = "client"
+    ) -> SceneState:
+        """Remove ``object``'s attachment and its allowances; return the new scene."""
+        self._require("detach")
+        check_name(source, path="source")
+        scene = self._current_scene(revision)
+        if scene.attachment(object) is None:
+            raise ValidationError("not_attached", f"{object!r} is not attached", path="object")
+        self._scene_runtime.detach(object)
+        remaining = tuple(a for a in scene.attachments if a.object != object)
+        return self._commit(replace(scene, attachments=remaining), source)
 
     # -- Commands --------------------------------------------------------------------
 
@@ -476,6 +566,70 @@ class RobotContext:
         if self._executions.get(execution.id) is not execution:
             raise ValidationError("unknown_reference", f"{execution.id} is not from this context")
 
+    @property
+    def _scene_runtime(self) -> SceneRuntime:
+        return cast(SceneRuntime, self._runtime)
+
+    def _abandon(self, object: str, error: ValidationError) -> ValidationError:
+        """Tell the runtime to stop tracking an attachment it was just handed."""
+        try:
+            self._scene_runtime.detach(object)
+        except Exception as cleanup:
+            error.add_note(f"detaching {object!r} also failed: {cleanup!r}")
+        return error
+
+    def _current_scene(self, revision: int | None) -> SceneState:
+        scene = self.scene
+        if revision is None:
+            return scene
+        if isinstance(revision, bool) or not isinstance(revision, int):
+            raise ValidationError("wrong_type", "revision must be an integer", path="revision")
+        if revision < 0:
+            raise ValidationError("out_of_limits", "revision must be >= 0", path="revision")
+        if revision != scene.revision:
+            raise StaleRevisionError(
+                "stale_revision",
+                f"the scene is at revision {scene.revision}, not {revision}",
+                path="revision",
+            )
+        return scene
+
+    def _allowed(
+        self, effector: EndEffector, scene: SceneState, allow: Iterable[str] | None
+    ) -> tuple[str, ...]:
+        """The canonical allow set: given names checked, or the gripper's frames."""
+        frames = {f.name: f.parent for f in self._description.frames}
+        if allow is None:
+            root = (
+                effector.frame
+                if effector.gripper is None
+                else self._description.gripper(effector.gripper).frame
+            )
+
+            def below(frame: str | None) -> bool:
+                while frame is not None and frame != root:
+                    frame = frames[frame]
+                return frame == root
+
+            return tuple(sorted(f for f in frames if below(f)))
+        names = tuple(allow)
+        for i, name in enumerate(names):
+            if name not in frames and name not in scene.fixtures:
+                raise ValidationError(
+                    "unknown_reference",
+                    f"{name!r} is neither a robot frame nor a scene fixture",
+                    path=f"allow[{i}]",
+                )
+        if len(set(names)) != len(names):
+            raise ValidationError("duplicate_name", "allow repeats a name", path="allow")
+        return tuple(sorted(names))
+
+    def _commit(self, scene: SceneState, source: str, stamp: Timestamp | None = None) -> SceneState:
+        scene = replace(scene, revision=scene.revision + 1)
+        self._scene = scene
+        self._emit(TraceKind.SCENE, source, scene, stamp)
+        return scene
+
     def _active(self) -> list[Execution]:
         return [e for e in self._executions.values() if not e.done]
 
@@ -498,6 +652,13 @@ class RobotContext:
                 raise CapabilityError(
                     "undeclared_capability", f"runtime offers undeclared channel {name!r}"
                 )
+        has_scene = callable(getattr(self._runtime, "attach", None)) and callable(
+            getattr(self._runtime, "detach", None)
+        )
+        if (info.objects or info.fixtures) and not has_scene:
+            raise CapabilityError(
+                "undeclared_capability", "runtime offers scene objects but cannot attach them"
+            )
 
     def _check_stamp(
         self, stamp: Timestamp, *, earliest: Timestamp, latest: Timestamp | None = None
@@ -579,6 +740,9 @@ class RobotContext:
             if isinstance(event, RuntimeHealth):
                 self._apply_health(event)
                 continue
+            if isinstance(event, AttachmentViolation):
+                self._apply_violation(event)
+                continue
             execution = self._executions.get(event.execution)
             if execution is None:
                 raise self._breach(f"event for unknown execution {event.execution!r}")
@@ -631,6 +795,18 @@ class RobotContext:
                     ),
                     "context",
                 )
+
+    def _apply_violation(self, violation: AttachmentViolation) -> None:
+        """Record that a held object left its grasp. The attachment stays until detached."""
+        scene = self.scene
+        current = scene.attachment(violation.object)
+        if current is None or not current.held:
+            raise self._breach(f"violation reported for {violation.object!r}, which is not held")
+        self._emit(TraceKind.VIOLATION, self._runtime_source, violation, violation.stamp)
+        attachments = tuple(
+            replace(a, held=False) if a is current else a for a in scene.attachments
+        )
+        self._commit(replace(scene, attachments=attachments), self._runtime_source, violation.stamp)
 
     def _finish(self, execution: Execution, state: ExecutionState, why: Diagnostic) -> None:
         """End an execution on the context's authority and tell the runtime to stop it."""

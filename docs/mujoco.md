@@ -38,30 +38,33 @@ Implemented:
   clock (#14);
 - joint, trajectory, gripper, and chunk commands, and joint-state and gripper-opening
   channels (#15);
-- joint effort, poses, wrenches, and RGB and depth images (#16).
+- joint effort, poses, wrenches, and RGB and depth images (#16);
+- scene composition and declared attachments (#17).
 
 Still to come:
 
 | Issue | Adds |
 | --- | --- |
 | #85 | Base twist commands, for Opendubs |
-| follow-up to #16 | Object state, contacts, and marking privileged simulator state, with scene composition |
-| #17 | Attachments, and enforcement of collision allowances: which pairs MuJoCo's filtering (weld groups, explicit pairs and excludes, and affinity masks) already prevents, and how the rest are applied |
-| #18 | Snapshots |
+| follow-up to #16 | Object state channels, contacts, and marking privileged simulator state |
+| #18 | Snapshots, and lowering attachments into sscbirrt's attachment-aware checker |
+| #108 | A kinematic (no-dynamics) mode, where an attached object is carried by copying its pose |
+| #109 | Grasp and release helpers that decide when to attach, above the core |
 
 There is no explicit reset: every `open` starts from the same state, so a new context
-is a reset. Scene composition, meaning a robot plus task objects, arrives with its first
-consumer. The runtime never exposes MuJoCo's `MjModel` or `MjData`.
+is a reset. The runtime never exposes MuJoCo's `MjModel` or `MjData`.
 
 ## Construction
 
 `MujocoRuntime(package, *, substeps=1, keyframe=None, profile=None, goal_tolerance=0.01,
-settle_ns=1_000_000_000)` only checks its arguments. It compiles nothing and starts no
-thread:
+settle_ns=1_000_000_000, scene=None, attach_tolerance_m=0.01, attach_tolerance_rad=0.1)`
+only checks its arguments. It compiles nothing and starts no thread:
 
 - `substeps` must be a positive integer (`invalid_substeps`).
-- `goal_tolerance` must be finite and non-negative, and `settle_ns` a non-negative
-  integer (`invalid_argument`). See *Trajectories*.
+- `goal_tolerance`, `attach_tolerance_m`, and `attach_tolerance_rad` must be finite and
+  non-negative, and `settle_ns` a non-negative integer (`invalid_argument`). See
+  *Trajectories* and *Scene and attachments*.
+- `scene` is a path to an MJCF file of task objects, read at open.
 
 ## Opening
 
@@ -75,6 +78,8 @@ thread:
 | `package_changed` | The package on disk is no longer the one that was loaded. The package is loaded again from its root under the same containment rules, and every recorded file is compared, by hash, with what the `RobotPackage` recorded. That covers the manifest, the model, includes, and assets, before and again after MuJoCo compiles. A changed, missing, or new file, or a path that now escapes the root, fails, naming the path. |
 | `unsupported_backend_version` | The installed MuJoCo distribution, the loaded module, or the compiled library is not exactly `MUJOCO_VERSION` (3.14.0). This is the version sscbirrt's native adapter is built against. |
 | `model_compile_failed` | MuJoCo cannot compile the model. |
+| `invalid_scene` | The scene cannot be read or compiled with the robot, refers to another file (see *Scene and attachments*), or has a top-level body that is unnamed or has joints other than one free joint. |
+| `scene_conflict` | A scene name repeats one of the robot model's. |
 | `invalid_timestep` | The model's timestep is not a whole number of nanoseconds. |
 | `model_mismatch` | MuJoCo's compiled model disagrees with the description (see *Mapping*), or the start keyframe disagrees with the named configuration of the same name (`configurations[<name>]`; see *Start keyframe*). The path names the entity. |
 | `unknown_keyframe` | `keyframe` names no keyframe in the model. |
@@ -96,7 +101,8 @@ the position a control of 0 would give. A joint starting just past its stop, wit
 - runtime `mujoco`, with its version naming ssrobot and MuJoCo;
 - clock mode `manual`, on clock `mujoco:<robot>`;
 - the description's fingerprint;
-- the declared commands and channels it confirms (see *Binding*).
+- the declared commands and channels it confirms (see *Binding*);
+- the scene's objects and fixtures, if it has a scene.
 
 ## Model
 
@@ -135,6 +141,46 @@ When the description has a named configuration with the keyframe's name, such as
 `home` or `ready`, the keyframe must put that configuration's group at its positions,
 within `START_TOLERANCE`. The two describe one pose and may not drift apart.
 
+## Scene and attachments
+
+`scene` names an MJCF file that is application data, not part of the robot package.
+For now it must be self-contained: an `<include>`, or any `file` attribute on a mesh,
+texture, height field, skin, or other asset, fails with `invalid_scene`. Otherwise the
+compiled simulation could depend on files that the recorded identity does not cover.
+The runtime reads the file once, hashes those bytes, and compiles exactly them. At
+open, it composes the scene with the robot's model, attaching the scene's world body
+to the robot's with no name prefix:
+- **Objects** are the scene's top-level bodies with exactly one free joint. They can be
+  attached.
+- **Fixtures** are top-level bodies with no joints, such as a table. An attachment may
+  allow contact with them.
+- World geoms come along too, but are neither.
+- Where the two files set the same simulation option, the robot model's wins.
+
+The robot's keyframes know nothing of the scene: MuJoCo pads them with zeros, which
+would put every object at the world origin. The start state therefore takes robot joints
+from the keyframe and leaves every object where the scene puts it.
+
+**Attaching never changes physics.** There is no weld, no pose write, and no change to
+contact filtering. Friction and contact alone decide whether the object comes along, as
+they would on hardware. `attach` (see contracts.md, *Scene*) works as follows:
+- It reads the object's pose in the end effector's frame.
+- With no transform given, that pose becomes the transform.
+- A given transform more than `attach_tolerance_m` or `attach_tolerance_rad` from it
+  is refused with `attachment_mismatch`.
+
+After every step, each held attachment is measured against its declared transform. The
+first time either tolerance is exceeded, the runtime reports one `AttachmentViolation`
+with both errors. The allow set is recorded for planners and is not applied to MuJoCo's
+contacts, since excluding finger contacts would remove the grip itself.
+
+`runtime.mapping` records the scene path as given, the SHA-256 of the bytes that were
+compiled, which identify the scene completely, and its objects and fixtures.
+
+A friction grasp in MuJoCo creeps under soft contacts. The example arm therefore uses
+elliptic friction cones with `impratio="10"`, as MuJoCo recommends for grasping. That
+keeps the carried box within about 3 mm of its grasp over the whole evidence scenario.
+
 ## Mapping
 
 MuJoCo's compiler is independent of ssrobot's MJCF loader ([packages.md](packages.md)),
@@ -157,8 +203,9 @@ so they resolve once those do. `runtime.mapping` is a `MujocoMapping` that holds
 - for each joint, its id and its `qpos` and `qvel` addresses;
 - every actuator, with its transmission type, the joint, tendon, or site it drives, and
   its kind (see *Binding*);
-- every collision allowance, with the MuJoCo bodies of its two frames. Whether
-  MuJoCo already prevents contact between them is decided in #17, with enforcement;
+- every collision allowance, with the MuJoCo bodies of its two frames, for planners
+  (the runtime does not change MuJoCo's contact filtering for them);
+- the scene, its hash, objects, and fixtures, if any;
 - every declared command capability and channel, with its actuators, or why it is not
   confirmed.
 
@@ -296,6 +343,8 @@ loop is an application that calls `step()`; it is not a different runtime mode.
 | `artifacts/test_mujoco_compiles_the_profiles_model_against_the_canonical_description/multi-artifact.json` | The `urdf_arm` fixture, whose canonical model is URDF and SRDF, opened through the MJCF its profile names, with no `keyframe` argument. It records the compiled entry, format, path, and signature, and the URDF's description fingerprint. It starts at the profile's `home`, equal to the SRDF state of that name, and a trajectory succeeds. |
 | `artifacts/test_mujoco_model_signature_covers_every_file_the_model_brings_in/{original,moved,edited}-mapping.json` | Three copies of the example: unchanged, moved to another directory, and with one gain changed in the included `actuators.xml`. The edited copy has the same root-file hash but a different model signature, and the moved copy's mapping is identical to the original's. |
 | `artifacts/test_mujoco_runtime_refuses_mismatches_before_commands/startup-failures.json` | Each code in *Opening*, plus `invalid_substeps`, with its path and message, including a keyframe with the elbow outside its range (`invalid_initial_state`). Model selection fails four ways: a profile naming a missing model (`invalid_profile`) or the URDF (`unsupported_model_format`); two MJCF models and no choice (`ambiguous_model`); and an MJCF artifact with a renamed joint (`model_mismatch` at `joints[j3]`). An artifact edited after loading fails with `package_changed`, and a keyframe disagreeing with its configuration with `model_mismatch` at `configurations[home]`. A keyframe with the wrist 0.5 mrad past its stop opens, is first observed at 3.0005, and settles back to its stop. For `package_changed`: the canonical MJCF edited after loading, an included file edited, and an include replaced by a symlink out of the package. None of them opened or left a mapping. |
+| `artifacts/test_grasp_carry_release_and_drop_are_traced/{carry,drop}/trace.jsonl`, `summary.json` | The example arm with `examples/scenes/pedestal.xml`. **Carry:** the box starts on the pedestal and the hand closes on it. `attach("box", "hand")` resolves the transform and allows `gripper`, `left_finger`, `right_finger`, and `tcp`. Friction alone lifts the box, swings it 0.6 rad aside and back, and releases it just above the pedestal, where it lands within 1 cm of its start. There is no violation, and detach empties the scene. **Drop:** the hand opens after lifting without detaching. One `violation` is traced, the attachment turns `held: false` and stays, and closing detaches it. `scene` records run at revisions 0 to 2 (carry) and 0 to 3 (drop). A second run gives byte-identical files. |
+| `artifacts/test_invalid_attachments_and_scenes_change_nothing/refusals.json` | Each refused `attach` and `detach`, with its code, leaving the scene unchanged: an unknown object, a fixture as object, an unknown end effector or allow name, a repeated allow name, a non-pose transform, a transform far from the box (`attachment_mismatch`), a stale revision (`StaleRevisionError`), a boolean or float revision (`wrong_type`) and a negative one (`out_of_limits`), already attached, and not attached. A fixture may be allowed. Scenes that reuse a robot name (`scene_conflict`), have an articulated or unnamed body, or refer to another file through an include or a mesh file (`invalid_scene`) fail at open. |
 | `reference-robots/<robot>/mujoco-startup.json` (CI) | Geodude and ADA opened from their installed wheels: mapping, runtime version, and exact time after 10 steps. |
 | `installed-conformance/imports-mujoco.json` (CI) | The `[mujoco]` wheel in a clean environment: what importing the integration loads, and that the gate passes. |
 

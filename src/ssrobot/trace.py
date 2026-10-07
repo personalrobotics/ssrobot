@@ -15,6 +15,7 @@ from ssrobot.errors import ValidationError
 from ssrobot.execution import AppliedCommand, ExecutionStatus, RuntimeHealth, Submission
 from ssrobot.observations import Observation
 from ssrobot.runtime import RuntimeInfo
+from ssrobot.scene import AttachmentViolation, SceneState
 
 
 class TraceKind(enum.StrEnum):
@@ -30,6 +31,11 @@ class TraceKind(enum.StrEnum):
     """A runtime applied a command; payload is the ``AppliedCommand``."""
     HEALTH = "health"
     """The runtime faulted or recovered; payload is the ``RuntimeHealth``."""
+    SCENE = "scene"
+    """The scene changed; payload is the new ``SceneState``."""
+    VIOLATION = "violation"
+    """An attached object left its declared transform; payload is the
+    ``AttachmentViolation``."""
     STEPPED = "stepped"
     """A manual control tick ended at ``time_ns``; no payload."""
     CLOSED = "closed"
@@ -37,7 +43,14 @@ class TraceKind(enum.StrEnum):
 
 
 TracePayload = (
-    RuntimeInfo | Observation | Submission | ExecutionStatus | AppliedCommand | RuntimeHealth
+    RuntimeInfo
+    | Observation
+    | Submission
+    | ExecutionStatus
+    | AppliedCommand
+    | RuntimeHealth
+    | SceneState
+    | AttachmentViolation
 )
 
 _PAYLOAD: dict[TraceKind, type[Record] | None] = {
@@ -47,6 +60,8 @@ _PAYLOAD: dict[TraceKind, type[Record] | None] = {
     TraceKind.STATUS: ExecutionStatus,
     TraceKind.APPLIED: AppliedCommand,
     TraceKind.HEALTH: RuntimeHealth,
+    TraceKind.SCENE: SceneState,
+    TraceKind.VIOLATION: AttachmentViolation,
     TraceKind.STEPPED: None,
     TraceKind.CLOSED: None,
 }
@@ -82,7 +97,10 @@ class TraceRecord(Record):
             want = "no payload" if expected is None else expected.__name__
             raise ValidationError("wrong_type", f"{self.kind} records carry {want}", path="payload")
         payload = self.payload
-        if isinstance(payload, Observation | ExecutionStatus | AppliedCommand | RuntimeHealth):
+        if isinstance(
+            payload,
+            Observation | ExecutionStatus | AppliedCommand | RuntimeHealth | AttachmentViolation,
+        ):
             if payload.stamp.clock != self.clock:
                 raise ValidationError(
                     "clock_mismatch", "payload stamp uses another clock", path="payload.stamp"

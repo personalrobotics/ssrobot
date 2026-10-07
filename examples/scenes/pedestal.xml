@@ -1,0 +1,16 @@
+<!-- A task scene for examples/packages/mujoco_arm: a box on a pedestal at the gripper's
+     height when the arm is level. MujocoRuntime(package, scene=...) composes it with the
+     robot: "box" has a free joint, so it is an object that can be attached; "pedestal"
+     has none, so it is a fixture. The box is light enough for the example's finger
+     servos to hold by friction alone. -->
+<mujoco model="pedestal">
+  <worldbody>
+    <body name="pedestal" pos="0.46 0 0.16">
+      <geom type="box" size="0.03 0.05 0.21" rgba="0.6 0.4 0.2 1"/>
+    </body>
+    <body name="box" pos="0.46 0 0.401">
+      <freejoint/>
+      <geom type="box" size="0.025 0.03 0.03" mass="0.01" rgba="0.8 0.2 0.2 1"/>
+    </body>
+  </worldbody>
+</mujoco>

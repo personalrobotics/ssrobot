@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.SceneState v1",
+  "$ref": "#/$defs/SceneState",
+  "$defs": {
+    "Attachment": {
+      "type": "object",
+      "description": "A scene object declared held by an end effector.",
+      "properties": {
+        "object": {
+          "type": "string",
+          "description": "The held scene object."
+        },
+        "end_effector": {
+          "type": "string",
+          "description": "The end effector holding it."
+        },
+        "transform": {
+          "$ref": "#/$defs/Pose",
+          "description": "The object's pose in the end effector's frame."
+        },
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Robot frames and scene fixtures the object may touch, sorted."
+        },
+        "held": {
+          "type": "boolean",
+          "description": "False once the runtime reported the object left the grasp."
+        }
+      },
+      "required": [
+        "object",
+        "end_effector",
+        "transform",
+        "allow"
+      ],
+      "additionalProperties": false
+    },
+    "Pose": {
+      "type": "object",
+      "description": "A rigid transform: the pose of a child frame expressed in a parent frame.",
+      "properties": {
+        "position": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Child origin in parent coordinates.",
+          "x-unit": "m"
+        },
+        "quat_wxyz": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Unit quaternion (w, x, y, z) rotating child axes into parent.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "position",
+        "quat_wxyz"
+      ],
+      "additionalProperties": false
+    },
+    "SceneState": {
+      "type": "object",
+      "description": "A context's scene: the objects it can hold and what it holds now.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.SceneState"
+        },
+        "version": {
+          "const": 1
+        },
+        "revision": {
+          "type": "integer",
+          "description": "Increments on every change, from 0 when the context opens.",
+          "x-unit": "count"
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Scene objects that can be attached, sorted."
+        },
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Static scene bodies an attachment may allow contact with, sorted."
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Attachment"
+          },
+          "description": "Current attachments, sorted by object."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "revision",
+        "objects",
+        "fixtures"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

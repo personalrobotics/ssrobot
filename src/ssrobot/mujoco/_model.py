@@ -209,6 +209,19 @@ class MujocoMapping(Value):
     timestep_ns: int = field(metadata=meta("MuJoCo physics timestep.", unit="ns"))
     substeps: int = field(metadata=meta("Physics steps per control tick.", unit="count"))
     keyframe: str | None = field(metadata=meta("Keyframe the runtime opened in, if any."))
+    scene: str | None = field(
+        default=None, metadata=meta("Scene file composed with the model, as given, if any.")
+    )
+    scene_sha256: str | None = field(
+        default=None,
+        metadata=meta("SHA-256 of the scene file, which is self-contained and was compiled."),
+    )
+    objects: tuple[str, ...] = field(
+        default=(), metadata=meta("Scene bodies with a free joint: attachable objects.")
+    )
+    fixtures: tuple[str, ...] = field(
+        default=(), metadata=meta("Scene bodies without joints: static fixtures.")
+    )
     frames: tuple[FrameBinding, ...] = field(metadata=meta("Every frame, in description order."))
     joints: tuple[JointBinding, ...] = field(metadata=meta("Every joint, in description order."))
     actuators: tuple[ActuatorBinding, ...] = field(metadata=meta("Every actuator, by id."))

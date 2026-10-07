@@ -18,6 +18,7 @@ from ssrobot.description import CommandCapability, RobotDescription
 from ssrobot.errors import ValidationError
 from ssrobot.execution import AppliedCommand, ExecutionStatus, RuntimeHealth
 from ssrobot.observations import Observation, ObservationRequest
+from ssrobot.scene import Attachment, AttachmentViolation, TrackedAttachment
 
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 
@@ -38,10 +39,29 @@ class RuntimeInfo(Record):
         metadata=meta("Command capabilities confirmed available now.")
     )
     channels: tuple[str, ...] = field(metadata=meta("Channel names confirmed available now."))
+    objects: tuple[str, ...] = field(
+        default=(),
+        metadata=meta("Scene objects that can be attached, sorted; empty without a scene."),
+    )
+    fixtures: tuple[str, ...] = field(
+        default=(),
+        metadata=meta("Static scene bodies an attachment may allow contact with, sorted."),
+    )
 
     def _validate(self) -> None:
         check_name(self.runtime, path="runtime")
         check_name(self.clock, path="clock")
+        for path, names in (("objects", self.objects), ("fixtures", self.fixtures)):
+            for i, name in enumerate(names):
+                check_name(name, path=f"{path}[{i}]")
+            if list(names) != sorted(set(names)):
+                raise ValidationError(
+                    "noncanonical_order", f"{path} must be sorted and unique", path=path
+                )
+        if set(self.objects) & set(self.fixtures):
+            raise ValidationError(
+                "duplicate_name", "a name is both an object and a fixture", path="fixtures"
+            )
         if not _FINGERPRINT.fullmatch(self.description):
             raise ValidationError(
                 "invalid_fingerprint",
@@ -50,7 +70,7 @@ class RuntimeInfo(Record):
             )
 
 
-RuntimeEvent = ExecutionStatus | AppliedCommand | RuntimeHealth
+RuntimeEvent = ExecutionStatus | AppliedCommand | RuntimeHealth | AttachmentViolation
 """What a runtime reports between polls."""
 
 
@@ -101,7 +121,8 @@ class Runtime(Protocol):
     def poll(self) -> RuntimeUpdate:
         """Current time and the events since the previous poll.
 
-        Executions may move to ``active``, ``succeeded``, or ``failed``. A ``faulted``
+        Executions may move to ``active``, ``succeeded``, or ``failed``. A scene runtime
+        reports an ``AttachmentViolation`` once when a held object leaves tolerance. A ``faulted``
         health event means the runtime has already stopped every execution whose
         resources (``RobotDescription.resources``) overlap the faulted components'.
         """
@@ -109,4 +130,27 @@ class Runtime(Protocol):
 
     def recover(self) -> None:
         """Try to clear a fault. Success is reported by a later ``ok`` health event."""
+        ...
+
+
+class SceneRuntime(Runtime, Protocol):
+    """A runtime with task objects, declared in ``RuntimeInfo.objects``.
+
+    Attaching declares state for planners and the trace; it must not change how the
+    backend simulates or drives anything. The context validates names, transforms, and
+    revisions first and owns the resulting ``SceneState``.
+    """
+
+    def attach(self, attachment: Attachment, resolve: bool) -> TrackedAttachment:
+        """Start tracking ``attachment``; return it as tracked, stamped like any direct
+        answer.
+
+        With ``resolve``, its transform is replaced by the object's current pose in the
+        end effector's frame; otherwise it is kept. Raises ``SsrobotError``, changing
+        nothing, if the attachment cannot be tracked.
+        """
+        ...
+
+    def detach(self, object: str) -> None:
+        """Stop tracking ``object``'s attachment."""
         ...

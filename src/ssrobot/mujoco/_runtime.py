@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import bisect
+import hashlib
 import itertools
 import math
 import os
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 import mujoco
@@ -24,7 +27,7 @@ from ssrobot.commands import (
     JointMode,
     JointTrajectory,
 )
-from ssrobot.conventions import ClockMode, Timestamp
+from ssrobot.conventions import ClockMode, Pose, Timestamp
 from ssrobot.description import CommandCapability, RobotDescription
 from ssrobot.errors import CapabilityError, LifecycleError, StaleRevisionError, ValidationError
 from ssrobot.execution import (
@@ -64,6 +67,7 @@ from ssrobot.mujoco._model import (
 from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
 from ssrobot.package import RobotPackage
 from ssrobot.runtime import RuntimeEvent, RuntimeInfo, RuntimeUpdate
+from ssrobot.scene import Attachment, AttachmentViolation, TrackedAttachment
 from ssrobot.validation import START_TOLERANCE, clamp_positions
 
 
@@ -109,6 +113,46 @@ def _unavailable(code: str, message: str, component: str) -> Diagnostic:
     return Diagnostic(code=code, message=message, component=component)
 
 
+def _check_tolerance(value: object, path: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise ValidationError(
+            "invalid_argument", f"{path} must be a finite, non-negative number", path=path
+        )
+    return float(value)
+
+
+def _relative(
+    p_child: Any, q_child: Any, p_parent: Any, q_parent: Any
+) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+    """The child's pose in the parent's frame, from both world poses (wxyz)."""
+    inverse, quat, position = np.empty(4), np.empty(4), np.empty(3)
+    mujoco.mju_negQuat(inverse, q_parent)
+    mujoco.mju_rotVecQuat(position, np.asarray(p_child) - np.asarray(p_parent), inverse)
+    mujoco.mju_mulQuat(quat, inverse, q_child)
+    mujoco.mju_normalize4(quat)
+    x, y, z = (float(v) for v in position)
+    w, i, j, k = (float(v) for v in quat)
+    return (x, y, z), (w, i, j, k)
+
+
+def _errors(declared: Pose, actual: Pose) -> tuple[float, float]:
+    """Distance and angle between two poses in the same frame."""
+    distance = math.dist(declared.position, actual.position)
+    dot = abs(sum(a * b for a, b in zip(declared.quat_wxyz, actual.quat_wxyz, strict=True)))
+    return distance, 2.0 * math.acos(min(dot, 1.0))
+
+
+@dataclass
+class _Tracked:
+    attachment: Attachment
+    held: bool = True
+
+
 class MujocoRuntime:
     """A manually clocked ``Runtime`` that simulates a robot package in MuJoCo.
 
@@ -119,6 +163,12 @@ class MujocoRuntime:
     ``step`` applies due commands and runs ``substeps`` physics steps. A trajectory
     succeeds once every joint is within ``goal_tolerance`` of its last waypoint, and
     fails with ``goal_not_reached`` if that takes longer than ``settle_ns``.
+
+    ``scene`` is an MJCF file of task objects composed with the robot: its top-level
+    bodies with a free joint are objects that can be attached, and its other top-level
+    bodies are fixtures. Attaching never changes the physics; after each step, an
+    attached object more than ``attach_tolerance_m`` or ``attach_tolerance_rad`` from
+    its declared transform is reported once as an ``AttachmentViolation``.
     See docs/mujoco.md.
     """
 
@@ -131,6 +181,9 @@ class MujocoRuntime:
         profile: str | None = None,
         goal_tolerance: float = 0.01,
         settle_ns: int = 1_000_000_000,
+        scene: str | os.PathLike[str] | None = None,
+        attach_tolerance_m: float = 0.01,
+        attach_tolerance_rad: float = 0.1,
     ) -> None:
         if not _is_int(substeps) or substeps < 1:
             raise ValidationError(
@@ -140,22 +193,16 @@ class MujocoRuntime:
             raise ValidationError(
                 "invalid_argument", "settle_ns must be a non-negative integer", path="settle_ns"
             )
-        if (
-            isinstance(goal_tolerance, bool)
-            or not isinstance(goal_tolerance, int | float)
-            or not math.isfinite(goal_tolerance)
-            or goal_tolerance < 0
-        ):
-            raise ValidationError(
-                "invalid_argument",
-                "goal_tolerance must be a finite, non-negative number",
-                path="goal_tolerance",
-            )
+        self._goal_tolerance = _check_tolerance(goal_tolerance, "goal_tolerance")
+        self._attach_tolerance = (
+            _check_tolerance(attach_tolerance_m, "attach_tolerance_m"),
+            _check_tolerance(attach_tolerance_rad, "attach_tolerance_rad"),
+        )
         self._package = package
         self._substeps = substeps
         self._keyframe = keyframe
         self._profile = profile
-        self._goal_tolerance = float(goal_tolerance)
+        self._scene = None if scene is None else Path(scene)
         self._settle_ns = settle_ns
         self._clock = f"mujoco:{package.description.name}"
         self._model: Any = None
@@ -173,6 +220,8 @@ class MujocoRuntime:
         self._renderers: dict[tuple[int, int], Any] = {}  # (height, width): Renderer
         self._running: dict[str, _Running] = {}
         self._events: list[RuntimeEvent] = []
+        self._objects: dict[str, int] = {}  # scene object: MuJoCo body id
+        self._attached: dict[str, _Tracked] = {}
 
     @property
     def mapping(self) -> MujocoMapping:
@@ -199,6 +248,7 @@ class MujocoRuntime:
         self._data = None
         self._running.clear()
         self._events.clear()
+        self._attached.clear()
 
     def observe(self, request: ObservationRequest) -> Observation:
         data, d = self._open_data(), self._described()
@@ -296,6 +346,22 @@ class MujocoRuntime:
         for execution, running in list(self._running.items()):
             if running.ended_ns is not None:
                 self._settle(execution, running, now)
+        for name, tracked in self._attached.items():
+            if not tracked.held:
+                continue
+            position, rotation = _errors(
+                tracked.attachment.transform, self._held_pose(tracked.attachment)
+            )
+            if position > self._attach_tolerance[0] or rotation > self._attach_tolerance[1]:
+                tracked.held = False
+                self._events.append(
+                    AttachmentViolation(
+                        object=name,
+                        stamp=now,
+                        position_error=position,
+                        rotation_error=rotation,
+                    )
+                )
 
     def poll(self) -> RuntimeUpdate:
         events, self._events = tuple(self._events), []
@@ -303,6 +369,37 @@ class MujocoRuntime:
 
     def recover(self) -> None:
         """MujocoRuntime never faults yet, so there is nothing to clear."""
+
+    # -- Scene -----------------------------------------------------------------------
+
+    def attach(self, attachment: Attachment, resolve: bool) -> TrackedAttachment:
+        """Track an attachment; with ``resolve``, at the object's current transform.
+
+        A given transform must match where the object is now, within the attach
+        tolerances (``attachment_mismatch``). Physics is not changed.
+        """
+        self._open_data()
+        if attachment.object not in self._objects:
+            raise ValidationError(
+                "unknown_reference", f"{attachment.object!r} is not a scene object", path="object"
+            )
+        actual = self._held_pose(attachment)
+        if resolve:
+            attachment = replace(attachment, transform=actual)
+        else:
+            position, rotation = _errors(attachment.transform, actual)
+            if position > self._attach_tolerance[0] or rotation > self._attach_tolerance[1]:
+                raise ValidationError(
+                    "attachment_mismatch",
+                    f"{attachment.object!r} is {position:.6g} m and {rotation:.6g} rad from "
+                    "the declared transform",
+                    path="transform",
+                )
+        self._attached[attachment.object] = _Tracked(attachment=attachment)
+        return TrackedAttachment(attachment=attachment, stamp=self._now())
+
+    def detach(self, object: str) -> None:
+        self._attached.pop(object, None)
 
     # -- Opening ---------------------------------------------------------------------
 
@@ -329,10 +426,17 @@ class MujocoRuntime:
         unchanged(package)
         profile = MujocoProfile() if profile_entry is None else load_profile(package, profile_entry)
         entry = select_model(package, profile, profile_entry)
+        objects: dict[str, str] = {}  # top-level scene body: "object" or "fixture"
+        scene_sha256 = None
         try:
-            model = mujoco.MjModel.from_xml_path(str(package.root / entry.path))
+            if self._scene is None:
+                model = mujoco.MjModel.from_xml_path(str(package.root / entry.path))
+            else:
+                spec = mujoco.MjSpec.from_file(str(package.root / entry.path))
         except ValueError as e:
             raise ValidationError("model_compile_failed", str(e), path=entry.path) from None
+        if self._scene is not None:
+            model, objects, scene_sha256 = _compose(spec, self._scene)
         unchanged(package)
         keyframe = self._keyframe if self._keyframe is not None else profile.keyframe
         timestep_ns = round(float(model.opt.timestep) * 1e9)
@@ -376,6 +480,14 @@ class MujocoRuntime:
                     path="keyframe",
                 )
             mujoco.mj_resetDataKeyframe(model, data, key)
+            # The robot's keyframe knows nothing of the scene; objects start where the
+            # scene puts them, not where its zero padding would.
+            for body, kind in objects.items():
+                if kind == "object":
+                    free = int(model.body_jntadr[mujoco.mj_name2id(model, _BODY, body)])
+                    at, dof = int(model.jnt_qposadr[free]), int(model.jnt_dofadr[free])
+                    data.qpos[at : at + 7] = model.qpos0[at : at + 7]
+                    data.qvel[dof : dof + 6] = 0.0
         for joint in description.joints:
             q = float(data.qpos[self._joints[joint.name].qpos_address])
             low, high = joint.limits.lower, joint.limits.upper
@@ -419,6 +531,13 @@ class MujocoRuntime:
         self._timestep_ns, self._ticks = timestep_ns, 0
         self._running.clear()
         self._events.clear()
+        self._attached.clear()
+        self._objects = {
+            body: mujoco.mj_name2id(model, _BODY, body)
+            for body, kind in objects.items()
+            if kind == "object"
+        }
+        fixtures = tuple(sorted(b for b, kind in objects.items() if kind == "fixture"))
         self._mapping = MujocoMapping(
             mujoco=MUJOCO_VERSION,
             description=fingerprint,
@@ -430,6 +549,10 @@ class MujocoRuntime:
             timestep_ns=timestep_ns,
             substeps=self._substeps,
             keyframe=keyframe,
+            scene=None if self._scene is None else str(self._scene),
+            scene_sha256=scene_sha256,
+            objects=tuple(sorted(self._objects)),
+            fixtures=fixtures,
             frames=frames,
             joints=joints,
             actuators=actuators,
@@ -449,6 +572,8 @@ class MujocoRuntime:
                 if b.unavailable is None
             ),
             channels=tuple(b.name for b in channels if b.unavailable is None),
+            objects=tuple(sorted(self._objects)),
+            fixtures=fixtures,
         )
 
     def _bind_grippers(
@@ -753,13 +878,16 @@ class MujocoRuntime:
 
     def _pose(self, source: str, frame: str) -> tuple[float, ...]:
         """``source``'s pose expressed in ``frame``: position, then unit quaternion wxyz."""
-        (p_source, q_source), (p_frame, q_frame) = self._world(source), self._world(frame)
-        inverse, quat, position = np.empty(4), np.empty(4), np.empty(3)
-        mujoco.mju_negQuat(inverse, q_frame)
-        mujoco.mju_rotVecQuat(position, np.asarray(p_source) - np.asarray(p_frame), inverse)
-        mujoco.mju_mulQuat(quat, inverse, q_source)
-        mujoco.mju_normalize4(quat)
-        return tuple(float(v) for v in position) + tuple(float(v) for v in quat)
+        position, quat = _relative(*self._world(source), *self._world(frame))
+        return position + quat
+
+    def _held_pose(self, attachment: Attachment) -> Pose:
+        """Where an attachment's object is now, in its end effector's frame."""
+        data = self._open_data()
+        body = self._objects[attachment.object]
+        frame = self._described().end_effector(attachment.end_effector).frame
+        position, quat = _relative(data.xpos[body], data.xquat[body], *self._world(frame))
+        return Pose(position=position, quat_wxyz=quat)
 
     def _image(self, spec: ChannelSpec) -> ArrayValue:
         """Render a camera channel now: RGB as uint8, or depth in metres along the
@@ -813,6 +941,62 @@ class MujocoRuntime:
         self._events.append(
             ExecutionStatus(execution=execution, state=state, stamp=stamp, diagnostic=diagnostic)
         )
+
+
+_BODY = mujoco.mjtObj.mjOBJ_BODY
+_FREE = mujoco.mjtJoint.mjJNT_FREE
+
+
+def _compose(spec: Any, scene: Path) -> tuple[Any, dict[str, str], str]:
+    """Compile the robot with a scene's bodies. Return the model, each top-level scene
+    body's kind (``object``, one free joint; ``fixture``, no joints), and the SHA-256 of
+    the scene bytes, which are exactly what was compiled.
+
+    A scene must be one self-contained file for now: an include, mesh, texture, or other
+    file reference would be compiled without being part of the recorded identity.
+    """
+    try:
+        raw = scene.read_bytes()
+        root = ET.fromstring(raw)
+    except (OSError, ET.ParseError) as e:
+        raise ValidationError("invalid_scene", str(e), path="scene") from None
+    for element in root.iter():
+        referenced = [k for k in element.attrib if k.startswith("file")]
+        if element.tag == "include" or referenced:
+            raise ValidationError(
+                "invalid_scene",
+                f"<{element.tag}> refers to another file; a scene must be self-contained",
+                path="scene",
+            )
+    try:
+        child = mujoco.MjSpec.from_string(raw.decode())
+    except (ValueError, UnicodeDecodeError) as e:
+        raise ValidationError("invalid_scene", str(e), path="scene") from None
+    kinds = {}
+    for body in child.worldbody.bodies:
+        if not body.name:
+            raise ValidationError(
+                "invalid_scene", "every top-level scene body needs a name", path="scene"
+            )
+        joints = [j.type for j in body.joints]
+        if joints == [_FREE]:
+            kinds[body.name] = "object"
+        elif not joints:
+            kinds[body.name] = "fixture"
+        else:
+            raise ValidationError(
+                "invalid_scene",
+                f"{body.name!r} must have one free joint (an object) or none (a fixture)",
+                path=f"scene: {body.name}",
+            )
+    spec.attach(child, frame=spec.worldbody.add_frame(), prefix="")
+    try:
+        model = spec.compile()
+    except ValueError as e:
+        message = str(e).strip()
+        code = "scene_conflict" if "repeated name" in message else "invalid_scene"
+        raise ValidationError(code, message, path="scene") from None
+    return model, kinds, hashlib.sha256(raw).hexdigest()
 
 
 def _check_aliases(description: RobotDescription, commands: tuple[CommandBinding, ...]) -> None:

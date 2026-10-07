@@ -8,6 +8,8 @@ report plus any trace under $SSROBOT_ARTIFACTS before asserting. Reproduce with
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -15,18 +17,28 @@ import pytest
 
 from ssrobot import (
     AppliedCommand,
+    Attachment,
+    AttachmentViolation,
+    CapabilityError,
     ClockMode,
     JointCommand,
     JointMode,
     JsonlTrace,
     LifecycleError,
     ObservationRequest,
+    Pose,
     RobotContext,
+    RobotDescription,
+    RuntimeInfo,
+    Timestamp,
     TraceKind,
+    TrackedAttachment,
     ValidationError,
+    load_package,
     read_trace,
 )
 from ssrobot.conformance import reference_robot, reference_runtime
+from tests.conftest import ROOT
 from tests.support import ScriptedRuntime, bimanual_robot
 
 LEFT = ("left_j1", "left_j2", "left_j3")
@@ -255,3 +267,124 @@ def test_read_trace_enforces_whole_trace_invariants(artifacts: Path) -> None:
         else:
             assert outcome.get("code") == outcome["expected"], (name, outcome)
             assert outcome["path"].startswith("line "), (name, outcome)
+
+
+class _SceneScripted(ScriptedRuntime):
+    """A scripted runtime with one object and one fixture, whose attach answers a test
+    may tamper with."""
+
+    def __init__(
+        self,
+        tamper: Callable[[Attachment], Attachment] | None = None,
+        *,
+        clock_mode: ClockMode = ClockMode.MANUAL,
+        answer_ns: int | None = None,
+    ) -> None:
+        super().__init__(clock_mode=clock_mode, clock="sim:scripted")
+        self.tamper = tamper
+        self.answer_ns = answer_ns  # when the attach answer says it measured the object
+        self.tracked: list[str] = []
+
+    def open(self, description: RobotDescription) -> RuntimeInfo:
+        return replace(super().open(description), objects=("box",), fixtures=("pedestal",))
+
+    def attach(self, attachment: Attachment, resolve: bool) -> TrackedAttachment:
+        self.calls.append(f"attach {attachment.object}")
+        self.tracked.append(attachment.object)
+        if self.answer_ns is not None:
+            self.now_ns = max(self.now_ns, self.answer_ns)
+        stamp = Timestamp(clock=self.clock, time_ns=self.answer_ns or self.now_ns)
+        tracked = attachment if self.tamper is None else self.tamper(attachment)
+        return TrackedAttachment(attachment=tracked, stamp=stamp)
+
+    def detach(self, object: str) -> None:
+        self.calls.append(f"detach {object}")
+        if object in self.tracked:
+            self.tracked.remove(object)
+
+
+class _ObjectsWithoutAttach(ScriptedRuntime):
+    def open(self, description: RobotDescription) -> RuntimeInfo:
+        return replace(super().open(description), objects=("box",))
+
+
+def test_scene_runtimes_that_break_their_contract(artifacts: Path) -> None:
+    """#17: a scene answer or report that contradicts the context is a breach; nothing is
+    committed and the runtime stops tracking what it was just handed."""
+    robot = load_package(ROOT / "examples" / "packages" / "mujoco_arm").description
+    pose = Pose(position=(0.0, 0.0, 0.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
+    moved = Pose(position=(0.1, 0.0, 0.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
+    report: dict[str, Any] = {}
+
+    runtime = _SceneScripted(tamper=lambda a: replace(a, transform=moved))
+    with RobotContext(robot, runtime) as ctx:
+        with pytest.raises(ValidationError) as breach:
+            ctx.attach("box", "hand", transform=pose)
+        report["changed_transform"] = {
+            "error": breach.value.code,
+            "state": ctx.state.value,
+            "scene": [ctx.scene.revision, len(ctx.scene.attachments)],
+            "tracked": list(runtime.tracked),
+        }
+
+    runtime = _SceneScripted(tamper=lambda a: replace(a, allow=("pedestal",)))
+    with RobotContext(robot, runtime) as ctx:
+        with pytest.raises(ValidationError) as breach:
+            ctx.attach("box", "hand")
+        report["changed_allow"] = [breach.value.code, list(runtime.tracked)]
+
+    runtime = _SceneScripted()
+    with RobotContext(robot, runtime) as ctx:
+        runtime.events.append(
+            AttachmentViolation(
+                object="box", stamp=runtime.stamp(), position_error=0.1, rotation_error=0.0
+            )
+        )
+        with pytest.raises(ValidationError) as breach:
+            ctx.update()
+        report["violation_unattached"] = [breach.value.code, ctx.state.value]
+
+    # Resolving a transform is a direct answer: on an external clock it may advance the
+    # context's time, and the scene change is recorded then.
+    trace_path = artifacts / "external-attach-trace.jsonl"
+    runtime = _SceneScripted(clock_mode=ClockMode.EXTERNAL, answer_ns=100)
+    with JsonlTrace(trace_path) as trace, RobotContext(robot, runtime, sinks=[trace]) as ctx:
+        ctx.attach("box", "hand")
+        report["external_resolve"] = {
+            "now": ctx.now.time_ns,
+            "scene": [[r.kind.value, r.time_ns] for r in read_trace(trace_path)],
+        }
+    late = {"manual_later_tick": (ClockMode.MANUAL, 10), "external_earlier": None}
+    for name, setup in late.items():
+        if setup is None:  # an answer stamped before the context's latest time
+            runtime = _SceneScripted(clock_mode=ClockMode.EXTERNAL)
+            runtime.now_ns = 50
+        else:
+            runtime = _SceneScripted(clock_mode=setup[0], answer_ns=setup[1])
+        with RobotContext(robot, runtime) as ctx:
+            if setup is None:
+                ctx.update()
+                runtime.now_ns = 0
+            with pytest.raises(ValidationError) as breach:
+                ctx.attach("box", "hand")
+            report[name] = [breach.value.code, ctx.scene.revision, list(runtime.tracked)]
+
+    with pytest.raises(CapabilityError) as missing:
+        RobotContext(robot, _ObjectsWithoutAttach(clock_mode=ClockMode.MANUAL)).__enter__()
+    report["objects_without_attach"] = missing.value.code
+    _write(artifacts / "scene-breach-report.json", report)
+
+    assert report == {
+        "changed_transform": {
+            "error": "runtime_contract",
+            "state": "faulted",
+            "scene": [0, 0],
+            "tracked": [],
+        },
+        "changed_allow": ["runtime_contract", []],
+        "violation_unattached": ["runtime_contract", "faulted"],
+        "objects_without_attach": "undeclared_capability",
+        "external_resolve": {"now": 100, "scene": [["opened", 0], ["scene", 0], ["scene", 100]]},
+        "manual_later_tick": ["runtime_contract", 0, []],
+        "external_earlier": ["runtime_contract", 0, []],
+    }

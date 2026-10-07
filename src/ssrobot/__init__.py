@@ -82,7 +82,8 @@ from ssrobot.package import (
 )
 from ssrobot.replay import ReplayRuntime, ReplayScript, ReplayTick
 from ssrobot.resources import ResolvedFile, SourceItem
-from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate
+from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime
+from ssrobot.scene import Attachment, AttachmentViolation, SceneState, TrackedAttachment
 from ssrobot.trace import JsonlTrace, TraceKind, TraceRecord, read_trace
 
 __all__ = [
@@ -90,6 +91,8 @@ __all__ = [
     "AppliedCommand",
     "ArrayValue",
     "AssetStore",
+    "Attachment",
+    "AttachmentViolation",
     "BaseTwistCommand",
     "Candidate",
     "CandidateChoice",
@@ -156,6 +159,8 @@ __all__ = [
     "RuntimeHealth",
     "RuntimeInfo",
     "RuntimeUpdate",
+    "SceneRuntime",
+    "SceneState",
     "Semantics",
     "Sensor",
     "SensorKind",
@@ -166,6 +171,7 @@ __all__ = [
     "Timestamp",
     "TraceKind",
     "TraceRecord",
+    "TrackedAttachment",
     "ValidationError",
     "Value",
     "dumps",
