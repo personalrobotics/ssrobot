@@ -39,7 +39,8 @@ Implemented:
 - joint, trajectory, gripper, and chunk commands, and joint-state and gripper-opening
   channels (#15);
 - joint effort, poses, wrenches, and RGB and depth images (#16);
-- scene composition and declared attachments (#17).
+- scene composition and declared attachments (#17);
+- snapshots and planning scenes, built on sscbirrt's native MuJoCo scene (#18).
 
 Still to come:
 
@@ -47,7 +48,6 @@ Still to come:
 | --- | --- |
 | #85 | Base twist commands, for Opendubs |
 | follow-up to #16 | Object state channels, contacts, and marking privileged simulator state |
-| #18 | Snapshots, and lowering attachments into sscbirrt's attachment-aware checker |
 | #108 | A kinematic (no-dynamics) mode, where an attached object is carried by copying its pose |
 | #109 | Grasp and release helpers that decide when to attach, above the core |
 
@@ -180,6 +180,49 @@ compiled, which identify the scene completely, and its objects and fixtures.
 A friction grasp in MuJoCo creeps under soft contacts. The example arm therefore uses
 elliptic friction cones with `impratio="10"`, as MuJoCo recommends for grasping. That
 keeps the carried box within about 3 mm of its grasp over the whole evidence scenario.
+
+## Planning scenes
+
+`snapshot()` reads every description joint's position and every object's body pose. Its
+`model` identity is the model signature and the scene's SHA-256, so a snapshot from a
+different model or scene fails to materialize with `incompatible_snapshot`.
+
+`planning_scene(snapshot, group, edge_resolution)` is built on sscbirrt's native MuJoCo
+scene, which the `mujoco` extra installs. sscbirrt is imported only then, so opening a
+runtime never loads it.
+1. **The planning model.** The runtime's model is rebuilt from the same sources (the
+   package's model and the scene bytes it compiled), after the package is checked for
+   changes. Two kinds of `<exclude>` pair are added: every description collision
+   allowance, and each attachment's allowed fixtures against its object. sscbirrt's
+   native policy honours allowed bodies only between moving parts. Making these
+   allowances excludes keeps the policy exact without filtering contacts in Python.
+2. **The native scene.** `NativeScene.from_model(model, group joints)`. sscbirrt caches
+   it by the model's MJB hash and shares it, immutably, between planning scenes.
+3. **The snapshot.** An `MjData` with the snapshot's joints and object poses becomes
+   sscbirrt's native `Snapshot`.
+4. **Lowering attachments.** Each attachment whose end effector moves with the group is
+   lowered to sscbirrt's `Attachment`:
+   - the object's body;
+   - the end effector's body;
+   - the object's transform in that body (the end effector frame's offset composed
+     with the declared transform);
+   - the bodies of its allowed frames.
+
+   An attachment on an end effector the group does not move stays environment, at its
+   snapshot pose.
+5. **The checker.** Each planning scene owns a `NativeCollisionChecker`, with its own
+   validator and `MjData`. `native()` returns that checker, for a planner adapter.
+
+Forward kinematics uses the planning scene's own `MjData`. Contacts name the nearest
+description frame, object, or fixture of each body, and `world` for world geoms. Edge
+checks test configurations at most `edge_resolution` apart in every joint, including
+both ends.
+
+sscbirrt's native `Snapshot.capture` applies its own rule for which gripper bodies may
+touch a held object. The provider therefore constructs sscbirrt's native attachment
+and snapshot types directly, with the attachment's own allowed bodies, and the extra
+pins `sscbirrt[mujoco]>=3.3,<3.4` until sscbirrt offers a public constructor
+(personalrobotics/sscbirrt#206).
 
 ## Mapping
 
@@ -345,6 +388,9 @@ loop is an application that calls `step()`; it is not a different runtime mode.
 | `artifacts/test_mujoco_runtime_refuses_mismatches_before_commands/startup-failures.json` | Each code in *Opening*, plus `invalid_substeps`, with its path and message, including a keyframe with the elbow outside its range (`invalid_initial_state`). Model selection fails four ways: a profile naming a missing model (`invalid_profile`) or the URDF (`unsupported_model_format`); two MJCF models and no choice (`ambiguous_model`); and an MJCF artifact with a renamed joint (`model_mismatch` at `joints[j3]`). An artifact edited after loading fails with `package_changed`, and a keyframe disagreeing with its configuration with `model_mismatch` at `configurations[home]`. A keyframe with the wrist 0.5 mrad past its stop opens, is first observed at 3.0005, and settles back to its stop. For `package_changed`: the canonical MJCF edited after loading, an included file edited, and an include replaced by a symlink out of the package. None of them opened or left a mapping. |
 | `artifacts/test_grasp_carry_release_and_drop_are_traced/{carry,drop}/trace.jsonl`, `summary.json` | The example arm with `examples/scenes/pedestal.xml`. **Carry:** the box starts on the pedestal and the hand closes on it. `attach("box", "hand")` resolves the transform and allows `gripper`, `left_finger`, `right_finger`, and `tcp`. Friction alone lifts the box, swings it 0.6 rad aside and back, and releases it just above the pedestal, where it lands within 1 cm of its start. There is no violation, and detach empties the scene. **Drop:** the hand opens after lifting without detaching. One `violation` is traced, the attachment turns `held: false` and stays, and closing detaches it. `scene` records run at revisions 0 to 2 (carry) and 0 to 3 (drop). A second run gives byte-identical files. |
 | `artifacts/test_invalid_attachments_and_scenes_change_nothing/refusals.json` | Each refused `attach` and `detach`, with its code, leaving the scene unchanged: an unknown object, a fixture as object, an unknown end effector or allow name, a repeated allow name, a non-pose transform, a transform far from the box (`attachment_mismatch`), a stale revision (`StaleRevisionError`), a boolean or float revision (`wrong_type`) and a negative one (`out_of_limits`), already attached, and not attached. A fixture may be allowed. Scenes that reuse a robot name (`scene_conflict`), have an articulated or unnamed body, or refer to another file through an include or a mesh file (`invalid_scene`) fail at open. |
+| `artifacts/test_planning_scenes_are_isolated_and_agree/isolation.json`, `trace.jsonl` | After the grasp, with the pedestal allowed, one snapshot and two planning scenes.<br>**Isolation:** the scenes start with equal answers (validity, contacts, `tcp` pose). Each is then queried at configurations the other never sees, and afterwards both answer exactly as before, while the snapshot's fingerprint and the live arm are unchanged.<br>**Accuracy:** forward kinematics matches an independently compiled model exactly.<br>**Semantics:** the grasp configuration is valid, raised and swung aside are valid, and the lift and the carry edges are valid. Swinging down puts the held box and the fingers into the floor, and driving the fingers into the pedestal names it; both are invalid.<br>**Round trip:** a snapshot decoded from JSON answers identically.<br>A second run is byte-identical. |
+| `artifacts/test_planning_refuses_what_does_not_apply/refusals.json`, `trace.jsonl` | A snapshot of the same robot without the scene (`incompatible_snapshot`), an unknown group or frame, a zero edge resolution, and short or non-finite configurations, each with its code. A configuration outside limits is invalid. A plan submitted with its snapshot runs and is linked to it in the trace. After a detach, the same snapshot is `stale_snapshot`. |
+| `installed-conformance` (CI) | The `[mujoco]` wheel, in a clean environment, builds a planning scene on sscbirrt's native checker. |
 | `reference-robots/<robot>/mujoco-startup.json` (CI) | Geodude and ADA opened from their installed wheels: mapping, runtime version, and exact time after 10 steps. |
 | `installed-conformance/imports-mujoco.json` (CI) | The `[mujoco]` wheel in a clean environment: what importing the integration loads, and that the gate passes. |
 

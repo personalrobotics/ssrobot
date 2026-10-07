@@ -12,13 +12,15 @@ ssrobot = "ssrobot.cli:main"
 
 [project.optional-dependencies]
 # Exact: sscbirrt's native MuJoCo adapter is built against this version and refuses
-# another, and MujocoRuntime checks it at open.
-mujoco = ["mujoco==3.14.0"]
+# another, and MujocoRuntime checks it at open. Planning scenes are built on that adapter;
+# below 3.4 because they construct its native attachment and snapshot types directly.
+mujoco = ["mujoco==3.14.0", "sscbirrt[mujoco]>=3.3,<3.4"]
 
 [dependency-groups]
 dev = [
     "jsonschema>=4.23",
     "mujoco==3.14.0",
+    "sscbirrt[mujoco]>=3.3,<3.4",
     "mypy>=1.13",
     "pytest>=8.3",
     "ruff>=0.8",
@@ -45,7 +47,7 @@ python_version = "3.11"
 files = ["src", "tests", "scripts"]
 
 [[tool.mypy.overrides]]
-module = ["jsonschema", "jsonschema.*", "mujoco", "mujoco.*"]
+module = ["jsonschema", "jsonschema.*", "mujoco", "mujoco.*", "sscbirrt", "sscbirrt.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
