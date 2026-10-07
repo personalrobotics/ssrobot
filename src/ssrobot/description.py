@@ -18,7 +18,7 @@ from __future__ import annotations
 import enum
 import re
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol, TypeVar
 
 from ssrobot._wire import Record, Value, fingerprint, meta
@@ -299,6 +299,54 @@ class CommandCapability(Value):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class JointLimitDeclaration(Value):
+    """Limits a package declares for one joint, beyond what its model expresses.
+
+    A declaration may add a limit the model lacks, such as MJCF's velocity, or tighten
+    one it has, but never widen one. Unset fields keep the model's value.
+    """
+
+    joint: str = field(metadata=meta("The joint."))
+    lower: float | None = field(default=None, metadata=meta("Lower position.", unit="joint"))
+    upper: float | None = field(default=None, metadata=meta("Upper position.", unit="joint"))
+    velocity: float | None = field(
+        default=None, metadata=meta("Maximum absolute velocity.", unit="joint/s")
+    )
+    effort: float | None = field(
+        default=None, metadata=meta("Maximum absolute effort.", unit="joint-effort")
+    )
+
+    def _validate(self) -> None:
+        check_name(self.joint, path="joint")
+        if all(getattr(self, n) is None for n in ("lower", "upper", "velocity", "effort")):
+            raise ValidationError("missing_field", "declare at least one limit", path="joint")
+
+    def apply(self, limits: JointLimits, path: str) -> JointLimits:
+        """``limits`` with this declaration's values, which may only tighten them."""
+        merged = {}
+        for name in ("lower", "upper", "velocity", "effort"):
+            declared, model = getattr(self, name), getattr(limits, name)
+            if declared is not None and model is not None:
+                tighter = declared >= model if name == "lower" else declared <= model
+            else:
+                tighter = True
+            if not tighter:
+                raise ValidationError(
+                    "widened_limit",
+                    f"{self.joint} {name} {declared} would widen the model's {model}",
+                    path=f"{path}.{name}",
+                )
+            if declared is not None and model is None and name in ("lower", "upper"):
+                raise ValidationError(
+                    "widened_limit",
+                    f"{self.joint} has no position range to tighten",
+                    path=f"{path}.{name}",
+                )
+            merged[name] = model if declared is None else declared
+        return JointLimits(**merged)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Semantics(Value):
     """The semantic layer of a description, as a package declares it."""
 
@@ -321,6 +369,9 @@ class Semantics(Value):
     )
     channels: tuple[ChannelSpec, ...] = field(
         default=(), metadata=meta("Declared observation channels.")
+    )
+    joint_limits: tuple[JointLimitDeclaration, ...] = field(
+        default=(), metadata=meta("Joint limits added or tightened beyond the model's.")
     )
 
 
@@ -391,11 +442,42 @@ class RobotDescription(Record):
     def compose(
         cls, model: KinematicModel, semantics: Semantics, *, name: str | None = None
     ) -> RobotDescription:
-        """Join a kinematic model and a semantic layer into one validated description."""
+        """Join a kinematic model and a semantic layer into one validated description.
+
+        The semantic layer's joint-limit declarations are applied to the model's joints;
+        each may only add or tighten a limit.
+        """
+        declared: dict[str, tuple[int, JointLimitDeclaration]] = {}
+        known = {j.name for j in model.joints}
+        for i, declaration in enumerate(semantics.joint_limits):
+            path = f"joint_limits[{i}]"
+            if declaration.joint not in known:
+                raise ValidationError(
+                    "unknown_reference",
+                    f"unknown joint {declaration.joint!r}",
+                    path=f"{path}.joint",
+                )
+            if declaration.joint in declared:
+                raise ValidationError(
+                    "duplicate_name",
+                    f"limits for {declaration.joint!r} are declared twice",
+                    path=f"{path}.joint",
+                )
+            declared[declaration.joint] = (i, declaration)
+        joints = []
+        for joint in model.joints:
+            if joint.name in declared:
+                i, declaration = declared[joint.name]
+                limits = declaration.apply(joint.limits, f"joint_limits[{i}]")
+                try:
+                    joint = replace(joint, limits=limits)
+                except ValidationError as e:
+                    raise ValidationError(e.code, e.message, path=f"joint_limits[{i}]") from None
+            joints.append(joint)
         return cls(
             name=model.name if name is None else name,
             frames=model.frames,
-            joints=model.joints,
+            joints=tuple(joints),
             groups=semantics.groups,
             grippers=semantics.grippers,
             bases=semantics.bases,

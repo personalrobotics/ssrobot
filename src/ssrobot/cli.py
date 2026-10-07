@@ -25,6 +25,7 @@ from ssrobot.authoring import (
     finalize,
     write_manifest,
 )
+from ssrobot.description import JointKind
 from ssrobot.doctor import doctor, load_any
 from ssrobot.errors import SsrobotError
 from ssrobot.inference import CandidateChoice
@@ -134,6 +135,15 @@ def _summary(package: RobotPackage) -> None:
     for s in d.sensors:
         print(f"  sensor {s.name}: {s.kind.value} at {s.frame}")
     print(f"  {len(d.frames)} frames, {len(d.joints)} joints")
+    rated = [j for j in d.joints if j.limits.velocity is not None]
+    print(
+        f"  velocity limits on {len(rated)} of {len(d.joints)} joints"
+        + "".join(
+            f"\n    {j.name}: {j.limits.velocity:g} "
+            + ("m/s" if j.kind is JointKind.PRISMATIC else "rad/s")
+            for j in rated
+        )
+    )
     print(f"  {len(d.collision_allowances)} collision allowances")
     print(f"  {len(d.commands)} command capabilities, {len(d.channels)} channels")
     kinds = Counter(item.kind for item in package.items)

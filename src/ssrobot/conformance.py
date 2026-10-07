@@ -461,7 +461,7 @@ def _check_terminal_short_circuit(
 ) -> str:
     far = tuple(q + 0.5 for q in arms[0].start)
     rejected = context.submit(
-        arms[0].trajectory(context.description, 50_000_000, start=far), source="planner"
+        arms[0].trajectory(context.description, 500_000_000, start=far), source="planner"
     )
     succeeded = context.submit(arms[0].hold(context.description), source="planner")
     context.run_until(succeeded, max_ticks=10)
@@ -489,7 +489,7 @@ def _check_terminal_short_circuit(
 def _check_rejection(context: RobotContext, arms: list[_Arm]) -> str:
     far = tuple(q + 0.5 for q in arms[0].start)
     execution = context.submit(
-        arms[0].trajectory(context.description, 50_000_000, start=far), source="planner"
+        arms[0].trajectory(context.description, 500_000_000, start=far), source="planner"
     )
     status = execution.status
     _expect(status.state is ExecutionState.REJECTED, f"far start gave {status.state}")

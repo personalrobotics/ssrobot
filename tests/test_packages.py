@@ -313,6 +313,17 @@ def _manifest_outside(root: Path) -> None:
     (root / "ssrobot.toml").symlink_to(outside)
 
 
+def _declare_limits(*bodies: str) -> Callable[[Path], None]:
+    """Append ``[[semantics.joint_limits]]`` entries to the manifest."""
+
+    def declare(root: Path) -> None:
+        manifest = root / "ssrobot.toml"
+        tables = "".join(f"\n[[semantics.joint_limits]]\n{body}\n" for body in bodies)
+        manifest.write_text(manifest.read_text() + tables)
+
+    return declare
+
+
 def _resolve(reference: str) -> Callable[[Path], None]:
     def resolve(root: Path) -> None:
         Resolver(root, "minimal_arm").resolve(reference)
@@ -404,6 +415,23 @@ CASES: dict[str, tuple[Callable[[Path], None], str | None]] = {
             "[[semantics.end_effectors]]",
             '[[semantics.groups]]\nname = "arm"\njoints = ["wrist"]\n\n[[semantics.end_effectors]]',
         ),
+        "duplicate_name",
+    ),
+    "joint limit tightened": (_declare_limits('joint = "shoulder"\nvelocity = 1.0'), None),
+    "joint limits for an unknown joint": (
+        _declare_limits('joint = "tail"\nvelocity = 1.0'),
+        "unknown_reference",
+    ),
+    "joint velocity widened": (
+        _declare_limits('joint = "shoulder"\nvelocity = 2.0'),
+        "widened_limit",
+    ),
+    "joint position range widened": (
+        _declare_limits('joint = "elbow"\nlower = -4.0'),
+        "widened_limit",
+    ),
+    "joint limits declared twice": (
+        _declare_limits('joint = "wrist"\neffort = 10.0', 'joint = "wrist"\nvelocity = 1.0'),
         "duplicate_name",
     ),
     "package URI for this package": (_resolve("package://minimal_arm/kinematics.json"), None),
