@@ -295,6 +295,68 @@
       ],
       "additionalProperties": false
     },
+    "JointLimitDeclaration": {
+      "type": "object",
+      "description": "Limits a package declares for one joint, beyond what its model expresses.",
+      "properties": {
+        "joint": {
+          "type": "string",
+          "description": "The joint."
+        },
+        "lower": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Lower position.",
+          "x-unit": "joint"
+        },
+        "upper": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Upper position.",
+          "x-unit": "joint"
+        },
+        "velocity": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum absolute velocity.",
+          "x-unit": "joint/s"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Maximum absolute effort.",
+          "x-unit": "joint-effort"
+        }
+      },
+      "required": [
+        "joint"
+      ],
+      "additionalProperties": false
+    },
     "Manipulator": {
       "type": "object",
       "description": "A serial arm: a joint group moving ``tool_frame`` relative to ``base_frame``.",
@@ -608,6 +670,13 @@
             "$ref": "#/$defs/ChannelSpec"
           },
           "description": "Declared observation channels."
+        },
+        "joint_limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JointLimitDeclaration"
+          },
+          "description": "Joint limits added or tightened beyond the model's."
         }
       },
       "required": [],

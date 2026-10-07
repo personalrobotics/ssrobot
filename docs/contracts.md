@@ -37,7 +37,7 @@ uses them:
 
 | Who | Names |
 | --- | --- |
-| Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `ResolvedFile`, `SourceItem`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
+| Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `ResolvedFile`, `SourceItem`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointLimitDeclaration`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
 | Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
 | Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
@@ -81,6 +81,7 @@ them separately, and `RobotDescription.compose(model, semantics)` joins them.
 | `NamedConfiguration` | Named positions for a group, such as `home` | One position per joint, within limits |
 | `CollisionAllowance` | A static default self-collision exclusion between two frames, such as adjacent links, with an opaque `reason` | Two distinct existing frames, in canonical order `frame_a < frame_b` (build with `CollisionAllowance.between`); no pair repeats. Scoped and attachment-time allowances are runtime state, not part of the description. |
 | `CommandCapability`, `ChannelSpec` | Declared commands and observation channels | See *Capabilities* |
+| `JointLimitDeclaration` | Position, velocity, or effort limits for a `joint` beyond what its model expresses, such as velocity in MJCF. They are applied to the joint when the description is composed, so the description and its fingerprint carry the merged limits. | The joint exists (`unknown_reference`) and has at most one declaration (`duplicate_name`). Each value may add a limit or tighten the model's, never widen it (`widened_limit`); position bounds can only tighten an existing range. |
 
 A single-arm robot needs only frames, joints, one group, and one manipulator; every
 other tuple is empty. Descriptions are frozen and hashable.
@@ -568,7 +569,10 @@ inspected before any runtime opens. The runtime confirms which are available in
    One exception: a trajectory's first waypoint may lie up to `START_TOLERANCE` (1e-3,
    in joint units) outside a joint's limits. It describes where the joints are, and a
    joint resting on its stop reads slightly past it. Every later waypoint, and every
-   other command, must be within limits.
+   other command, must be within limits. A trajectory's speed is checked between
+   consecutive waypoints, too: |change| / duration may not exceed a joint's velocity
+   limit (`out_of_limits` at `positions[i]`), whether or not the trajectory carries
+   velocities.
 3. The capability is declared (`unsupported_command`).
 4. The capability is available now (`unavailable_command` or `unavailable_channel`).
 
@@ -747,7 +751,8 @@ environment installs the wheel with the `mujoco` extra, runs the gate with
 | `artifacts/test_subgroup_fault_stops_the_composite_everywhere/` | A fault on `left_arm` failing a running `left_arm_with_lift` while `right_arm` continues, then recovery and three clean steps with no further event for the failed execution. |
 | `artifacts/test_end_effector_attachment_is_validated/attachment-report.json` | A hand shared by an arm and its arm-with-lift, a hand on the gripper's rigid body above the gripper frame, and a passive tool, all accepted. A hand naming the other arm's gripper, a gripper mounted on the other arm, and a gripper on a disconnected frame, all rejected with `invalid_chain`. |
 | `artifacts/test_installed_discovery_runs_no_package_code/discovery-report.json` | Dotted and namespace installed packages loading with raising initializers that never run. Bad and missing names fail with stable codes. |
-| `artifacts/test_package_ingress_rejects_bad_packages/ingress-report.json` | Manifest, path, symlink, and semantic mistakes, each rejected with its code and path before any description exists. |
+| `artifacts/test_package_ingress_rejects_bad_packages/ingress-report.json` | Manifest, path, symlink, and semantic mistakes, each rejected with its code and path before any description exists. That includes joint-limit declarations: a non-positive rate or an inverted range is rejected at the manifest field; an unknown joint, a widened limit, an emptied range, or a repeated declaration is rejected at `joint_limits[i]` and its field. |
+| `artifacts/test_declared_joint_limits_change_the_description_and_its_checks/declared-limits.json` | The example MuJoCo arm with and without its declared limits: joint velocities, description fingerprints, the package report's velocity, and whether a 3.2 rad/s and a 2.9 rad/s shoulder trajectory are accepted. Only the declared package rejects the faster one. |
 | `artifacts/test_franka_parser_fixture_matches_its_provenance/franka-provenance.json` | The Franka parser fixture's copied files match the hashes pinned in `provenance.json`; its mesh placeholders are exactly the files `panda.xml` names, and all are empty. |
 | `artifacts/test_urdf_textures_are_resolved_and_hashed/urdf-textures.json` | A texture referenced from a top-level and an inline material is hashed and reported once. Missing, escaping, symlink-escaping, and other-package textures are rejected. |
 | `artifacts/test_menagerie_franka_loads_from_its_scene/` | The pinned Menagerie Franka parser fixture loaded from `scene.xml` through its include. Joint limits match Franka's published values, which needs default classes and `childclass`. The report lists 67 resolved meshes, 8 actuators, the tendon, equality, and keyframe, and the `link0`/`link1` exclude as a collision allowance. |

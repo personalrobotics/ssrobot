@@ -8,7 +8,9 @@ Reproduce with ``uv run pytest tests/test_packages.py``.
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import shutil
 import sys
 from collections.abc import Callable
@@ -29,6 +31,7 @@ from ssrobot import (
     ReplayScript,
     RobotContext,
     RobotDescription,
+    RobotPackage,
     SsrobotError,
     dumps,
     load_installed_package,
@@ -36,6 +39,7 @@ from ssrobot import (
     read_trace,
 )
 from ssrobot.package import Resolver
+from ssrobot.validation import check_command
 from tests.conftest import ROOT
 
 EXAMPLES = ROOT / "examples" / "packages"
@@ -313,6 +317,17 @@ def _manifest_outside(root: Path) -> None:
     (root / "ssrobot.toml").symlink_to(outside)
 
 
+def _declare_limits(*bodies: str) -> Callable[[Path], None]:
+    """Append ``[[semantics.joint_limits]]`` entries to the manifest."""
+
+    def declare(root: Path) -> None:
+        manifest = root / "ssrobot.toml"
+        tables = "".join(f"\n[[semantics.joint_limits]]\n{body}\n" for body in bodies)
+        manifest.write_text(manifest.read_text() + tables)
+
+    return declare
+
+
 def _resolve(reference: str) -> Callable[[Path], None]:
     def resolve(root: Path) -> None:
         Resolver(root, "minimal_arm").resolve(reference)
@@ -404,6 +419,36 @@ CASES: dict[str, tuple[Callable[[Path], None], str | None]] = {
             "[[semantics.end_effectors]]",
             '[[semantics.groups]]\nname = "arm"\njoints = ["wrist"]\n\n[[semantics.end_effectors]]',
         ),
+        "duplicate_name",
+    ),
+    "joint limit tightened": (_declare_limits('joint = "shoulder"\nvelocity = 1.0'), None),
+    "joint limits for an unknown joint": (
+        _declare_limits('joint = "tail"\nvelocity = 1.0'),
+        "unknown_reference",
+    ),
+    "joint velocity widened": (
+        _declare_limits('joint = "shoulder"\nvelocity = 2.0'),
+        "widened_limit",
+    ),
+    "joint position range widened": (
+        _declare_limits('joint = "elbow"\nlower = -4.0'),
+        "widened_limit",
+    ),
+    "joint velocity not positive": (
+        _declare_limits('joint = "shoulder"\nvelocity = -1.0'),
+        "invalid_limits",
+    ),
+    "joint effort zero": (_declare_limits('joint = "shoulder"\neffort = 0.0'), "invalid_limits"),
+    "joint lower above upper": (
+        _declare_limits('joint = "shoulder"\nlower = 0.8\nupper = 0.7'),
+        "invalid_limits",
+    ),
+    "joint lower tightened past the model's upper": (
+        _declare_limits('joint = "shoulder"\nlower = 3.2'),
+        "invalid_limits",
+    ),
+    "joint limits declared twice": (
+        _declare_limits('joint = "wrist"\neffort = 10.0', 'joint = "wrist"\nvelocity = 1.0'),
         "duplicate_name",
     ),
     "package URI for this package": (_resolve("package://minimal_arm/kinematics.json"), None),
@@ -536,6 +581,15 @@ def test_package_ingress_rejects_bad_packages(artifacts: Path, tmp_path: Path) -
     assert {name: r["code"] for name, r in report.items()} == {
         name: expected for name, (_, expected) in CASES.items()
     }
+    # A malformed declaration is reported at the manifest field that holds it.
+    for name, field in (
+        ("joint velocity not positive", "joint_limits[0].velocity"),
+        ("joint lower above upper", "joint_limits[0].lower"),
+        ("joint velocity widened", "joint_limits[0].velocity"),
+        ("joint position range widened", "joint_limits[0].lower"),
+        ("joint lower tightened past the model's upper", "joint_limits[0].lower"),
+    ):
+        assert report[name]["path"].endswith(field), (name, report[name]["path"])
 
 
 def test_contained_symlinks_load_identically_at_two_locations(tmp_path: Path) -> None:
@@ -546,3 +600,68 @@ def test_contained_symlinks_load_identically_at_two_locations(tmp_path: Path) ->
     second = shutil.copytree(source, tmp_path / "b" / "pkg", symlinks=True)
     assert (first / "meshes" / "alias.stl").is_symlink()
     assert dumps(load_package(first).report()) == dumps(load_package(second).report())
+
+
+def _without_declared_limits(root: Path) -> None:
+    manifest = root / "ssrobot.toml"
+    text = manifest.read_text()
+    stripped = re.sub(r"\[\[semantics\.joint_limits\]\]\n(?:[^\[\n].*\n)*\n?", "", text)
+    assert stripped != text
+    manifest.write_text(stripped)
+
+
+def test_declared_joint_limits_change_the_description_and_its_checks(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    """#99: velocity limits declared in the example arm's TOML, which MJCF cannot express,
+    become part of the description, its fingerprint, and its report, and they decide
+    which trajectories are accepted. The same package without them accepts everything."""
+    declared = load_package(EXAMPLES / "mujoco_arm")
+    bare_root = shutil.copytree(EXAMPLES / "mujoco_arm", tmp_path / "bare")
+    _without_declared_limits(bare_root)
+    bare = load_package(bare_root)
+
+    def shoulder_in(duration_s: float) -> JointTrajectory:
+        """The shoulder turning 3.2 rad over ``duration_s``."""
+        return JointTrajectory(
+            group="arm",
+            joints=("shoulder", "elbow", "wrist"),
+            time_from_start_ns=(0, int(duration_s * 1e9)),
+            positions=((0.0, -1.0, 0.0), (3.2, -1.0, 0.0)),
+        )
+
+    def outcome(package: RobotPackage, duration_s: float) -> str:
+        try:
+            check_command(package.description, shoulder_in(duration_s))
+        except SsrobotError as e:
+            return e.code
+        return "accepted"
+
+    report = {
+        name: {
+            "fingerprint": package.description.fingerprint(),
+            "velocity": {j.name: j.limits.velocity for j in package.description.joints},
+            "report_velocity": json.loads(dumps(package.report()))["description"]["joints"][0][
+                "limits"
+            ].get("velocity"),
+            "1.0 s (3.2 rad/s)": outcome(package, 1.0),
+            "1.1 s (2.9 rad/s)": outcome(package, 1.1),
+        }
+        for name, package in (("declared", declared), ("bare", bare))
+    }
+    (artifacts / "declared-limits.json").write_text(json.dumps(report, indent=2) + "\n")
+
+    assert report["declared"]["velocity"] == {
+        "shoulder": math.pi,
+        "elbow": math.pi,
+        "wrist": math.pi,
+        "left_finger_joint": 0.1,
+        "right_finger_joint": 0.1,
+    }
+    assert set(report["bare"]["velocity"].values()) == {None}
+    assert report["declared"]["fingerprint"] != report["bare"]["fingerprint"]
+    assert report["declared"]["report_velocity"] == math.pi
+    assert report["bare"]["report_velocity"] is None
+    assert report["declared"]["1.0 s (3.2 rad/s)"] == "out_of_limits"
+    assert report["declared"]["1.1 s (2.9 rad/s)"] == "accepted"
+    assert report["bare"]["1.0 s (3.2 rad/s)"] == "accepted"

@@ -129,13 +129,14 @@ def test_replay_starts_a_trajectory_from_a_joint_resting_past_its_stop(artifacts
     script = ReplayScript(
         clock=clock,
         ticks=tuple(
-            ReplayTick(time_ns=t, readings=_held(t, resting, clock)) for t in (0, 10, 20, 30)
+            ReplayTick(time_ns=t, readings=_held(t, resting, clock))
+            for t in (0, 50_000_000, 100_000_000, 150_000_000)
         ),
     )
     trajectory = JointTrajectory(
         group="left_arm",
         joints=("left_j1", "left_j2"),
-        time_from_start_ns=(0, 20),
+        time_from_start_ns=(0, 100_000_000),
         positions=(resting, (math.pi - 0.1, 0.0)),
     )
     with (
@@ -166,14 +167,16 @@ def test_replay_faults_on_divergence_and_exhaustion(artifacts: Path) -> None:
         clock="replay:divergence",
         ticks=(
             ReplayTick(time_ns=0, readings=_held(0)),
-            ReplayTick(time_ns=10, readings=_held(10), expected_applied=(recorded,)),
-            ReplayTick(time_ns=20, readings=_held(20)),
+            ReplayTick(
+                time_ns=10_000_000, readings=_held(10_000_000), expected_applied=(recorded,)
+            ),
+            ReplayTick(time_ns=20_000_000, readings=_held(20_000_000)),
         ),
     )
     trajectory = JointTrajectory(
         group="left_arm",
         joints=joints,
-        time_from_start_ns=(0, 1_000),
+        time_from_start_ns=(0, 1_000_000_000),
         positions=((0.0, 0.0), (0.1, 0.1)),
     )
     with (

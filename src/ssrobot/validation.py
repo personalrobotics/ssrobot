@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
+from fractions import Fraction
 
 from ssrobot._wire import ArrayValue
 from ssrobot.commands import (
@@ -105,6 +106,7 @@ def check_command(
             _check_limits(description, group, JointMode.POSITION, row, f"positions[{i}]", slack)
         for i, row in enumerate(command.velocities or ()):
             _check_limits(description, group, JointMode.VELOCITY, row, f"velocities[{i}]")
+        _check_speeds(description, command)
     else:
         _check_instant(description, command, info, "")
 
@@ -183,6 +185,28 @@ def _check_limits(
             bound = f"|{mode}| <= {cap}"
         if not ok:
             raise ValidationError("out_of_limits", f"{name}={v} violates {bound}", path=path)
+
+
+def _check_speeds(description: RobotDescription, trajectory: JointTrajectory) -> None:
+    """Every segment's implied speed, |change| / duration, within each joint's velocity
+    limit, whether or not the trajectory carries velocities."""
+    times = trajectory.time_from_start_ns
+    caps = [description.joint(j).limits.velocity for j in trajectory.joints]
+    for i in range(1, len(times)):
+        duration_ns = times[i] - times[i - 1]  # an exact integer, however large
+        before, after = trajectory.positions[i - 1], trajectory.positions[i]
+        for joint, cap, a, b in zip(trajectory.joints, caps, before, after, strict=True):
+            if cap is None:
+                continue
+            # Exact: |change| / (duration_ns / 1e9) > cap, with a 1e-9 relative allowance.
+            speed = Fraction(abs(b - a)) * 10**9 / duration_ns
+            if speed > Fraction(cap) * (1 + Fraction(1, 10**9)):
+                raise ValidationError(
+                    "out_of_limits",
+                    f"{joint} moves at {float(speed):.6g} between waypoints {i - 1} and {i}, above "
+                    f"its velocity limit {cap}",
+                    path=f"positions[{i}]",
+                )
 
 
 def _applied_key(command: InstantCommand) -> tuple[object, ...]:

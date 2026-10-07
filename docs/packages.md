@@ -68,6 +68,33 @@ Decoding is as strict as every other ssrobot record: unknown keys, missing requi
 keys, wrong types, and duplicate names fail. The semantic layer is validated against
 the canonical model when the description is composed.
 
+### Joint limits
+
+A model format may not express every limit: MJCF has no joint velocity limit, and a
+URDF's may be looser than the hardware. A package declares the rest:
+
+```toml
+[[semantics.joint_limits]]
+joint = "left_lift"
+velocity = 0.1            # m/s for a prismatic joint, rad/s for a revolute one
+
+[[semantics.joint_limits]]
+joint = "left_shoulder_pan"
+velocity = 3.141592653589793
+effort = 150.0
+```
+
+- **Fields.** Each declaration names a `joint` and any of `lower`, `upper`, `velocity`,
+  and `effort`. Unset fields keep the model's value.
+- **Tighten only.** A declaration may add a limit the model lacks or tighten one it
+  has. Widening fails with `widened_limit`. A position range can only be tightened,
+  never added to a continuous joint.
+- **Errors.** An unknown joint fails with `unknown_reference`; a second declaration for
+  the same joint fails with `duplicate_name`.
+- **Where they show up.** The limits are merged into the description's joints, so they
+  are part of its fingerprint and of the `inspect` report. Validation enforces them:
+  every trajectory segment must stay within its joints' velocity limits.
+
 ### Model formats
 
 | Format | File | Extra |

@@ -159,7 +159,7 @@ def _timeout(ctx: RobotContext) -> dict[str, Any]:
 
 def _unreachable(ctx: RobotContext) -> dict[str, Any]:
     _settle(ctx)
-    execution = ctx.submit(_trajectory(_arm(ctx), 200_000_000))
+    execution = ctx.submit(_trajectory(_arm(ctx), 1_000_000_000))
     status = ctx.run_until(execution, max_ticks=2_000)
     assert status.diagnostic is not None
     return {"status": status.state.value, "diagnostic": status.diagnostic.code}
