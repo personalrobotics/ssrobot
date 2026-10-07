@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -167,6 +168,15 @@ def test_planning_scenes_are_isolated_and_agree(artifacts: Path, tmp_path: Path)
     assert kinds.count("snapshot") == 1
 
 
+def _lift(start: tuple[float, ...]) -> JointTrajectory:
+    return JointTrajectory(
+        group="arm",
+        joints=("shoulder", "elbow", "wrist"),
+        time_from_start_ns=(0, 1_000_000_000),
+        positions=(start, ABOVE),
+    )
+
+
 def _refusals(ctx: RobotContext) -> dict[str, str]:
     q0 = _hold(ctx)
     snapshot = ctx.snapshot()
@@ -181,6 +191,27 @@ def _refusals(ctx: RobotContext) -> dict[str, str]:
         "short_q": lambda: scene.is_valid((0.0, 0.0)),
         "non_finite_q": lambda: scene.contacts((0.0, float("nan"), 0.0)),
         "unknown_frame": lambda: scene.forward_kinematics(q0, "elbow_pad"),
+        "string_q": lambda: scene.is_valid(("0", "0", "0")),  # type: ignore[arg-type]
+        "boolean_q": lambda: scene.is_valid((True, 0.0, 0.0)),
+        # A decoded snapshot that names what this world lacks, or lacks what it has.
+        "renamed_joint": lambda: ctx.planning_scene(
+            replace(snapshot, joints=("not_a_joint", *snapshot.joints[1:])), "arm"
+        ),
+        "missing_object": lambda: ctx.planning_scene(
+            replace(snapshot, objects=(), attachments=()), "arm"
+        ),
+        "unknown_allow": lambda: ctx.planning_scene(
+            replace(
+                snapshot,
+                attachments=(replace(snapshot.attachments[0], allow=("table",)),),
+            ),
+            "arm",
+        ),
+        # Applying a plan needs this world and this scene, not just this revision number.
+        "foreign_submit": lambda: ctx.submit(_lift(q0), snapshot=foreign),
+        "altered_attachments_submit": lambda: ctx.submit(
+            _lift(q0), snapshot=replace(snapshot, attachments=())
+        ),
     }
     codes = {}
     for name, attempt in attempts.items():
@@ -189,13 +220,7 @@ def _refusals(ctx: RobotContext) -> dict[str, str]:
         codes[name] = refused.value.code
     codes["outside_limits"] = str(scene.is_valid((0.0, 2.5, 0.0)))  # elbow range is [-2, 2]
 
-    lift = JointTrajectory(
-        group="arm",
-        joints=("shoulder", "elbow", "wrist"),
-        time_from_start_ns=(0, 1_000_000_000),
-        positions=(q0, ABOVE),
-    )
-    current = ctx.submit(lift, snapshot=snapshot)
+    current = ctx.submit(_lift(q0), snapshot=snapshot)
     ctx.run_until(current, max_ticks=2_000)
     ctx.detach("box")  # the scene moves past the snapshot
     back = JointTrajectory(
@@ -237,6 +262,13 @@ def test_planning_refuses_what_does_not_apply(artifacts: Path) -> None:
         "short_q": "shape_mismatch",
         "non_finite_q": "non_finite",
         "unknown_frame": "unknown_reference",
+        "string_q": "wrong_type",
+        "boolean_q": "wrong_type",
+        "renamed_joint": "incompatible_snapshot",
+        "missing_object": "incompatible_snapshot",
+        "unknown_allow": "incompatible_snapshot",
+        "foreign_submit": "incompatible_snapshot",
+        "altered_attachments_submit": "stale_snapshot",
         "outside_limits": "False",
         "stale_snapshot": "stale_snapshot",
         "planned_submission": "linked",

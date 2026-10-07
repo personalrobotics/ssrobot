@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import enum
 import math
+import numbers
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
@@ -410,6 +411,7 @@ class RobotContext:
             not isinstance(taken, SceneSnapshot)
             or taken.description != self._fingerprint
             or taken.runtime != info.runtime
+            or taken.model != self._snapshots.world()
             or taken.revision != scene.revision
             or taken.joints != tuple(j.name for j in self._description.joints)
             or tuple(o.name for o in taken.objects) != scene.objects
@@ -429,19 +431,8 @@ class RobotContext:
         A snapshot from an earlier revision is allowed: planning on the past is fine, and
         ``submit(snapshot=...)`` refuses applying the result if the scene has changed.
         """
-        info = self._require("planning_scene")
-        if not isinstance(snapshot, SceneSnapshot):
-            raise ValidationError("wrong_type", "snapshot must be a SceneSnapshot", path="snapshot")
-        if snapshot.description != self._fingerprint:
-            raise StaleRevisionError(
-                "stale_description", "the snapshot is of another robot description"
-            )
-        if snapshot.runtime != info.runtime:
-            raise ValidationError(
-                "incompatible_snapshot",
-                f"the snapshot was captured by {snapshot.runtime!r}, not {info.runtime!r}",
-                path="snapshot",
-            )
+        self._require("planning_scene")
+        self._check_world(snapshot)
         joints = self._description.group(group).joints
         if (
             isinstance(edge_resolution, bool)
@@ -455,8 +446,15 @@ class RobotContext:
                 path="edge_resolution",
             )
         scene = self._snapshots.planning_scene(snapshot, group, float(edge_resolution))
-        if scene.group != group or scene.joints != joints or scene.snapshot != snapshot:
-            raise self._breach(f"planning scene for {group!r} answered another group or snapshot")
+        if (
+            scene.group != group
+            or scene.joints != joints
+            or scene.snapshot != snapshot
+            or scene.edge_resolution != float(edge_resolution)
+        ):
+            raise self._breach(
+                f"planning scene for {group!r} answered another group, snapshot, or resolution"
+            )
         return _CheckedPlanningScene(self._description, scene)
 
     # -- Commands --------------------------------------------------------------------
@@ -651,27 +649,62 @@ class RobotContext:
     @property
     def _snapshots(self) -> SnapshotRuntime:
         runtime = self._runtime
-        if not (
-            callable(getattr(runtime, "snapshot", None))
-            and callable(getattr(runtime, "planning_scene", None))
+        if not all(
+            callable(getattr(runtime, name, None))
+            for name in ("snapshot", "planning_scene", "world")
         ):
             raise CapabilityError("snapshots_unavailable", "this runtime cannot take snapshots")
         return cast(SnapshotRuntime, runtime)
 
-    def _check_current(self, snapshot: SceneSnapshot) -> None:
-        """Refuse applying what was planned on a snapshot the scene has moved past."""
+    def _check_world(self, snapshot: SceneSnapshot) -> None:
+        """Refuse a snapshot that is not of this robot in this simulated world: another
+        description, runtime, or world, or members or references this world lacks."""
         if not isinstance(snapshot, SceneSnapshot):
             raise ValidationError("wrong_type", "snapshot must be a SceneSnapshot", path="snapshot")
+        if snapshot.description != self._fingerprint:
+            raise StaleRevisionError(
+                "stale_description", "the snapshot is of another robot description"
+            )
+        info = self.info
+
+        def incompatible(message: str, path: str) -> ValidationError:
+            return ValidationError("incompatible_snapshot", message, path=f"snapshot.{path}")
+
+        if snapshot.runtime != info.runtime:
+            raise incompatible(f"captured by {snapshot.runtime!r}, not {info.runtime!r}", "runtime")
+        if snapshot.model != self._snapshots.world():
+            raise incompatible("captured from another simulated world", "model")
+        if snapshot.joints != tuple(j.name for j in self._description.joints):
+            raise incompatible("its joints are not this description's, in order", "joints")
+        if tuple(o.name for o in snapshot.objects) != info.objects:
+            raise incompatible("its objects are not this scene's", "objects")
+        if snapshot.fixtures != info.fixtures:
+            raise incompatible("its fixtures are not this scene's", "fixtures")
+        frames = {f.name for f in self._description.frames}
+        effectors = {e.name for e in self._description.end_effectors}
+        for i, attachment in enumerate(snapshot.attachments):
+            if attachment.end_effector not in effectors:
+                raise incompatible(
+                    f"unknown end effector {attachment.end_effector!r}",
+                    f"attachments[{i}].end_effector",
+                )
+            for name in attachment.allow:
+                if name not in frames and name not in info.fixtures:
+                    raise incompatible(
+                        f"{name!r} is neither a robot frame nor a fixture",
+                        f"attachments[{i}].allow",
+                    )
+
+    def _check_current(self, snapshot: SceneSnapshot) -> None:
+        """Refuse applying what was planned on a snapshot the scene has moved past. Robot
+        and object poses may have moved on; the scene's membership may not."""
+        self._check_world(snapshot)
         scene = self.scene
-        if (
-            snapshot.description != self._fingerprint
-            or snapshot.runtime != self.info.runtime
-            or snapshot.revision != scene.revision
-        ):
+        if snapshot.revision != scene.revision or snapshot.attachments != scene.attachments:
             raise StaleRevisionError(
                 "stale_snapshot",
-                f"the snapshot is of revision {snapshot.revision} of {snapshot.runtime!r}; "
-                f"the scene is at revision {scene.revision} of {self.info.runtime!r}",
+                f"the snapshot is of scene revision {snapshot.revision}; the scene is at "
+                f"revision {scene.revision}",
                 path="snapshot",
             )
 
@@ -959,12 +992,16 @@ class _CheckedPlanningScene:
     validated on the way in, every answer on the way out, and limits are enforced the
     same way for every provider."""
 
-    __slots__ = ("_description", "_frames", "_limits", "_scene")
+    __slots__ = ("_description", "_frames", "_limits", "_names", "_scene")
 
     def __init__(self, description: RobotDescription, scene: PlanningScene) -> None:
         self._description = description
         self._scene = scene
         self._frames = {f.name for f in description.frames}
+        snapshot = scene.snapshot
+        self._names = (
+            self._frames | {o.name for o in snapshot.objects} | set(snapshot.fixtures) | {"world"}
+        )
         self._limits = tuple(
             (description.joint(j).limits.lower, description.joint(j).limits.upper)
             for j in scene.joints
@@ -1001,7 +1038,10 @@ class _CheckedPlanningScene:
 
     def contacts(self, q: Sequence[float]) -> tuple[Contact, ...]:
         contacts = self._scene.contacts(self._configuration(q))
-        if not isinstance(contacts, tuple) or not all(isinstance(c, Contact) for c in contacts):
+        if not isinstance(contacts, tuple) or not all(
+            isinstance(c, Contact) and c.first in self._names and c.second in self._names
+            for c in contacts
+        ):
             raise ValidationError("runtime_contract", f"contacts answered {contacts!r}")
         return contacts
 
@@ -1014,9 +1054,12 @@ class _CheckedPlanningScene:
 
     def _configuration(self, q: Sequence[float], path: str = "q") -> tuple[float, ...]:
         try:
-            values = tuple(float(v) for v in q)
-        except (TypeError, ValueError):
-            raise ValidationError("wrong_type", f"{path} must be numbers", path=path) from None
+            items = tuple(q)
+        except TypeError:
+            raise ValidationError("wrong_type", f"{path} must be a sequence", path=path) from None
+        if not all(isinstance(v, numbers.Real) and not isinstance(v, bool) for v in items):
+            raise ValidationError("wrong_type", f"{path} must be real numbers", path=path)
+        values = tuple(float(v) for v in items)
         if len(values) != len(self._limits):
             raise ValidationError(
                 "shape_mismatch",

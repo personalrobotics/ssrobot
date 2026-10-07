@@ -166,6 +166,10 @@ class SceneRuntime(Runtime, Protocol):
 class SnapshotRuntime(Runtime, Protocol):
     """A runtime that can capture snapshots and materialize planning scenes from them."""
 
+    def world(self) -> str:
+        """Its identity for the simulated world, as its snapshots record in ``model``."""
+        ...
+
     def snapshot(self, scene: SceneState) -> SceneSnapshot:
         """Capture the robot and objects now, with ``scene``'s revision, fixtures, and
         attachments, stamped like any direct answer."""

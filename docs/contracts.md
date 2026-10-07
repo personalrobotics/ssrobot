@@ -268,9 +268,10 @@ It is a wire record, so it can be stored, sent, and decoded. `fingerprint()` is 
 SHA-256 of its canonical encoding.
 
 `ctx.snapshot()` asks a runtime that implements `SnapshotRuntime`; any other runtime
-fails with `snapshots_unavailable`. The context checks the answer: the runtime's
-description, name, revision, joints, objects, fixtures, and attachments must all match
-its own. The stamp is a direct answer, like `submit`'s. Anything else is a contract
+fails with `snapshots_unavailable`. `SnapshotRuntime.world()` is the runtime's identity
+for its simulated world, which its snapshots record as `model`. The context checks the
+answer: the runtime's description, name, world, revision, joints, objects, fixtures,
+and attachments must all match its own. The stamp is a direct answer, like `submit`'s. Anything else is a contract
 breach. A good snapshot is traced as a `snapshot` record.
 
 `ctx.planning_scene(snapshot, group, *, edge_resolution=0.05)` materializes a
@@ -289,7 +290,8 @@ Materializing refuses:
 | Case | Code |
 | --- | --- |
 | a snapshot of another robot description | `stale_description` (`StaleRevisionError`) |
-| a snapshot from another runtime, or another simulated world | `incompatible_snapshot` |
+| a snapshot from another runtime, or another simulated world (`model` is not `world()`) | `incompatible_snapshot` |
+| a snapshot whose joints are not the description's, in order; whose objects or fixtures are not this scene's; or whose attachments name an unknown end effector, or allow a name that is neither a frame nor a fixture | `incompatible_snapshot` |
 | an undeclared group | `unknown_reference` |
 | an `edge_resolution` that is not finite and positive | `out_of_limits` |
 
@@ -301,10 +303,15 @@ Materializing refuses:
 | `is_edge_valid(q0, q1)` | Whether every configuration on the straight joint-space line is valid. It is checked at both ends and at least every `edge_resolution` in each joint between them. |
 | `native()` | A backend-native checker a planner adapter may use instead, or `None`. Its type is the backend's. |
 
-`q` is one finite value per group joint, in group order: otherwise `shape_mismatch`,
-`non_finite`, or `wrong_type`. An unknown frame fails with `unknown_reference`. The
-context validates every query and every answer the same way for every provider, so a
-provider that answers with the wrong type raises `runtime_contract`. Planning scenes are
+`q` is one finite real number per group joint, in group order. A bool or a string is
+`wrong_type`; the wrong count is `shape_mismatch`; NaN or infinity is `non_finite`. An
+unknown frame fails with `unknown_reference`. The context validates every query and
+every answer the same way for every provider:
+- A planning scene for another group, snapshot, or edge resolution than requested is a
+  contract breach when it is materialized.
+- A query answer of the wrong type is `runtime_contract`.
+- So is a contact naming anything other than a description frame, a snapshot object or
+  fixture, or `world`. Planning scenes are
 isolated, so this does not fault the live context.
 
 **Contact policy.** These contacts are never disallowed:
@@ -315,9 +322,11 @@ Every other contact of a moving part (the group's subtree, or a held object) is.
 that do not move with the group are environment, so their contacts with each other are
 ignored.
 
-**Applying a plan.** `ctx.submit(command, snapshot=snap)` refuses the command with
-`stale_snapshot` (`StaleRevisionError`) if the description, the runtime, or the scene
-revision has changed since `snap`. Robot motion since then is caught as usual by
+**Applying a plan.** `ctx.submit(command, snapshot=snap)` first applies every check
+above. A snapshot of another world is `incompatible_snapshot`, and one of another
+description is `stale_description`. It then refuses the command with `stale_snapshot`
+(`StaleRevisionError`) unless the scene's revision and attachments are still those of
+`snap`. Robot and object poses may have moved on. Robot motion since then is caught as usual by
 `start_mismatch`. The `Submission` records the snapshot's fingerprint, so a trace links
 each plan to the world it was planned in.
 
@@ -731,7 +740,7 @@ environment installs the wheel with the `mujoco` extra, runs the gate with
 | `artifacts/test_conventions_accept_valid_and_reject_ambiguous_input/conventions-report.json` | Every valid and invalid convention case with its expected and actual diagnostic code and path. Covers the MuJoCo, URDF, and ROS timestamp conversions, chunk clocks against manual and external runtimes, and execution-record identifiers. |
 | `artifacts/test_replay_runtime_passes_the_conformance_scenario/run/` | The ReplayRuntime conformance `trace.jsonl` and `conformance-report.json`. The test re-reads them and checks every line against the schema, contiguous sequence numbers, time that never decreases, legal transitions, all five terminal states, and that each applied command is attributed to its submitter. A second run in `rerun/` is byte-identical. |
 | `artifacts/test_scene_runtimes_that_break_their_contract/scene-breach-report.json`, `external-attach-trace.jsonl` | An external runtime that measures the object at 100 ns advances the context to 100 ns, and the `scene` record is stamped then. An attach answer stamped before the context's time, or at a later tick of a manual clock, is a contract breach. So is a scene runtime that changes the transform or allow set it was given, or reports a violation for an object that is not attached. Nothing is committed and the runtime is told to detach. A runtime that lists objects without implementing `SceneRuntime` is refused at open. |
-| `artifacts/test_snapshot_runtimes_that_break_their_contract/snapshot-breach-report.json` | A snapshot with the wrong revision, a missing object, or a stamp before the context's time is a contract breach. A runtime without snapshots fails with `snapshots_unavailable`. |
+| `artifacts/test_snapshot_runtimes_that_break_their_contract/snapshot-breach-report.json` | A snapshot with the wrong revision, a missing object, or a stamp before the context's time is a contract breach. So is a planning scene coarser than the requested edge resolution. A contact naming unknown entities is `runtime_contract`, while a contact naming a frame and an object passes. A runtime without snapshots fails with `snapshots_unavailable`. |
 | `artifacts/test_replay_faults_on_divergence_and_exhaustion/trace.jsonl` | A replay that diverges from its recording, recovers, then runs out of ticks. |
 | `artifacts/test_example_package_loads_identically_wherever_it_lives[<name>]/` | For each example package: its description, a semantic summary (manipulators, their joints, frames, end effectors and grippers, composite groups, sensors, qualified names), and its package report. Each validates against `schemas/`. The same content loads identically from a copy and as an installed Python package. |
 | `artifacts/test_overlapping_groups_share_ownership/ownership-report.json` | `owners("left_arm_with_lift")` when unowned, completely owned, partially owned, and shared, plus a different source refused on the composite's joints. |

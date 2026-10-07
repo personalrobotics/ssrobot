@@ -466,6 +466,11 @@ class MujocoRuntime:
             attachments=scene.attachments,
         )
 
+    def world(self) -> str:
+        """The model signature and the scene's SHA-256."""
+        self._open_data()
+        return self._identity
+
     def planning_scene(
         self, snapshot: SceneSnapshot, group: str, edge_resolution: float
     ) -> PlanningScene:

@@ -184,11 +184,21 @@ def materialize(
     ] + [(a.object, name) for a in snapshot.attachments for name in a.allow if name in fixtures]
     model = planning_model(sources[0], sources[1], excludes)
 
+    def resolve(kind: Any, name: str, path: str) -> int:
+        """A name's id in the planning model; a snapshot naming what is not there would
+        otherwise index another entity."""
+        i = int(mujoco.mj_name2id(model, kind, name))
+        if i < 0:
+            raise ValidationError(
+                "invalid_snapshot", f"the model has nothing named {name!r}", path=path
+            )
+        return i
+
     data = mujoco.MjData(model)
     for joint, position in zip(snapshot.joints, snapshot.positions, strict=True):
-        data.qpos[model.jnt_qposadr[mujoco.mj_name2id(model, _JOINT, joint)]] = position
+        data.qpos[model.jnt_qposadr[resolve(_JOINT, joint, "snapshot.joints")]] = position
     for state in snapshot.objects:
-        free = int(model.body_jntadr[mujoco.mj_name2id(model, _BODY, state.name)])
+        free = int(model.body_jntadr[resolve(_BODY, state.name, "snapshot.objects")])
         at = int(model.jnt_qposadr[free])
         data.qpos[at : at + 3] = state.pose.position
         data.qpos[at + 3 : at + 7] = state.pose.quat_wxyz
