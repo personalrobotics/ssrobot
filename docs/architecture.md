@@ -21,12 +21,12 @@ yet.
 | --- | --- | --- |
 | `RobotDescription` | Immutable, validated semantic model of a robot: joints, links, frames, groups, manipulators, bases, end effectors, sensors, declared capabilities. Safe to share across contexts. | Implemented. Opendubs, a mobile manipulator with a mecanum base, is the first external consumer of `MobileBase` and `BaseTwistCommand`, in M2 (#85) |
 | Robot package | A model plus its `ssrobot.toml` manifest, loaded from a directory or an installed Python package into a `RobotDescription`. | Implemented |
-| `RobotContext` | The public session. Context-managed; the only path through which users observe, submit commands, step, snapshot, and close. | Implemented, except snapshots (M2) and semantic views such as `ctx.manipulator` (M3) |
-| `Runtime` | Injected backend mechanics (replay, MuJoCo, ROS 2). Owns I/O, lifecycle, status, and capability reporting. Contains no planning or task logic. | Implemented: the protocol, `ReplayRuntime`, and `MujocoRuntime` with joint, trajectory, gripper, and chunk commands and robot observations: joint state, effort, poses, wrenches, and camera images (#14–#16), and scenes with declared attachments (#17; see [mujoco.md](mujoco.md)). Object state and snapshots are the rest of M2; `Ros2Runtime` is M6 |
+| `RobotContext` | The public session. Context-managed; the only path through which users observe, submit commands, step, snapshot, and close. | Implemented, except semantic views such as `ctx.manipulator` (M3) |
+| `Runtime` | Injected backend mechanics (replay, MuJoCo, ROS 2). Owns I/O, lifecycle, status, and capability reporting. Contains no planning or task logic. | Implemented: the protocol, `ReplayRuntime`, and `MujocoRuntime` with joint, trajectory, gripper, and chunk commands and robot observations: joint state, effort, poses, wrenches, and camera images (#14–#16), scenes with declared attachments (#17), and snapshots with planning scenes (#18; see [mujoco.md](mujoco.md)). Object state channels are the rest of M2; `Ros2Runtime` is M6 |
 | `Execution` | Passive handle returned by `submit`. Owns no thread, loop, or clock. | Implemented |
 | `SceneState` | A context's scene: objects, fixtures, and attachments (object, end effector, transform, allowed contacts), with a revision. Declared state for planners and traces; it never changes physics. | Implemented (#17) |
-| `SceneSnapshot` | Immutable, serializable scene state. | M2 |
-| `PlanningScene` | Neutral capability a runtime materializes from a snapshot: forward kinematics, state and edge validity, optional collision detail. Isolated and timeless. | M2 |
+| `SceneSnapshot` | Immutable, serializable scene state. | Implemented (#18) |
+| `PlanningScene` | Neutral capability a runtime materializes from a snapshot: forward kinematics, state and edge validity, optional collision detail. Isolated and timeless. | Implemented (#18); the MuJoCo provider is built on sscbirrt's native scene |
 | Trace | Versioned JSONL record of everything a context did, with content-addressed external assets. | Implemented |
 | `PolicyRunner` | Drives policy inference timing over a context: observe, infer, validate, submit, step. | M4 |
 
@@ -55,9 +55,9 @@ The same description drives a `RobotContext` over `ReplayRuntime`, which
 
 ## Target v0.1 user journeys
 
-None of these run yet. `MujocoRuntime`, task scenes, and attachments exist; snapshots
-arrive in M2, `ctx.manipulator` and planning in M3, and `PolicyRunner` and the LeRobot
-adapter in M4.
+None of these run yet. `MujocoRuntime`, task scenes, attachments, snapshots, and
+planning scenes exist; `ctx.manipulator` and planning arrive in M3, and `PolicyRunner`
+and the LeRobot adapter in M4.
 
 All three journeys use the same robot package, context, command types, and trace. A
 client that works in one runtime works in another by changing only the runtime

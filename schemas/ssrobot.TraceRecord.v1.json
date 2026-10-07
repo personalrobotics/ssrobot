@@ -644,6 +644,25 @@
       ],
       "additionalProperties": false
     },
+    "ObjectState": {
+      "type": "object",
+      "description": "A scene object's pose in the world.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Scene object name."
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose",
+          "description": "The object's pose in the world frame."
+        }
+      },
+      "required": [
+        "name",
+        "pose"
+      ],
+      "additionalProperties": false
+    },
     "Observation": {
       "type": "object",
       "description": "A set of readings assembled at one runtime time.",
@@ -897,6 +916,87 @@
       ],
       "additionalProperties": false
     },
+    "SceneSnapshot": {
+      "type": "object",
+      "description": "An immutable copy of everything a geometric query reads: the robot's joint",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.SceneSnapshot"
+        },
+        "version": {
+          "const": 1
+        },
+        "description": {
+          "type": "string",
+          "description": "Fingerprint of the robot description."
+        },
+        "runtime": {
+          "type": "string",
+          "description": "Name of the runtime that captured it."
+        },
+        "model": {
+          "type": "string",
+          "description": "The runtime's identity for the simulated world; opaque to the core."
+        },
+        "stamp": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was captured, on the runtime clock."
+        },
+        "revision": {
+          "type": "integer",
+          "description": "Scene revision it was captured at.",
+          "x-unit": "count"
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every description joint, in order."
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Each joint's position, in the order of joints.",
+          "x-unit": "joint"
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ObjectState"
+          },
+          "description": "Every scene object's pose, sorted by name."
+        },
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Scene fixtures, sorted."
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Attachment"
+          },
+          "description": "Declared attachments, sorted by object."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "description",
+        "runtime",
+        "model",
+        "stamp",
+        "revision",
+        "joints",
+        "positions"
+      ],
+      "additionalProperties": false
+    },
     "SceneState": {
       "type": "object",
       "description": "A context's scene: the objects it can hold and what it holds now.",
@@ -991,6 +1091,17 @@
             }
           ],
           "description": "Runtime time by which it must finish, else it times out."
+        },
+        "snapshot": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the snapshot the command was planned on, if given."
         }
       },
       "required": [
@@ -1047,6 +1158,7 @@
             "applied",
             "health",
             "scene",
+            "snapshot",
             "violation",
             "stepped",
             "closed"
@@ -1091,6 +1203,9 @@
             },
             {
               "$ref": "#/$defs/AttachmentViolation"
+            },
+            {
+              "$ref": "#/$defs/SceneSnapshot"
             },
             {
               "type": "null"

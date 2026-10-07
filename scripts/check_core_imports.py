@@ -50,7 +50,8 @@ PUBLIC_MODULES = frozenset({"ssrobot.conformance"})
 
 # Integration subpackages, by name under the package, and the prohibited backends each
 # may use: those its extra installs.
-INTEGRATIONS = {"mujoco": frozenset({"mujoco"})}
+# sscbirrt (and its TSR dependency, imported as ``tsr``) backs MuJoCo planning scenes.
+INTEGRATIONS = {"mujoco": frozenset({"mujoco", "sscbirrt", "tsr"})}
 
 PROHIBITED = frozenset(
     {

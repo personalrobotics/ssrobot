@@ -18,7 +18,14 @@ from ssrobot.description import CommandCapability, RobotDescription
 from ssrobot.errors import ValidationError
 from ssrobot.execution import AppliedCommand, ExecutionStatus, RuntimeHealth
 from ssrobot.observations import Observation, ObservationRequest
-from ssrobot.scene import Attachment, AttachmentViolation, TrackedAttachment
+from ssrobot.scene import (
+    Attachment,
+    AttachmentViolation,
+    PlanningScene,
+    SceneSnapshot,
+    SceneState,
+    TrackedAttachment,
+)
 
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 
@@ -153,4 +160,27 @@ class SceneRuntime(Runtime, Protocol):
 
     def detach(self, object: str) -> None:
         """Stop tracking ``object``'s attachment."""
+        ...
+
+
+class SnapshotRuntime(Runtime, Protocol):
+    """A runtime that can capture snapshots and materialize planning scenes from them."""
+
+    def world(self) -> str:
+        """Its identity for the simulated world, as its snapshots record in ``model``."""
+        ...
+
+    def snapshot(self, scene: SceneState) -> SceneSnapshot:
+        """Capture the robot and objects now, with ``scene``'s revision, fixtures, and
+        attachments, stamped like any direct answer."""
+        ...
+
+    def planning_scene(
+        self, snapshot: SceneSnapshot, group: str, edge_resolution: float
+    ) -> PlanningScene:
+        """An isolated planning scene for ``group`` over ``snapshot``.
+
+        Raises ``ValidationError("incompatible_snapshot")`` if the snapshot was captured
+        from a different simulated world.
+        """
         ...

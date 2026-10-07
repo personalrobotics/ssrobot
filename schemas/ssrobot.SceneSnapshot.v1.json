@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.SceneSnapshot v1",
+  "$ref": "#/$defs/SceneSnapshot",
+  "$defs": {
+    "Attachment": {
+      "type": "object",
+      "description": "A scene object declared held by an end effector.",
+      "properties": {
+        "object": {
+          "type": "string",
+          "description": "The held scene object."
+        },
+        "end_effector": {
+          "type": "string",
+          "description": "The end effector holding it."
+        },
+        "transform": {
+          "$ref": "#/$defs/Pose",
+          "description": "The object's pose in the end effector's frame."
+        },
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Robot frames and scene fixtures the object may touch, sorted."
+        },
+        "held": {
+          "type": "boolean",
+          "description": "False once the runtime reported the object left the grasp."
+        }
+      },
+      "required": [
+        "object",
+        "end_effector",
+        "transform",
+        "allow"
+      ],
+      "additionalProperties": false
+    },
+    "ObjectState": {
+      "type": "object",
+      "description": "A scene object's pose in the world.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Scene object name."
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose",
+          "description": "The object's pose in the world frame."
+        }
+      },
+      "required": [
+        "name",
+        "pose"
+      ],
+      "additionalProperties": false
+    },
+    "Pose": {
+      "type": "object",
+      "description": "A rigid transform: the pose of a child frame expressed in a parent frame.",
+      "properties": {
+        "position": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Child origin in parent coordinates.",
+          "x-unit": "m"
+        },
+        "quat_wxyz": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Unit quaternion (w, x, y, z) rotating child axes into parent.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "position",
+        "quat_wxyz"
+      ],
+      "additionalProperties": false
+    },
+    "SceneSnapshot": {
+      "type": "object",
+      "description": "An immutable copy of everything a geometric query reads: the robot's joint",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.SceneSnapshot"
+        },
+        "version": {
+          "const": 1
+        },
+        "description": {
+          "type": "string",
+          "description": "Fingerprint of the robot description."
+        },
+        "runtime": {
+          "type": "string",
+          "description": "Name of the runtime that captured it."
+        },
+        "model": {
+          "type": "string",
+          "description": "The runtime's identity for the simulated world; opaque to the core."
+        },
+        "stamp": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it was captured, on the runtime clock."
+        },
+        "revision": {
+          "type": "integer",
+          "description": "Scene revision it was captured at.",
+          "x-unit": "count"
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every description joint, in order."
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Each joint's position, in the order of joints.",
+          "x-unit": "joint"
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ObjectState"
+          },
+          "description": "Every scene object's pose, sorted by name."
+        },
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Scene fixtures, sorted."
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Attachment"
+          },
+          "description": "Declared attachments, sorted by object."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "description",
+        "runtime",
+        "model",
+        "stamp",
+        "revision",
+        "joints",
+        "positions"
+      ],
+      "additionalProperties": false
+    },
+    "Timestamp": {
+      "type": "object",
+      "description": "A point in time on a named clock.",
+      "properties": {
+        "clock": {
+          "type": "string",
+          "description": "Clock identity, e.g. 'sim:geodude-1' or 'ros:/clock'."
+        },
+        "time_ns": {
+          "type": "integer",
+          "description": "Nanoseconds since the clock's epoch.",
+          "x-unit": "ns"
+        }
+      },
+      "required": [
+        "clock",
+        "time_ns"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

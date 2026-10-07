@@ -66,6 +66,18 @@ jobs:
           sed -n '/^### Simulation in MuJoCo/,/^## /p' README.md | sed -n '/^```python$/,/^```$/p' | sed '1d;$d' > "$RUNNER_TEMP/readme_mujoco.py"
           clean-mujoco/bin/python -P "$RUNNER_TEMP/readme_mujoco.py" | tee "$RUNNER_TEMP/readme_mujoco.txt"
           grep -q '^succeeded ' "$RUNNER_TEMP/readme_mujoco.txt"
+      - name: A planning scene builds on sscbirrt's native scene from the installed wheel
+        working-directory: ${{ runner.temp }}
+        run: >-
+          $GITHUB_WORKSPACE/clean-mujoco/bin/python -P -c "import ssrobot;
+          from ssrobot.mujoco import MujocoRuntime;
+          p = ssrobot.load_package('$GITHUB_WORKSPACE/examples/packages/mujoco_arm');
+          r = MujocoRuntime(p, scene='$GITHUB_WORKSPACE/examples/scenes/pedestal.xml');
+          ctx = ssrobot.RobotContext(p.description, r); ctx.__enter__();
+          s = ctx.planning_scene(ctx.snapshot(), 'arm');
+          print(type(s.native()).__name__, s.is_valid((0.0, -0.4, 0.0)), s.is_valid((0.0, 1.2, 0.0)));
+          assert s.is_valid((0.0, -0.4, 0.0)) and not s.is_valid((0.0, 1.2, 0.0));
+          ctx.close()"
       - name: Without a display or MUJOCO_GL, camera channels are unconfirmed, not fatal
         working-directory: ${{ github.workspace }}
         run: >-

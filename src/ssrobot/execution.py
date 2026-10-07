@@ -154,7 +154,17 @@ class Submission(Record):
     deadline: Timestamp | None = field(
         default=None, metadata=meta("Runtime time by which it must finish, else it times out.")
     )
+    snapshot: str | None = field(
+        default=None,
+        metadata=meta("Fingerprint of the snapshot the command was planned on, if given."),
+    )
 
     def _validate(self) -> None:
         check_name(self.execution, path="execution")
         check_name(self.source, path="source")
+        if self.snapshot is not None and not (
+            len(self.snapshot) == 64 and all(c in "0123456789abcdef" for c in self.snapshot)
+        ):
+            raise ValidationError(
+                "invalid_fingerprint", "snapshot must be a SHA-256 hex digest", path="snapshot"
+            )

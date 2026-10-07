@@ -8,7 +8,7 @@ report plus any trace under $SSROBOT_ARTIFACTS before asserting. Reproduce with
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -21,15 +21,21 @@ from ssrobot import (
     AttachmentViolation,
     CapabilityError,
     ClockMode,
+    Contact,
+    ContactKind,
     JointCommand,
     JointMode,
     JsonlTrace,
     LifecycleError,
+    ObjectState,
     ObservationRequest,
+    PlanningScene,
     Pose,
     RobotContext,
     RobotDescription,
     RuntimeInfo,
+    SceneSnapshot,
+    SceneState,
     Timestamp,
     TraceKind,
     TrackedAttachment,
@@ -387,4 +393,141 @@ def test_scene_runtimes_that_break_their_contract(artifacts: Path) -> None:
         "external_resolve": {"now": 100, "scene": [["opened", 0], ["scene", 0], ["scene", 100]]},
         "manual_later_tick": ["runtime_contract", 0, []],
         "external_earlier": ["runtime_contract", 0, []],
+    }
+
+
+class _SnapshotScripted(_SceneScripted):
+    """A scene runtime whose snapshots a test may tamper with."""
+
+    def __init__(
+        self,
+        tamper: Callable[[SceneSnapshot], SceneSnapshot] | None = None,
+        *,
+        scene_resolution: float | None = None,
+        contact_names: tuple[str, str] = ("tcp", "box"),
+    ) -> None:
+        super().__init__()
+        self.snapshot_tamper = tamper
+        self.scene_resolution = scene_resolution  # answer this instead of the request
+        self.contact_names = contact_names
+
+    def world(self) -> str:
+        return "scripted-world"
+
+    def snapshot(self, scene: SceneState) -> SceneSnapshot:
+        assert self._description is not None
+        joints = tuple(j.name for j in self._description.joints)
+        taken = SceneSnapshot(
+            description=self._description.fingerprint(),
+            runtime="scripted",
+            model="scripted-world",
+            stamp=self.stamp(),
+            revision=scene.revision,
+            joints=joints,
+            positions=(0.0,) * len(joints),
+            objects=(
+                ObjectState(
+                    name="box", pose=Pose(position=(0.4, 0.0, 0.4), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
+                ),
+            ),
+            fixtures=scene.fixtures,
+            attachments=scene.attachments,
+        )
+        return taken if self.snapshot_tamper is None else self.snapshot_tamper(taken)
+
+    def planning_scene(
+        self, snapshot: SceneSnapshot, group: str, edge_resolution: float
+    ) -> PlanningScene:
+        assert self._description is not None
+        return _ScriptedScene(
+            snapshot,
+            group,
+            self._description.group(group).joints,
+            self.scene_resolution or edge_resolution,
+            self.contact_names,
+        )
+
+
+class _ScriptedScene:
+    """A planning scene that reports one contact between ``names`` everywhere."""
+
+    def __init__(
+        self,
+        snapshot: SceneSnapshot,
+        group: str,
+        joints: tuple[str, ...],
+        resolution: float,
+        names: tuple[str, str],
+    ) -> None:
+        self.snapshot, self.group, self.joints = snapshot, group, joints
+        self.edge_resolution, self.names = resolution, names
+
+    def forward_kinematics(self, q: Sequence[float], frame: str) -> Pose:
+        return Pose(position=(0.0, 0.0, 0.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
+
+    def is_valid(self, q: Sequence[float]) -> bool:
+        return False
+
+    def contacts(self, q: Sequence[float]) -> tuple[Contact, ...]:
+        first, second = self.names
+        return (
+            Contact(kind=ContactKind.SELF_COLLISION, first=first, second=second, distance=-0.01),
+        )
+
+    def is_edge_valid(self, q0: Sequence[float], q1: Sequence[float]) -> bool:
+        return False
+
+    def native(self) -> object | None:
+        return None
+
+
+def test_snapshot_runtimes_that_break_their_contract(artifacts: Path) -> None:
+    """#18: a snapshot that disagrees with the context's scene, or answers out of causal
+    order, is a breach; a runtime without snapshots is refused before any call."""
+    robot = load_package(ROOT / "examples" / "packages" / "mujoco_arm").description
+    report: dict[str, Any] = {}
+    cases: dict[str, Callable[[SceneSnapshot], SceneSnapshot]] = {
+        "wrong_revision": lambda s: replace(s, revision=s.revision + 1),
+        "missing_object": lambda s: replace(s, objects=()),
+        "earlier_stamp": lambda s: replace(s, stamp=Timestamp(clock=s.stamp.clock, time_ns=0)),
+    }
+    for name, tamper in cases.items():
+        runtime = _SnapshotScripted(tamper)
+        with RobotContext(robot, runtime) as ctx:
+            ctx.step()  # so an answer stamped at 0 precedes the context's time
+            with pytest.raises(ValidationError) as breach:
+                ctx.snapshot()
+            report[name] = [breach.value.code, ctx.state.value]
+    runtime = _SnapshotScripted()
+    with RobotContext(robot, runtime) as ctx:
+        ctx.step()
+        report["honest"] = ctx.snapshot().revision
+    with RobotContext(robot, _SceneScripted()) as ctx, pytest.raises(CapabilityError) as missing:
+        ctx.snapshot()
+    report["without_snapshots"] = missing.value.code
+
+    # Planning-scene answers are checked the same way for every provider.
+    with RobotContext(robot, _SnapshotScripted(scene_resolution=99.0)) as ctx:
+        snapshot = ctx.snapshot()
+        with pytest.raises(ValidationError) as coarse:
+            ctx.planning_scene(snapshot, "arm", edge_resolution=0.01)
+        report["coarser_resolution"] = [coarse.value.code, ctx.state.value]
+    with RobotContext(robot, _SnapshotScripted(contact_names=("ghost_a", "ghost_b"))) as ctx:
+        scene = ctx.planning_scene(ctx.snapshot(), "arm")
+        with pytest.raises(ValidationError) as ghost:
+            scene.contacts((0.0, 0.0, 0.0))
+        report["unknown_contact_names"] = ghost.value.code
+    with RobotContext(robot, _SnapshotScripted()) as ctx:
+        scene = ctx.planning_scene(ctx.snapshot(), "arm")
+        report["named_contacts"] = [c.second for c in scene.contacts((0.0, 0.0, 0.0))]
+    _write(artifacts / "snapshot-breach-report.json", report)
+    assert report == {
+        "wrong_revision": ["runtime_contract", "faulted"],
+        "missing_object": ["runtime_contract", "faulted"],
+        "earlier_stamp": ["runtime_contract", "faulted"],
+        "honest": 0,
+        "without_snapshots": "snapshots_unavailable",
+        "coarser_resolution": ["runtime_contract", "faulted"],
+        "unknown_contact_names": "runtime_contract",
+        "named_contacts": ["box"],
     }

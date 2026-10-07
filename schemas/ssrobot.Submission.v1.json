@@ -357,6 +357,17 @@
             }
           ],
           "description": "Runtime time by which it must finish, else it times out."
+        },
+        "snapshot": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the snapshot the command was planned on, if given."
         }
       },
       "required": [

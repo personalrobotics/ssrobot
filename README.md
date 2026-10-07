@@ -56,12 +56,14 @@ It also observes joint state and effort, frame poses, wrenches, and camera image
 `MujocoRuntime(package, scene="tabletop.xml")` adds task objects from an MJCF scene.
 `ctx.attach(object, end_effector)` then declares a grasp for planners and the trace
 without changing physics: friction alone holds the object, and a slip is reported.
-[docs/mujoco.md](docs/mujoco.md) describes what it binds and how commands run.
+`ctx.snapshot()` freezes the world, and `ctx.planning_scene(snapshot, "arm")` answers a
+planner's collision and kinematics queries on that copy, built on sscbirrt's native
+MuJoCo checker. `ctx.submit(plan, snapshot=snapshot)` refuses a plan whose scene has
+since changed. [docs/mujoco.md](docs/mujoco.md) describes what it binds and how commands run.
 
 ## Target v0.1
 
-Object state channels and snapshots (M2), planning (M3), and policies (M4) are not
-implemented yet. The planning-only, policy-only, and hybrid examples in
+Object state channels (M2), planning (M3), and policies (M4) are not implemented yet. The planning-only, policy-only, and hybrid examples in
 [docs/architecture.md](docs/architecture.md) show the target v0.1 behavior.
 
 ## Documentation

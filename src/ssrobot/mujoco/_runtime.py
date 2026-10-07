@@ -67,7 +67,15 @@ from ssrobot.mujoco._model import (
 from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
 from ssrobot.package import RobotPackage
 from ssrobot.runtime import RuntimeEvent, RuntimeInfo, RuntimeUpdate
-from ssrobot.scene import Attachment, AttachmentViolation, TrackedAttachment
+from ssrobot.scene import (
+    Attachment,
+    AttachmentViolation,
+    ObjectState,
+    PlanningScene,
+    SceneSnapshot,
+    SceneState,
+    TrackedAttachment,
+)
 from ssrobot.validation import START_TOLERANCE, clamp_positions
 
 
@@ -88,8 +96,36 @@ class _Running:
     ended_ns: int | None = None  # a trajectory: when its last waypoint was applied
 
 
+_IDENTITY = np.array([1.0, 0.0, 0.0, 0.0])
 _OPTICAL = np.array([0.0, 1.0, 0.0, 0.0])
 """A half-turn about x: MuJoCo's camera frame (-z forward, y up) to the optical frame."""
+
+
+def world_pose(data: Any, binding: FrameBinding) -> tuple[Any, Any]:
+    """A bound frame's world position and orientation quaternion (wxyz).
+
+    A camera's frame is its optical frame (x right, y down, z forward), the one its
+    images are in. MuJoCo's camera frame looks along -z with y up, so it is turned a
+    half-turn about x.
+    """
+    quat = np.empty(4)
+    if binding.object is MujocoObject.BODY:
+        return data.xpos[binding.id], data.xquat[binding.id]
+    matrix = (
+        data.site_xmat[binding.id]
+        if binding.object is MujocoObject.SITE
+        else data.cam_xmat[binding.id]
+    )
+    mujoco.mju_mat2Quat(quat, matrix)
+    if binding.object is MujocoObject.CAMERA:
+        native = quat.copy()
+        mujoco.mju_mulQuat(quat, native, _OPTICAL)
+    position = (
+        data.site_xpos[binding.id]
+        if binding.object is MujocoObject.SITE
+        else data.cam_xpos[binding.id]
+    )
+    return position, quat
 
 
 def _rendering_problem() -> str | None:
@@ -126,7 +162,7 @@ def _check_tolerance(value: object, path: str) -> float:
     return float(value)
 
 
-def _relative(
+def relative(
     p_child: Any, q_child: Any, p_parent: Any, q_parent: Any
 ) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
     """The child's pose in the parent's frame, from both world poses (wxyz)."""
@@ -221,6 +257,9 @@ class MujocoRuntime:
         self._running: dict[str, _Running] = {}
         self._events: list[RuntimeEvent] = []
         self._objects: dict[str, int] = {}  # scene object: MuJoCo body id
+        self._fixtures: dict[str, int] = {}  # scene fixture: MuJoCo body id
+        self._sources: tuple[Path, bytes | None] | None = None  # model file, scene bytes
+        self._identity = ""  # the simulated world, for snapshot compatibility
         self._attached: dict[str, _Tracked] = {}
 
     @property
@@ -401,6 +440,65 @@ class MujocoRuntime:
     def detach(self, object: str) -> None:
         self._attached.pop(object, None)
 
+    # -- Snapshots -------------------------------------------------------------------
+
+    def snapshot(self, scene: SceneState) -> SceneSnapshot:
+        """Every description joint's position and every object's actual pose, now."""
+        data, d = self._open_data(), self._described()
+        objects = []
+        for name, body in sorted(self._objects.items()):
+            quat = np.array(data.xquat[body], dtype=float)
+            mujoco.mju_normalize4(quat)
+            position, orientation = relative(data.xpos[body], quat, np.zeros(3), _IDENTITY)
+            objects.append(
+                ObjectState(name=name, pose=Pose(position=position, quat_wxyz=orientation))
+            )
+        return SceneSnapshot(
+            description=self.mapping.description,
+            runtime="mujoco",
+            model=self._identity,
+            stamp=self._now(),
+            revision=scene.revision,
+            joints=tuple(j.name for j in d.joints),
+            positions=tuple(float(data.qpos[self._joints[j.name].qpos_address]) for j in d.joints),
+            objects=tuple(objects),
+            fixtures=scene.fixtures,
+            attachments=scene.attachments,
+        )
+
+    def world(self) -> str:
+        """The model signature and the scene's SHA-256."""
+        self._open_data()
+        return self._identity
+
+    def planning_scene(
+        self, snapshot: SceneSnapshot, group: str, edge_resolution: float
+    ) -> PlanningScene:
+        """A planning scene built on sscbirrt's native MuJoCo scene; see docs/mujoco.md."""
+        if snapshot.model != self._identity:
+            raise ValidationError(
+                "incompatible_snapshot",
+                "the snapshot was captured from another model or scene",
+                path="snapshot.model",
+            )
+        assert self._sources is not None
+        from ssrobot.mujoco._planning import materialize  # loads sscbirrt only now
+
+        unchanged(self._package)
+        scene = materialize(
+            description=self._described(),
+            frames=self._frames,
+            runtime_model=self._model,
+            sources=self._sources,
+            objects=self._objects,
+            fixtures=self._fixtures,
+            snapshot=snapshot,
+            group=group,
+            edge_resolution=edge_resolution,
+        )
+        unchanged(self._package)
+        return scene
+
     # -- Opening ---------------------------------------------------------------------
 
     def _open(self, description: RobotDescription) -> RuntimeInfo:
@@ -427,7 +525,7 @@ class MujocoRuntime:
         profile = MujocoProfile() if profile_entry is None else load_profile(package, profile_entry)
         entry = select_model(package, profile, profile_entry)
         objects: dict[str, str] = {}  # top-level scene body: "object" or "fixture"
-        scene_sha256 = None
+        scene_sha256, scene_xml = None, None
         try:
             if self._scene is None:
                 model = mujoco.MjModel.from_xml_path(str(package.root / entry.path))
@@ -436,7 +534,8 @@ class MujocoRuntime:
         except ValueError as e:
             raise ValidationError("model_compile_failed", str(e), path=entry.path) from None
         if self._scene is not None:
-            model, objects, scene_sha256 = _compose(spec, self._scene)
+            model, objects, scene_xml = _compose(spec, self._scene)
+            scene_sha256 = hashlib.sha256(scene_xml).hexdigest()
         unchanged(package)
         keyframe = self._keyframe if self._keyframe is not None else profile.keyframe
         timestep_ns = round(float(model.opt.timestep) * 1e9)
@@ -538,6 +637,9 @@ class MujocoRuntime:
             if kind == "object"
         }
         fixtures = tuple(sorted(b for b, kind in objects.items() if kind == "fixture"))
+        self._fixtures = {b: mujoco.mj_name2id(model, _BODY, b) for b in fixtures}
+        self._sources = (package.root / entry.path, scene_xml)
+        self._identity = f"{model_signature(package, entry.name)}:{scene_sha256 or ''}"
         self._mapping = MujocoMapping(
             mujoco=MUJOCO_VERSION,
             description=fingerprint,
@@ -850,35 +952,12 @@ class MujocoRuntime:
             )
 
     def _world(self, frame: str) -> tuple[Any, Any]:
-        """A frame's world position and orientation quaternion (wxyz).
-
-        A camera's frame is its optical frame (x right, y down, z forward), the one its
-        images are in. MuJoCo's camera frame looks along -z with y up, so it is turned a
-        half-turn about x.
-        """
-        data, binding = self._open_data(), self._frames[frame]
-        quat = np.empty(4)
-        if binding.object is MujocoObject.BODY:
-            return data.xpos[binding.id], data.xquat[binding.id]
-        matrix = (
-            data.site_xmat[binding.id]
-            if binding.object is MujocoObject.SITE
-            else data.cam_xmat[binding.id]
-        )
-        mujoco.mju_mat2Quat(quat, matrix)
-        if binding.object is MujocoObject.CAMERA:
-            native = quat.copy()
-            mujoco.mju_mulQuat(quat, native, _OPTICAL)
-        position = (
-            data.site_xpos[binding.id]
-            if binding.object is MujocoObject.SITE
-            else data.cam_xpos[binding.id]
-        )
-        return position, quat
+        """A frame's world position and orientation quaternion (wxyz)."""
+        return world_pose(self._open_data(), self._frames[frame])
 
     def _pose(self, source: str, frame: str) -> tuple[float, ...]:
         """``source``'s pose expressed in ``frame``: position, then unit quaternion wxyz."""
-        position, quat = _relative(*self._world(source), *self._world(frame))
+        position, quat = relative(*self._world(source), *self._world(frame))
         return position + quat
 
     def _held_pose(self, attachment: Attachment) -> Pose:
@@ -886,7 +965,7 @@ class MujocoRuntime:
         data = self._open_data()
         body = self._objects[attachment.object]
         frame = self._described().end_effector(attachment.end_effector).frame
-        position, quat = _relative(data.xpos[body], data.xquat[body], *self._world(frame))
+        position, quat = relative(data.xpos[body], data.xquat[body], *self._world(frame))
         return Pose(position=position, quat_wxyz=quat)
 
     def _image(self, spec: ChannelSpec) -> ArrayValue:
@@ -947,10 +1026,10 @@ _BODY = mujoco.mjtObj.mjOBJ_BODY
 _FREE = mujoco.mjtJoint.mjJNT_FREE
 
 
-def _compose(spec: Any, scene: Path) -> tuple[Any, dict[str, str], str]:
+def _compose(spec: Any, scene: Path) -> tuple[Any, dict[str, str], bytes]:
     """Compile the robot with a scene's bodies. Return the model, each top-level scene
-    body's kind (``object``, one free joint; ``fixture``, no joints), and the SHA-256 of
-    the scene bytes, which are exactly what was compiled.
+    body's kind (``object``, one free joint; ``fixture``, no joints), and the scene
+    bytes, which are exactly what was compiled.
 
     A scene must be one self-contained file for now: an include, mesh, texture, or other
     file reference would be compiled without being part of the recorded identity.
@@ -996,7 +1075,7 @@ def _compose(spec: Any, scene: Path) -> tuple[Any, dict[str, str], str]:
         message = str(e).strip()
         code = "scene_conflict" if "repeated name" in message else "invalid_scene"
         raise ValidationError(code, message, path="scene") from None
-    return model, kinds, hashlib.sha256(raw).hexdigest()
+    return model, kinds, raw
 
 
 def _check_aliases(description: RobotDescription, commands: tuple[CommandBinding, ...]) -> None:
