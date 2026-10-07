@@ -182,9 +182,11 @@ The loader needs no MuJoCo. It applies MuJoCo's semantics to this subset:
   degrees when `angle` is `degree`. A `range` without `limited="true"` while
   `autolimits` is false fails with `ambiguous_limits`.
 - A joint's `actuatorfrcrange`, which clamps the total actuator force on it, is its
-  effort limit: the larger magnitude of the range. `actuatorfrclimited` follows the
-  same rules as `limited`. A range that doesn't bracket zero fails with
-  `invalid_limits`. MJCF has no joint velocity or acceleration limit; declare those in
+  effort limit. `actuatorfrclimited` follows the same rules as `limited`.
+  - An effort limit is one magnitude for both directions, so only a symmetric range
+    `-a a` maps to it, as `a`.
+  - MuJoCo also allows asymmetric and one-sided ranges. ssrobot can't represent those
+    without widening or narrowing them, so they fail with `asymmetric_effort_range`. MJCF has no joint velocity or acceleration limit; declare those in
   the manifest (see *Joint limits*).
 - `<contact><exclude body1 body2>` becomes a collision allowance with reason
   `mjcf contact exclude`. Both names must be MJCF bodies, `world` included; sites and

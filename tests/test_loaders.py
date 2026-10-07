@@ -20,12 +20,15 @@ import jsonschema
 
 from ssrobot import (
     CollisionAllowance,
+    JointCommand,
     JointKind,
+    JointMode,
     RobotDescription,
     SsrobotError,
     dumps,
     load_package,
 )
+from ssrobot.validation import check_command
 from tests.conftest import ROOT
 
 FIXTURES = ROOT / "tests" / "fixtures" / "packages"
@@ -121,7 +124,7 @@ MJCF_CASES: dict[str, tuple[dict[str, str], str | None]] = {
         {
             "robot.xml": _mujoco(
                 '<body name="a"><joint name="j1" class="strong" range="-1 1"/>'
-                '<body name="b"><joint name="j2" range="-1 1" actuatorfrcrange="-12 87"/>'
+                '<body name="b"><joint name="j2" range="-1 1" actuatorfrcrange="-87 87"/>'
                 '<body name="c"><joint name="j3" range="-1 1" actuatorfrcrange="-5 5" '
                 'actuatorfrclimited="false"/></body></body></body>',
                 '<compiler angle="radian"/><default><default class="strong">'
@@ -130,9 +133,13 @@ MJCF_CASES: dict[str, tuple[dict[str, str], str | None]] = {
         },
         None,
     ),
-    "actuatorfrcrange not bracketing zero": (
+    "asymmetric actuatorfrcrange": (
+        {"robot.xml": _mujoco('<body name="a"><joint name="j" actuatorfrcrange="-12 87"/></body>')},
+        "asymmetric_effort_range",
+    ),
+    "one-sided actuatorfrcrange": (
         {"robot.xml": _mujoco('<body name="a"><joint name="j" actuatorfrcrange="1 5"/></body>')},
-        "invalid_limits",
+        "asymmetric_effort_range",
     ),
     "actuatorfrcrange without autolimits": (
         {
@@ -401,7 +408,7 @@ def test_mjcf_constructs(artifacts: Path, tmp_path: Path) -> None:
     assert report["exclude between two bodies"]["collision_allowances"] == [
         ["a", "b", "mjcf contact exclude"]
     ]
-    # The larger magnitude of the range; none when the joint is not force-limited.
+    # The range's magnitude; none when the joint is not force-limited.
     assert report["actuatorfrcrange is the effort limit, inherited from a class"]["efforts"] == {
         "j1": 150.0,
         "j2": 87.0,
@@ -739,3 +746,58 @@ def test_urdf_and_srdf_ingress(artifacts: Path, tmp_path: Path) -> None:
         report[name] = {"expected": expected, **_outcome(lambda root=root: load_package(root))}  # type: ignore[misc]
     _write(artifacts / "urdf-srdf-ingress.json", report)
     assert {n: r["code"] for n, r in report.items()} == {n: e for n, (_, e) in URDF_CASES.items()}
+
+
+def test_mjcf_effort_limits_bound_effort_commands(artifacts: Path, tmp_path: Path) -> None:
+    """#116: a symmetric actuatorfrcrange bounds effort commands in both directions, as
+    MuJoCo clamps them. An asymmetric range cannot be one magnitude, so it is refused
+    rather than widened."""
+    root = _mjcf_package(
+        tmp_path / "pkg",
+        {
+            "robot.xml": _mujoco(
+                '<body name="a"><joint name="j" range="-1 1" actuatorfrcrange="-87 87"/>'
+                '<geom size="0.1"/></body>',
+                '<compiler angle="radian"/>',
+            )
+        },
+    )
+    manifest = root / "ssrobot.toml"
+    manifest.write_text(
+        manifest.read_text()
+        + '\n[[semantics.groups]]\nname = "g"\njoints = ["j"]\n'
+        + '\n[[semantics.commands]]\ncomponent = "g"\nkind = "joint"\nmode = "effort"\n'
+    )
+    description = load_package(root).description
+
+    def command(value: float) -> str:
+        try:
+            check_command(
+                description,
+                JointCommand(group="g", joints=("j",), mode=JointMode.EFFORT, values=(value,)),
+            )
+        except SsrobotError as e:
+            return e.code
+        return "accepted"
+
+    report: dict[str, Any] = {
+        "effort": description.joint("j").limits.effort,
+        "commands": {str(v): command(v) for v in (87.0, -87.0, 80.0, -80.0, 88.0, -88.0)},
+    }
+    asymmetric = _mjcf_package(
+        tmp_path / "asymmetric",
+        {"robot.xml": _mujoco('<body name="a"><joint name="j" actuatorfrcrange="-12 87"/></body>')},
+    )
+    report["asymmetric"] = _outcome(lambda: load_package(asymmetric))
+    _write(artifacts / "effort-limits.json", report)
+
+    assert report["effort"] == 87.0
+    assert report["commands"] == {
+        "87.0": "accepted",
+        "-87.0": "accepted",
+        "80.0": "accepted",
+        "-80.0": "accepted",
+        "88.0": "out_of_limits",
+        "-88.0": "out_of_limits",
+    }
+    assert report["asymmetric"]["code"] == "asymmetric_effort_range"

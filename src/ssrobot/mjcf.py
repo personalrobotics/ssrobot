@@ -295,10 +295,13 @@ class _Loader:
             raise _fail(e.code, e.message, joint) from None
 
     def _effort(self, joint: ET.Element, active: str) -> float | None:
-        """The joint's effort limit: the larger magnitude of ``actuatorfrcrange``, which
-        clamps the total actuator force on the joint, when it is limited.
+        """The joint's effort limit from ``actuatorfrcrange``, which clamps the total
+        actuator force on the joint, when it is limited.
 
-        ``actuatorfrclimited`` follows the same rules as ``limited``.
+        ``actuatorfrclimited`` follows the same rules as ``limited``. The range is a
+        signed interval, but an effort limit is one magnitude for both directions, so
+        only a symmetric range ``-a a`` can be represented. Any other range fails rather
+        than being widened or narrowed.
         """
         text = self.defaults.get(joint, "actuatorfrcrange", active)
         limited = self.defaults.get(joint, "actuatorfrclimited", active) or "auto"
@@ -327,9 +330,14 @@ class _Loader:
             raise _fail(
                 "malformed_xml", f"actuatorfrcrange {text!r} is not two numbers", joint
             ) from None
-        if not low <= 0 <= high or low == high:
-            raise _fail("invalid_limits", f"actuatorfrcrange {text!r} must bracket zero", joint)
-        return max(-low, high)
+        if not (high > 0 and low == -high):
+            raise _fail(
+                "asymmetric_effort_range",
+                f"actuatorfrcrange {text!r} is not symmetric about zero; ssrobot's effort "
+                "limit is one magnitude for both directions",
+                joint,
+            )
+        return high
 
     def _assets(self) -> None:
         seen: set[Path] = set()
