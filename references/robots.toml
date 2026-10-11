@@ -31,22 +31,23 @@ confirmed_channels = 12
 [[robots]]
 name = "ada"
 repository = "personalrobotics/ada_assets"
-commit = "ae018613de12339cefde7e80934cbbbfddfe0351"
+commit = "66b2d12ffb70fe217c64c45691166fc43d1b203b"
 module = "ada_assets"
 package_root = "src/ada_assets"
-# The start state for MujocoRuntime: the model's default state puts j2n6s200_joint_2
-# outside its limits.
-keyframe = "resting"
+# No keyframe: the package's MuJoCo profile starts it at "resting" (#95,
+# personalrobotics/ada_assets#17).
 
 [robots.expect]
-fingerprint = "78c9d6eeee4f8cf50a004c87156fc0a7f32602a83aa360ded5cffddabbedd281"
+fingerprint = "0023dae934af6fcd89a65719fb2aed50999470f657cebf029d84b08389d27ea5"
 model_format = "mjcf"
 license = "MIT"
 manipulators = 1
 grippers = 1
 end_effectors = 1
 prismatic_joints = 0
-revolute_or_continuous_joints = 10
-# ADA declares no commands or channels yet (parked, #95).
-confirmed_commands = 0
-confirmed_channels = 0
+# The JACO2's six joints and four finger joints, and the articutool's tilt and roll.
+revolute_or_continuous_joints = 12
+# Arm and articutool joint position and trajectory, and the gripper; ten channels,
+# including the wrist camera's RGB and depth, which need rendering (OSMesa in CI).
+confirmed_commands = 5
+confirmed_channels = 10
