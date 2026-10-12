@@ -406,6 +406,18 @@ the uv version. The script then runs two public commands, and opens the runtime:
   applied. A gripper without a confirmed opening channel fails. It
   writes `mujoco-startup.json`, holding the mapping in [mujoco.md](mujoco.md) and what
   was driven, and requires exact time and a package loaded from the install.
+- The **two-robot planning proof** (#24), when the pin has a `scenario` table. One
+  function, `scenario`, serves every robot; the table is all that differs: the
+  manipulator, a scene from `references/scenes/` and its object, a named configuration,
+  and a task space region (the constrained frame, its offset from the object, and the
+  bounds). From fresh snapshots it plans with sscbirrt and ssik to the region, then to
+  the named configuration restricted to the manipulator's joints. Each plan keeps
+  sscbirrt's path and timed trajectory; its prepared command is exactly that trajectory
+  sampled at 2 ms, checked independently, and executed. An effort-limit constraint must
+  fail negotiation (`unsupported_constraint`) and the path alone must not be execution
+  ready (`untimed_result`). It runs twice and every artifact, `trace.jsonl`, each
+  `*.result.json` and `*.prepared.json`, and `scenario.json`, must be byte-identical.
+  They are under `scenario/run-1` and `run-2`.
 
 It then checks that the report is a valid `ssrobot.PackageReport`, that its fingerprint
 matches its description, that nothing is ambiguous, and that the description

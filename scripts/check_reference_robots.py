@@ -13,9 +13,10 @@ For each robot in references/robots.toml, this script:
 5. checks the report against its schema and the robot's pinned fingerprint, model
    format, license, and structure;
 6. opens ``MujocoRuntime`` on the installed package, the same way, and steps it;
-7. plans with sscbirrt on it, from the robot's ``planning`` pins: a configuration goal
-   and a straight-line end-effector move, each sampled, checked independently by
-   ``ssrobot.planning.prepare``, and executed.
+7. runs the two-robot planning proof on it (#24), ``scenario``: one function, given the
+   robot's ``scenario`` data, plans to a task space region around an object and to a
+   named configuration, prepares and executes each plan, and runs twice
+   to show its artifacts are byte-identical.
 
 Steps 1 and 2 need network access: the archive comes from GitHub and the build
 backends from the package index. It writes, under --out, each robot's ``inspect.json``,
@@ -276,70 +277,115 @@ def drive(ctx: Any) -> dict[str, dict[str, Any]]:
 PLAN_PERIOD_NS = 2_000_000  # the control period plans are sampled for
 
 
-def plan(ctx: Any, package: Any, spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Plan with sscbirrt on the installed package, then prepare and execute each plan.
+def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path) -> dict[str, Any]:
+    """The two-robot planning proof (#24): one function for every robot.
 
-    One function serves every robot; what differs is data from references/robots.toml:
-    the manipulator, a configuration goal as an offset from where the arm is, and a
-    straight-line move of the end effector, which is a path-constrained (TSR) query.
-    Each plan is sampled for the control period, checked independently, and executed
-    from its own snapshot.
+    What differs between robots is data from references/robots.toml: the manipulator,
+    the scene and its object, a named configuration, and a task space region for one of
+    the robot's frames around the object. The function never asks which robot it has.
+    In order, from a fresh snapshot each time, it plans with sscbirrt (and ssik) to the
+    region, then to the named configuration restricted to the manipulator's joints.
+    Each plan keeps sscbirrt's path and its timed trajectory, is prepared (sampled and
+    checked independently) and executed with its snapshot. Before
+    executing the first, it shows that an unsupported constraint fails negotiation and
+    a path-only result is not execution-ready. Writes the trace, each result and prepared
+    command, and scenario.json under ``out``.
     """
-    from ssrobot import SsrobotError
+    from dataclasses import replace
+
+    from ssrobot import ConstraintClass, JsonlTrace, Pose, RobotContext, SsrobotError, Tsr
+    from ssrobot.mujoco import MujocoRuntime
     from ssrobot.planning import CBiRRT, SsikKinematics, prepare
 
+    out.mkdir(parents=True, exist_ok=True)
     description = package.description
-    arm = ctx.manipulator(spec["manipulator"])
-    planner = CBiRRT(description, kinematics=SsikKinematics.from_package(package, arm.name))
-    joints = description.group(arm.group).joints
-    results: dict[str, dict[str, Any]] = {}
-    for name in ("configuration", "offset"):
-        snapshot = ctx.snapshot()
-        if name == "configuration":
-            start = [snapshot.position(j) for j in joints]
-            offset = spec["configuration_offset"]
-            result = arm.plan_to_configuration(
-                [q + d for q, d in zip(start, offset, strict=True)],
-                snapshot=snapshot,
-                planner=planner,
+    named = description.configuration(spec["configuration"])
+    named_joints = description.group(named.group).joints
+    record: dict[str, Any] = {"plans": {}, "refusals": {}}
+    runtime = MujocoRuntime(package, keyframe=keyframe, scene=spec["scene"])
+    with (
+        JsonlTrace(out / "trace.jsonl") as trace,
+        RobotContext(description, runtime, sinks=[trace]) as ctx,
+    ):
+        arm = ctx.manipulator(spec["manipulator"])
+        planner = CBiRRT(description, kinematics=SsikKinematics.from_package(package, arm.name))
+        joints = description.group(arm.group).joints
+        home = tuple(named.positions[named_joints.index(j)] for j in joints)
+        frame = spec["frame"]
+
+        def region(snapshot: Any) -> Tsr:
+            pose = next(o.pose for o in snapshot.objects if o.name == spec["object"])
+            x, y, z = spec["offset_position"]
+            w, i, j, k = spec["offset_quat_wxyz"]
+            (a, b), (c, d), (e, f) = spec["position_bounds"]
+            (g, h), (m, n), (o, p) = spec["rotation_bounds"]
+            return Tsr(
+                origin=Pose(position=pose.position, quat_wxyz=(1.0, 0.0, 0.0, 0.0)),
+                offset=Pose(position=(x, y, z), quat_wxyz=(w, i, j, k)),
+                position_bounds=((a, b), (c, d), (e, f)),
+                rotation_bounds=((g, h), (m, n), (o, p)),
             )
-        else:
-            result = arm.plan_to_end_effector_offset(
-                spec["offset_direction"],
-                spec["offset_distance"],
-                snapshot=snapshot,
-                planner=planner,
-                position_tolerance=2e-3,
-                rotation_tolerance=2e-2,
-            )
-        record: dict[str, Any] = {
-            "status": result.status.value,
-            "backend": result.backend,
-            "diagnostics": [d.message for d in result.diagnostics],
+
+        goals: dict[str, Any] = {
+            "region": lambda s: arm.plan_to_tsr(
+                [region(s)], snapshot=s, planner=planner, frame=frame
+            ),
+            "configuration": lambda s: arm.plan_to_configuration(home, snapshot=s, planner=planner),
         }
-        results[name] = record
-        if not result.succeeded:
-            continue
-        assert result.path is not None and result.trajectory is not None
-        record["path_waypoints"] = len(result.path.waypoints)
-        record["trajectory_duration_s"] = result.trajectory.duration
-        try:
-            ready = prepare(
-                result,
-                ctx.planning_scene(snapshot, arm.group),
-                description=description,
-                period_ns=PLAN_PERIOD_NS,
-            )
-        except SsrobotError as e:
-            record["prepared"] = f"{e.code}: {e.message}"
-            continue
-        record["prepared"] = {c.name: c.detail for c in ready.checks}
-        execution = ctx.submit(ready.command, snapshot=snapshot, source="planner")
-        record["state"] = ctx.run_until(execution, max_ticks=20_000).state.value
-    return results
+        for name, plan in goals.items():
+            snapshot = ctx.snapshot()
+            result = plan(snapshot)
+            (out / f"{name}.result.json").write_text(dumps(result) + "\n")
+            entry: dict[str, Any] = {
+                "status": result.status.value,
+                "backend": result.backend,
+                "diagnostics": [d.message for d in result.diagnostics],
+            }
+            record["plans"][name] = entry
+            if not result.succeeded:
+                continue
+            assert result.path is not None and result.trajectory is not None
+            entry["path_waypoints"] = len(result.path.waypoints)
+            entry["trajectory_pieces"] = len(result.trajectory.pieces)
+            entry["trajectory_duration_s"] = result.trajectory.duration
+            scene = ctx.planning_scene(snapshot, arm.group)
+            if name == "region":
+                try:
+                    arm.plan_to_tsr(
+                        [region(snapshot)],
+                        snapshot=snapshot,
+                        planner=planner,
+                        frame=frame,
+                        constraints=(ConstraintClass.EFFORT_LIMITS,),
+                    )
+                    record["refusals"]["unsupported_constraint"] = "accepted"
+                except SsrobotError as error:
+                    record["refusals"]["unsupported_constraint"] = error.code
+                try:
+                    prepare(
+                        replace(result, trajectory=None),
+                        scene,
+                        description=description,
+                        period_ns=PLAN_PERIOD_NS,
+                    )
+                    record["refusals"]["path_only_result"] = "accepted"
+                except SsrobotError as error:
+                    record["refusals"]["path_only_result"] = error.code
+            try:
+                ready = prepare(result, scene, description=description, period_ns=PLAN_PERIOD_NS)
+            except SsrobotError as error:
+                entry["prepared"] = f"{error.code}: {error.message}"
+                continue
+            (out / f"{name}.prepared.json").write_text(dumps(ready) + "\n")
+            entry["prepared"] = {c.name: c.detail for c in ready.checks}
+            entry["sampled_source"] = ready.command == result.trajectory.sample(PLAN_PERIOD_NS)
+            execution = ctx.submit(ready.command, snapshot=snapshot, source="planner")
+            entry["state"] = ctx.run_until(execution, max_ticks=20_000).state.value
+    (out / "scenario.json").write_text(json.dumps(record, indent=2) + "\n")
+    return record
 
 
-def startup(module: str, out: Path, keyframe: str | None, planning: dict[str, Any] | None) -> int:
+def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] | None) -> int:
     """Open MujocoRuntime on the installed ``module``, step it, and write what it bound.
 
     Runs in the isolated inspection process, see ``mujoco_startup``.
@@ -364,8 +410,17 @@ def startup(module: str, out: Path, keyframe: str | None, planning: dict[str, An
             "mapping": json.loads(dumps(runtime.mapping)),
         }
         record["driven"] = drive(ctx)
-        if planning is not None:
-            record["planned"] = plan(ctx, package, planning)
+    if spec is not None:
+        # Twice, from the same start, to show the artifacts are deterministic.
+        runs = [
+            scenario(package, spec, keyframe, out.parent / "scenario" / f"run-{i}") for i in (1, 2)
+        ]
+        first, second = (out.parent / "scenario" / f"run-{i}" for i in (1, 2))
+        record["scenario"] = runs[0]
+        record["scenario_identical"] = {
+            f.name: f.read_bytes() == (second / f.name).read_bytes()
+            for f in sorted(first.iterdir())
+        }
     out.write_text(json.dumps(record, indent=2) + "\n")
     return 0
 
@@ -373,7 +428,7 @@ def startup(module: str, out: Path, keyframe: str | None, planning: dict[str, An
 def mujoco_startup(
     module: str,
     keyframe: str | None,
-    planning: dict[str, Any] | None,
+    spec: dict[str, Any] | None,
     out: Path,
     scratch: Path,
 ) -> tuple[bool, str]:
@@ -387,7 +442,7 @@ def mujoco_startup(
             module,
             str((out / "mujoco-startup.json").resolve()),
             *(["--keyframe", keyframe] if keyframe else []),
-            *(["--planning", json.dumps(planning)] if planning else []),
+            *(["--scenario", json.dumps(spec)] if spec else []),
         ],
         capture_output=True,
         text=True,
@@ -477,8 +532,10 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
     }
     record["structure"] = observed
     compare("structure", {k: expect[k] for k in observed}, observed)
-    planning = robot.get("planning")
-    started, detail = mujoco_startup(robot["module"], robot.get("keyframe"), planning, out, scratch)
+    spec = robot.get("scenario")
+    if spec is not None:
+        spec = {**spec, "scene": str(ROOT / spec["scene"])}
+    started, detail = mujoco_startup(robot["module"], robot.get("keyframe"), spec, out, scratch)
     add("mujoco_startup", started, detail)
     if not started:
         return record
@@ -494,12 +551,28 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
         all(result["state"] == "succeeded" for result in driven.values()),
         f"{len(driven)} capabilities: {driven}" if driven else "no commands to drive",
     )
-    if planning is not None:
-        planned = startup_record["planned"]
+    if spec is not None:
+        run = startup_record["scenario"]
+        plans, refusals = run["plans"], run["refusals"]
         add(
-            "mujoco_planning",
-            all(p.get("state") == "succeeded" for p in planned.values()),
-            f"{len(planned)} plans: {planned}",
+            "planning_scenario",
+            [p.get("state") for p in plans.values()] == ["succeeded"] * 2
+            and all(p.get("sampled_source") for p in plans.values()),
+            f"{len(plans)} plans: {plans}",
+        )
+        compare(
+            "planning_refusals",
+            {
+                "unsupported_constraint": "unsupported_constraint",
+                "path_only_result": "untimed_result",
+            },
+            refusals,
+        )
+        identical = startup_record["scenario_identical"]
+        add(
+            "planning_deterministic",
+            bool(identical) and all(identical.values()),
+            f"two runs, byte for byte: {identical}",
         )
     return record
 
@@ -509,10 +582,10 @@ def main() -> int:
     parser.add_argument("--out", type=Path)
     parser.add_argument("--startup", nargs=2, metavar=("MODULE", "OUT"), help=argparse.SUPPRESS)
     parser.add_argument("--keyframe", help=argparse.SUPPRESS)
-    parser.add_argument("--planning", type=json.loads, help=argparse.SUPPRESS)
+    parser.add_argument("--scenario", type=json.loads, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.startup is not None:
-        return startup(args.startup[0], Path(args.startup[1]), args.keyframe, args.planning)
+        return startup(args.startup[0], Path(args.startup[1]), args.keyframe, args.scenario)
     if args.out is None:
         parser.error("--out is required")
     pins = tomllib.loads(PINS.read_text())
