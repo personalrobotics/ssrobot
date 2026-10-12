@@ -27,7 +27,7 @@ yet.
 | `SceneState` | A context's scene: objects, fixtures, and attachments (object, end effector, transform, allowed contacts), with a revision. Declared state for planners and traces; it never changes physics. | Implemented (#17) |
 | `SceneSnapshot` | Immutable, serializable scene state. | Implemented (#18) |
 | `PlanningScene` | Neutral capability a runtime materializes from a snapshot: forward kinematics, state and edge validity, optional collision detail. Isolated and timeless. | Implemented (#18); the MuJoCo provider is built on sscbirrt's native scene |
-| Planning contracts | Neutral requests, goals, effective limits, results, geometric paths, timed trajectories, capability negotiation, and execution readiness. A planner that returns only geometry runs after an explicitly selected path-preserving processor. | Implemented (#20); the sscbirrt, ssik, and sstsr adapter is #22 |
+| Planning contracts | Neutral requests, goals, effective limits, results, geometric paths, timed trajectories, capability negotiation, and execution readiness. A planner that returns only geometry runs after an explicitly selected path-preserving processor. | Implemented (#20), with the sscbirrt, ssik, and sstsr adapter `ssrobot.planning` (#22; see [planning.md](planning.md)) |
 | Trace | Versioned JSONL record of everything a context did, with content-addressed external assets. | Implemented |
 | `PolicyRunner` | Drives policy inference timing over a context: observe, infer, validate, submit, step. | M4 |
 
@@ -56,9 +56,10 @@ The same description drives a `RobotContext` over `ReplayRuntime`, which
 
 ## Target v0.1 user journeys
 
-None of these run yet. `MujocoRuntime`, task scenes, attachments, snapshots, planning
-scenes, the planning contracts, and `ctx.manipulator` exist; the planner adapter arrives
-in M3 (#22), and `PolicyRunner` and the LeRobot adapter in M4.
+Only the planning journey's calls exist yet: `MujocoRuntime`, task scenes, attachments,
+snapshots, planning scenes, the planning contracts, `ctx.manipulator`, and the sscbirrt
+adapter (README *Planning* runs one). The snippets here are illustrative. `PolicyRunner`
+and the LeRobot adapter arrive in M4.
 
 All three journeys use the same robot package, context, command types, and trace. A
 client that works in one runtime works in another by changing only the runtime

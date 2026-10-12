@@ -61,6 +61,35 @@ planner's collision and kinematics queries on that copy, built on sscbirrt's nat
 MuJoCo checker. `ctx.submit(plan, snapshot=snapshot)` refuses a plan whose scene has
 since changed. [docs/mujoco.md](docs/mujoco.md) describes what it binds and how commands run.
 
+### Planning
+
+With the `planning` extra as well, sscbirrt plans in a snapshot and times the motion
+under the arm's velocity and acceleration limits. `prepare` samples it for the control
+tick and checks the command independently before it runs:
+
+```python
+import ssrobot
+from ssrobot.mujoco import MujocoRuntime
+from ssrobot.planning import CBiRRT, prepare
+
+package = ssrobot.load_package("examples/packages/mujoco_arm")
+runtime = MujocoRuntime(package, scene="examples/scenes/pedestal.xml")
+with ssrobot.RobotContext(package.description, runtime) as ctx:
+    arm = ctx.manipulator()                                  # the only manipulator
+    snapshot = ctx.snapshot()
+    goal = ssrobot.ConfigurationGoal(configurations=((-0.6, -0.4, 0.0),))
+    request = arm.request(goal, snapshot=snapshot, velocity_scaling=0.5)
+    plan = ctx.plan(request, snapshot=snapshot, planner=CBiRRT(package.description))
+    scene = ctx.planning_scene(snapshot, arm.group)
+    ready = prepare(request, plan, scene, description=package.description, period_ns=2_000_000)
+    status = ctx.run_until(ctx.submit(ready.command, snapshot=snapshot), max_ticks=5_000)
+    print(status.state.value, plan.backend, round(plan.trajectory.duration, 2), "s")
+```
+
+`SsikKinematics.from_package(package, "right_arm")` adds pose, offset, and TSR goals for
+a 6- or 7-joint arm. [docs/planning.md](docs/planning.md) describes the adapter and the
+checks.
+
 ## Target v0.1
 
 Object state channels (M2), planning (M3), and policies (M4) are not implemented yet. The planning-only, policy-only, and hybrid examples in

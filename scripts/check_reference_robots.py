@@ -12,7 +12,10 @@ For each robot in references/robots.toml, this script:
    with that target as the only location of the package;
 5. checks the report against its schema and the robot's pinned fingerprint, model
    format, license, and structure;
-6. opens ``MujocoRuntime`` on the installed package, the same way, and steps it.
+6. opens ``MujocoRuntime`` on the installed package, the same way, and steps it;
+7. plans with sscbirrt on it, from the robot's ``planning`` pins: a configuration goal
+   and a straight-line end-effector move, each sampled, checked independently by
+   ``ssrobot.planning.prepare``, and executed.
 
 Steps 1 and 2 need network access: the archive comes from GitHub and the build
 backends from the package index. It writes, under --out, each robot's ``inspect.json``,
@@ -270,7 +273,73 @@ def drive(ctx: Any) -> dict[str, dict[str, Any]]:
     return results
 
 
-def startup(module: str, out: Path, keyframe: str | None) -> int:
+PLAN_PERIOD_NS = 2_000_000  # the control period plans are sampled for
+
+
+def plan(ctx: Any, package: Any, spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Plan with sscbirrt on the installed package, then prepare and execute each plan.
+
+    One function serves every robot; what differs is data from references/robots.toml:
+    the manipulator, a configuration goal as an offset from where the arm is, and a
+    straight-line move of the end effector, which is a path-constrained (TSR) query.
+    Each plan is sampled for the control period, checked independently, and executed
+    from its own snapshot.
+    """
+    from ssrobot import ConfigurationGoal, OffsetGoal, SsrobotError
+    from ssrobot.planning import CBiRRT, SsikKinematics, prepare
+
+    description = package.description
+    arm = ctx.manipulator(spec["manipulator"])
+    planner = CBiRRT(description, kinematics=SsikKinematics.from_package(package, arm.name))
+    joints = description.group(arm.group).joints
+    results: dict[str, dict[str, Any]] = {}
+    for name in ("configuration", "offset"):
+        snapshot = ctx.snapshot()
+        if name == "configuration":
+            start = [snapshot.position(j) for j in joints]
+            goal: Any = ConfigurationGoal(
+                configurations=(
+                    tuple(q + d for q, d in zip(start, spec["configuration_offset"], strict=True)),
+                )
+            )
+        else:
+            goal = OffsetGoal(
+                direction=tuple(spec["offset_direction"]),
+                distance=spec["offset_distance"],
+                position_tolerance=2e-3,
+                rotation_tolerance=2e-2,
+            )
+        request = arm.request(goal, snapshot=snapshot)
+        result = ctx.plan(request, snapshot=snapshot, planner=planner)
+        record: dict[str, Any] = {
+            "status": result.status.value,
+            "backend": result.backend,
+            "diagnostics": [d.message for d in result.diagnostics],
+        }
+        results[name] = record
+        if not result.succeeded:
+            continue
+        assert result.path is not None and result.trajectory is not None
+        record["path_waypoints"] = len(result.path.waypoints)
+        record["trajectory_duration_s"] = result.trajectory.duration
+        try:
+            ready = prepare(
+                request,
+                result,
+                ctx.planning_scene(snapshot, arm.group),
+                description=description,
+                period_ns=PLAN_PERIOD_NS,
+            )
+        except SsrobotError as e:
+            record["prepared"] = f"{e.code}: {e.message}"
+            continue
+        record["prepared"] = {c.name: c.detail for c in ready.checks}
+        execution = ctx.submit(ready.command, snapshot=snapshot, source="planner")
+        record["state"] = ctx.run_until(execution, max_ticks=20_000).state.value
+    return results
+
+
+def startup(module: str, out: Path, keyframe: str | None, planning: dict[str, Any] | None) -> int:
     """Open MujocoRuntime on the installed ``module``, step it, and write what it bound.
 
     Runs in the isolated inspection process, see ``mujoco_startup``.
@@ -295,11 +364,19 @@ def startup(module: str, out: Path, keyframe: str | None) -> int:
             "mapping": json.loads(dumps(runtime.mapping)),
         }
         record["driven"] = drive(ctx)
+        if planning is not None:
+            record["planned"] = plan(ctx, package, planning)
     out.write_text(json.dumps(record, indent=2) + "\n")
     return 0
 
 
-def mujoco_startup(module: str, keyframe: str | None, out: Path, scratch: Path) -> tuple[bool, str]:
+def mujoco_startup(
+    module: str,
+    keyframe: str | None,
+    planning: dict[str, Any] | None,
+    out: Path,
+    scratch: Path,
+) -> tuple[bool, str]:
     """Run ``startup`` against the installed package, isolated like ``ssrobot inspect``."""
     result = subprocess.run(
         [
@@ -310,6 +387,7 @@ def mujoco_startup(module: str, keyframe: str | None, out: Path, scratch: Path) 
             module,
             str((out / "mujoco-startup.json").resolve()),
             *(["--keyframe", keyframe] if keyframe else []),
+            *(["--planning", json.dumps(planning)] if planning else []),
         ],
         capture_output=True,
         text=True,
@@ -399,7 +477,8 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
     }
     record["structure"] = observed
     compare("structure", {k: expect[k] for k in observed}, observed)
-    started, detail = mujoco_startup(robot["module"], robot.get("keyframe"), out, scratch)
+    planning = robot.get("planning")
+    started, detail = mujoco_startup(robot["module"], robot.get("keyframe"), planning, out, scratch)
     add("mujoco_startup", started, detail)
     if not started:
         return record
@@ -415,6 +494,13 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
         all(result["state"] == "succeeded" for result in driven.values()),
         f"{len(driven)} capabilities: {driven}" if driven else "no commands to drive",
     )
+    if planning is not None:
+        planned = startup_record["planned"]
+        add(
+            "mujoco_planning",
+            all(p.get("state") == "succeeded" for p in planned.values()),
+            f"{len(planned)} plans: {planned}",
+        )
     return record
 
 
@@ -423,9 +509,10 @@ def main() -> int:
     parser.add_argument("--out", type=Path)
     parser.add_argument("--startup", nargs=2, metavar=("MODULE", "OUT"), help=argparse.SUPPRESS)
     parser.add_argument("--keyframe", help=argparse.SUPPRESS)
+    parser.add_argument("--planning", type=json.loads, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.startup is not None:
-        return startup(args.startup[0], Path(args.startup[1]), args.keyframe)
+        return startup(args.startup[0], Path(args.startup[1]), args.keyframe, args.planning)
     if args.out is None:
         parser.error("--out is required")
     pins = tomllib.loads(PINS.read_text())

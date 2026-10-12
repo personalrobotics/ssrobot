@@ -28,6 +28,14 @@ revolute_or_continuous_joints = 28
 confirmed_commands = 10
 confirmed_channels = 12
 
+# Planned with sscbirrt on the installed package (#22): a configuration goal, as an
+# offset from where the arm is, and a straight-line move of the end effector.
+[robots.planning]
+manipulator = "right_arm"
+configuration_offset = [0.4, 0.3, -0.3, 0.2, 0.3, 0.4]
+offset_direction = [0.0, 0.0, 1.0]
+offset_distance = 0.05
+
 [[robots]]
 name = "ada"
 repository = "personalrobotics/ada_assets"
@@ -51,3 +59,9 @@ revolute_or_continuous_joints = 12
 # including the wrist camera's RGB and depth, which need rendering (OSMesa in CI).
 confirmed_commands = 5
 confirmed_channels = 10
+
+[robots.planning]
+manipulator = "arm"
+configuration_offset = [0.3, 0.3, 0.3, 0.2, 0.3, 0.4]
+offset_direction = [0.0, 0.0, 1.0]
+offset_distance = 0.05
