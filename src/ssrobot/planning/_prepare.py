@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Callable
 
@@ -20,7 +21,6 @@ from ssrobot.planning_contracts import (
     PreparedTrajectory,
     TimedTrajectory,
     TrajectoryProcessor,
-    check_result,
 )
 from ssrobot.scene import PlanningScene
 from ssrobot.validation import check_command, check_trajectory_rates
@@ -31,7 +31,6 @@ configuration goal, TSR distance for a region. sscbirrt's default membership tol
 
 
 def prepare(
-    request: PlanningRequest,
     result: PlanResult,
     scene: PlanningScene,
     *,
@@ -41,16 +40,18 @@ def prepare(
     tolerance: float = GOAL_TOLERANCE,
 ) -> PreparedTrajectory:
     """The runtime command for a successful plan, checked independently of whatever
-    produced it.
+    produced it. The plan carries its request, so nothing else is needed.
 
     The plan's timed trajectory is sampled every ``period_ns``. A result with only a
     path is timed by ``processor`` first, and refused (``untimed_result``) without one.
     The sampled command is then checked as the runtime will execute it, by straight
     joint-space lines between its waypoints: against the description and the effective
-    limits, from the start to the goal, within the path constraints, and collision-free
-    in ``scene``. Any failed check raises ``execution_unready`` naming every failure.
+    limits, from the start to the goal, and step by step at the verification resolution,
+    the stricter of the scene's and the trajectory's own, for collision and the path
+    constraints. Nothing is claimed beyond what is re-established here. Any failed check
+    raises ``execution_unready`` naming every failure.
     """
-    check_result(request, result)
+    request = result.request
     if not result.succeeded:
         raise ValidationError("execution_unready", f"the plan did not succeed: {result.status}")
     if (scene.group, scene.joints, scene.snapshot.fingerprint()) != (
@@ -118,11 +119,15 @@ def prepare(
         f"largest continuous-joint step {turn:.3g} rad, which must be under pi",
     )
 
-    longest = float(np.abs(chords).max())
+    resolution = min(scene.edge_resolution, timed.validation_resolution)
+    lengths = np.abs(chords).max(axis=1)
+    longest = float(lengths.max())
     record(
         "chord_resolution",
-        longest <= scene.edge_resolution,
-        f"longest step {longest:.3g}, bound {scene.edge_resolution} (the validation resolution)",
+        longest <= resolution,
+        f"longest step {longest:.3g}, bound {resolution}: the stricter of the scene's "
+        f"{scene.edge_resolution} and the trajectory's {timed.validation_resolution}; "
+        "a shorter period_ns shortens the steps",
     )
 
     bad = [
@@ -140,15 +145,23 @@ def prepare(
     constraints += lower_goal(request, scene).get("constraint_tsrs", [])  # an offset's line
     if constraints:
         assert request.frame is not None
-        worst = max(
-            float(c.distance(matrix(scene.forward_kinematics(tuple(q), request.frame)))[0])
-            for q in rows
-            for c in constraints
-        )
+        frame = request.frame
+        worst, where = 0.0, ""
+        for i, (q0, q1) in enumerate(itertools.pairwise(rows)):
+            # The executed line, at both ends and at least its midpoint, with no two
+            # checked states more than the resolution apart in any joint.
+            parts = max(2, math.ceil(float(lengths[i]) / resolution))
+            for k in range(0 if i == 0 else 1, parts + 1):
+                q = q0 + (q1 - q0) * (k / parts)
+                pose = matrix(scene.forward_kinematics(tuple(float(v) for v in q), frame))
+                distance = max(float(c.distance(pose)[0]) for c in constraints)
+                if distance > worst:
+                    worst, where = distance, f" at step {i}, {k}/{parts} of the way"
         record(
             "tsr_path",
             worst <= tolerance,
-            f"largest path-constraint distance {worst:.3g}, bound {tolerance}",
+            f"largest path-constraint distance along the executed steps {worst:.3g}{where}, "
+            f"bound {tolerance}",
         )
 
     failed = [c for c in checks if not c.passed]

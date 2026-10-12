@@ -13,7 +13,8 @@ uv add "ssrobot[mujoco,planning]"
 | --- | --- |
 | `CBiRRT(description, *, kinematics=None, config=None, backend="auto")` | A `Planner`: sscbirrt's constrained bidirectional RRT, timed by sscbirrt |
 | `SsikKinematics.from_package(package, manipulator)` | Analytic IK for one manipulator from the package's canonical MJCF |
-| `prepare(request, result, scene, *, description, period_ns, processor=None, tolerance=1e-3)` | The runtime command for a plan, independently checked: a `PreparedTrajectory` |
+| `prepare(result, scene, *, description, period_ns, processor=None, tolerance=1e-3)` | The runtime command for a plan, independently checked: a `PreparedTrajectory` |
+| `RestToRestProcessor()` | A path-preserving `TrajectoryProcessor` for a plan that has only a path |
 
 The adapter depends only on the neutral `PlanningScene`, never on `MujocoRuntime` or a
 live context. Without the extra, `import ssrobot.planning` fails with an `ImportError`
@@ -93,12 +94,25 @@ arm is wherever the snapshot put it. Binding checks that the composed kinematics
 with the scene's forward kinematics, at the start and 8 seeded configurations, within
 1e-6; otherwise it fails with `kinematics_mismatch`.
 
+## Timing a path
+
+`RestToRestProcessor` times a geometric path along its own lines. Each segment follows
+one synchronized trapezoid (or triangle) in its path parameter, as fast as the most
+limiting joint allows, and comes to rest at every waypoint. It never leaves the path,
+so it validates only the velocity and acceleration limits, and its trajectory keeps the
+path's validation resolution.
+
 ## Preparing a command
 
-`prepare` samples the plan's trajectory every `period_ns` (`TimedTrajectory.sample`).
-A result with only a path needs `processor`, and fails with `untimed_result` without
-one. It then checks the command, a straight joint-space line between consecutive
-waypoints as the runtime interpolates it:
+A plan carries its request, so `prepare(plan, scene, ...)` needs nothing else: every
+`plan_to_*` result goes straight to it. It samples the plan's trajectory every
+`period_ns` (`TimedTrajectory.sample`). A result with only a path needs `processor`, and
+fails with `untimed_result` without one.
+
+The verification resolution is the stricter of the scene's `edge_resolution` and the
+trajectory's own `validation_resolution`, so preparation never claims finer evidence
+than the trajectory carried. The command is then checked as the runtime executes it, a
+straight joint-space line between consecutive waypoints:
 
 | Check | Passes when |
 | --- | --- |
@@ -107,9 +121,9 @@ waypoints as the runtime interpolates it:
 | `start` | the first waypoint is the request's start, within 1e-9 |
 | `goal` | the last waypoint is within `tolerance` of a goal configuration (continuous joints modulo a turn), or of a goal TSR |
 | `continuous_joints` | no continuous joint moves half a turn or more in one step, so the line cannot go the wrong way round |
-| `chord_resolution` | no step is longer than the scene's edge resolution |
+| `chord_resolution` | no step is longer than the verification resolution in any joint. Otherwise a shorter `period_ns` is needed |
 | `collision` | the planning scene accepts every step as an edge |
-| `tsr_path` | with a path constraint or an offset goal: every waypoint is within `tolerance` of every constraint TSR |
+| `tsr_path` | with a path constraint or an offset goal: every state along every executed step, at both ends, at least the midpoint, and no two more than the verification resolution apart, is within `tolerance` of every constraint TSR. Forward kinematics are nonlinear, so waypoints on a constraint do not imply the steps between them are |
 
 Every failed check is named in one `execution_unready` error. A successful
 `PreparedTrajectory` records the request and source-trajectory fingerprints, the source
@@ -120,8 +134,9 @@ Submit its command with the snapshot it was planned in.
 
 | Artifact | Shows |
 | --- | --- |
-| `artifacts/test_sscbirrt_plans_a_carry_that_executes/` | The example arm holds the box from `pedestal.xml`. A lift and a carry are each planned natively at half speed and half acceleration, and their requests, results, and prepared commands are written. The command is exactly the sampled planner trajectory, so there is no second timing pass, and every check passes. Both execute, the box stays held with no violation, and a second run is byte-identical. |
+| `artifacts/test_sscbirrt_plans_a_carry_that_executes/` | The example arm holds the box from `pedestal.xml`. A lift and a carry are each planned natively by `plan_to_configuration` at half speed and half acceleration, and go straight to `prepare`. Their results, which carry their requests, and their prepared commands are written. The command is exactly the sampled planner trajectory, so there is no second timing pass, and every check passes. Both execute, the box stays held with no violation, and a second run is byte-identical. |
 | `artifacts/test_neutral_providers_and_geometric_paths/` | The same query through a scene with no native checker plans on sscbirrt's Python backend and passes every check. Its path without the trajectory is refused without a processor (`untimed_result`); with `RestToRestProcessor` it is prepared and executed. A second run is byte-identical. |
+| `artifacts/test_preparation_never_claims_more_than_it_rechecks/evidence.json` | The bare example arm swings its elbow 0.5 rad, timed by `RestToRestProcessor`. A path validated at 0.01 is refused at a 20 ms period: its steps reach 0.031, though the scene's resolution is 0.05. At 2 ms its steps are 0.003 and it is accepted. With the tcp constrained to the straight line between its start and goal, a 10 s period gives two waypoints, both exactly on the line, but the executed step between them arcs 15 mm off it, so the plan is refused (`tsr_path`). |
 | `artifacts/test_adapter_refusals/refusals.json` | ssik cannot solve the three-joint arm (`kinematics_unavailable`); a pose goal without kinematics (`unsupported_goal`) and effort limits (`unsupported_constraint`) are refused at negotiation; a goal in collision is `infeasible`; an abort is `cancelled`; a path through the pedestal is never execution-ready (`execution_unready`). |
 | `artifacts/reference-robots/<robot>/mujoco-startup.json` (CI job `reference-robots`) | Geodude's `right_arm` and ADA's `arm`, from their installed packages with ssik kinematics: a configuration goal and a 5 cm straight-line move of the end effector (a TSR-constrained query), each planned, prepared, and executed. Their pins are in `references/robots.toml`. |
 

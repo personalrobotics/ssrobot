@@ -77,11 +77,12 @@ runtime = MujocoRuntime(package, scene="examples/scenes/pedestal.xml")
 with ssrobot.RobotContext(package.description, runtime) as ctx:
     arm = ctx.manipulator()                                  # the only manipulator
     snapshot = ctx.snapshot()
-    goal = ssrobot.ConfigurationGoal(configurations=((-0.6, -0.4, 0.0),))
-    request = arm.request(goal, snapshot=snapshot, velocity_scaling=0.5)
-    plan = ctx.plan(request, snapshot=snapshot, planner=CBiRRT(package.description))
+    plan = arm.plan_to_configuration(
+        (-0.6, -0.4, 0.0), snapshot=snapshot, planner=CBiRRT(package.description),
+        velocity_scaling=0.5,
+    )                                                        # carries its request
     scene = ctx.planning_scene(snapshot, arm.group)
-    ready = prepare(request, plan, scene, description=package.description, period_ns=2_000_000)
+    ready = prepare(plan, scene, description=package.description, period_ns=2_000_000)
     status = ctx.run_until(ctx.submit(ready.command, snapshot=snapshot), max_ticks=5_000)
     print(status.state.value, plan.backend, round(plan.trajectory.duration, 2), "s")
 ```

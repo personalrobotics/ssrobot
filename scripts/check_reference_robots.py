@@ -285,7 +285,7 @@ def plan(ctx: Any, package: Any, spec: dict[str, Any]) -> dict[str, dict[str, An
     Each plan is sampled for the control period, checked independently, and executed
     from its own snapshot.
     """
-    from ssrobot import ConfigurationGoal, OffsetGoal, SsrobotError
+    from ssrobot import SsrobotError
     from ssrobot.planning import CBiRRT, SsikKinematics, prepare
 
     description = package.description
@@ -297,20 +297,21 @@ def plan(ctx: Any, package: Any, spec: dict[str, Any]) -> dict[str, dict[str, An
         snapshot = ctx.snapshot()
         if name == "configuration":
             start = [snapshot.position(j) for j in joints]
-            goal: Any = ConfigurationGoal(
-                configurations=(
-                    tuple(q + d for q, d in zip(start, spec["configuration_offset"], strict=True)),
-                )
+            offset = spec["configuration_offset"]
+            result = arm.plan_to_configuration(
+                [q + d for q, d in zip(start, offset, strict=True)],
+                snapshot=snapshot,
+                planner=planner,
             )
         else:
-            goal = OffsetGoal(
-                direction=tuple(spec["offset_direction"]),
-                distance=spec["offset_distance"],
+            result = arm.plan_to_end_effector_offset(
+                spec["offset_direction"],
+                spec["offset_distance"],
+                snapshot=snapshot,
+                planner=planner,
                 position_tolerance=2e-3,
                 rotation_tolerance=2e-2,
             )
-        request = arm.request(goal, snapshot=snapshot)
-        result = ctx.plan(request, snapshot=snapshot, planner=planner)
         record: dict[str, Any] = {
             "status": result.status.value,
             "backend": result.backend,
@@ -324,7 +325,6 @@ def plan(ctx: Any, package: Any, spec: dict[str, Any]) -> dict[str, dict[str, An
         record["trajectory_duration_s"] = result.trajectory.duration
         try:
             ready = prepare(
-                request,
                 result,
                 ctx.planning_scene(snapshot, arm.group),
                 description=description,

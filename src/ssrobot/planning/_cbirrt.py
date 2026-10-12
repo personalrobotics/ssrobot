@@ -216,7 +216,7 @@ class CBiRRT:
             validation_resolution=scene.edge_resolution,
         )
         return PlanResult(
-            request=request.fingerprint(),
+            request=request,
             planner=self.name,
             backend=backend,
             status=PlanStatus.SUCCEEDED,
@@ -236,7 +236,7 @@ class CBiRRT:
         backend: str = "none",
     ) -> PlanResult:
         return PlanResult(
-            request=request.fingerprint(),
+            request=request,
             planner=self.name,
             backend=backend,
             status=status,
