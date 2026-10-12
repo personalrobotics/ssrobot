@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.TsrGoal v1",
+  "$ref": "#/$defs/TsrGoal",
+  "$defs": {
+    "Pose": {
+      "type": "object",
+      "description": "A rigid transform: the pose of a child frame expressed in a parent frame.",
+      "properties": {
+        "position": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Child origin in parent coordinates.",
+          "x-unit": "m"
+        },
+        "quat_wxyz": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Unit quaternion (w, x, y, z) rotating child axes into parent.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "position",
+        "quat_wxyz"
+      ],
+      "additionalProperties": false
+    },
+    "Tsr": {
+      "type": "object",
+      "description": "A task space region: the poses ``origin @ T_w @ offset`` with ``T_w`` within the",
+      "properties": {
+        "origin": {
+          "$ref": "#/$defs/Pose",
+          "description": "The region frame's pose in the world (T0_w)."
+        },
+        "offset": {
+          "$ref": "#/$defs/Pose",
+          "description": "The constrained frame in the region frame (Tw_e)."
+        },
+        "position_bounds": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            },
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            },
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Lower and upper x, y, z in the region frame.",
+          "x-unit": "m"
+        },
+        "rotation_bounds": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            },
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            },
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Lower and upper roll, pitch, yaw.",
+          "x-unit": "rad"
+        }
+      },
+      "required": [
+        "origin",
+        "offset",
+        "position_bounds",
+        "rotation_bounds"
+      ],
+      "additionalProperties": false
+    },
+    "TsrGoal": {
+      "type": "object",
+      "description": "Bring the request's frame into any one of these regions.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.TsrGoal"
+        },
+        "version": {
+          "const": 1
+        },
+        "tsrs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Tsr"
+          },
+          "description": "Goal regions; any one suffices."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "tsrs"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

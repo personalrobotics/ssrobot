@@ -30,6 +30,7 @@ UNITS = frozenset(
         "1",  # dimensionless
         "count",  # integer counts and array dimensions
         "ns",
+        "s",
         "m",
         "rad",
         "m/s",
