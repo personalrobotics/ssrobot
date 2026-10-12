@@ -33,6 +33,7 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import os
 import platform
 import shutil
@@ -277,6 +278,40 @@ def drive(ctx: Any) -> dict[str, dict[str, Any]]:
 PLAN_PERIOD_NS = 2_000_000  # the control period plans are sampled for
 
 
+ACHIEVED_JOINT_ERROR = 0.01
+"""How far, per joint, the robot may end from a configuration goal: MujocoRuntime's
+trajectory goal tolerance."""
+
+ACHIEVED_POSITION_M = 0.01
+ACHIEVED_ROTATION_RAD = 0.02
+"""How far the selected frame may end from the planned goal pose: what the runtime's
+0.01 joint goal tolerance allows at these arms' reach."""
+
+
+def _matrix(pose: Any) -> Any:
+    """The 4x4 transform of an ssrobot ``Pose``."""
+    import numpy as np
+
+    w, x, y, z = pose.quat_wxyz
+    T = np.eye(4)
+    T[:3, :3] = (
+        (1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)),
+        (2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)),
+        (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)),
+    )
+    T[:3, 3] = pose.position
+    return T
+
+
+def _region(region: Any) -> Any:
+    """The sstsr region for an ssrobot ``Tsr``, independently of the planning adapter."""
+    import numpy as np
+    import tsr
+
+    bounds = np.array([*region.position_bounds, *region.rotation_bounds], dtype=float)
+    return tsr.TSR(T0_w=_matrix(region.origin), Tw_e=_matrix(region.offset), Bw=bounds)
+
+
 def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path) -> dict[str, Any]:
     """The two-robot planning proof (#24): one function for every robot.
 
@@ -288,12 +323,17 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
     Each plan keeps sscbirrt's path and its timed trajectory, is prepared (sampled and
     checked independently) and executed with its snapshot. Before
     executing the first, it shows that an unsupported constraint fails negotiation and
-    a path-only result is not execution-ready. Writes the trace, each result and prepared
-    command, and scenario.json under ``out``.
+    a path-only result is not execution-ready. After each execution a fresh snapshot
+    records what was achieved: the frame's distance to the request's region, or the
+    joint error to the configuration. Writes each result and prepared command, and
+    scenario.json with every execution's outcome, under ``out``. No full trace: each
+    applied record repeats the whole submitted trajectory, which at 2 ms is gigabytes.
     """
     from dataclasses import replace
 
-    from ssrobot import ConstraintClass, JsonlTrace, Pose, RobotContext, SsrobotError, Tsr
+    import numpy as np
+
+    from ssrobot import ConstraintClass, Pose, RobotContext, SsrobotError, Tsr
     from ssrobot.mujoco import MujocoRuntime
     from ssrobot.planning import CBiRRT, SsikKinematics, prepare
 
@@ -303,10 +343,7 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
     named_joints = description.group(named.group).joints
     record: dict[str, Any] = {"plans": {}, "refusals": {}}
     runtime = MujocoRuntime(package, keyframe=keyframe, scene=spec["scene"])
-    with (
-        JsonlTrace(out / "trace.jsonl") as trace,
-        RobotContext(description, runtime, sinks=[trace]) as ctx,
-    ):
+    with RobotContext(description, runtime) as ctx:
         arm = ctx.manipulator(spec["manipulator"])
         planner = CBiRRT(description, kinematics=SsikKinematics.from_package(package, arm.name))
         joints = description.group(arm.group).joints
@@ -320,11 +357,62 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
             (a, b), (c, d), (e, f) = spec["position_bounds"]
             (g, h), (m, n), (o, p) = spec["rotation_bounds"]
             return Tsr(
-                origin=Pose(position=pose.position, quat_wxyz=(1.0, 0.0, 0.0, 0.0)),
+                origin=pose,  # the object's full pose: the region turns with it
                 offset=Pose(position=(x, y, z), quat_wxyz=(w, i, j, k)),
                 position_bounds=((a, b), (c, d), (e, f)),
                 rotation_bounds=((g, h), (m, n), (o, p)),
             )
+
+        continuous = {j.name for j in description.joints if j.kind is JointKind.CONTINUOUS}
+
+        def achieved(result: Any, snapshot: Any) -> dict[str, Any]:
+            """Where the robot actually is after executing, in a fresh snapshot.
+
+            For a configuration goal: the largest joint error to the goal, continuous
+            joints modulo a turn. For a region goal: that the planned goal pose is in the
+            request's own regions (sstsr distance 0), and how far the executed frame ended
+            from that planned pose, in position and rotation. The executed pose is not
+            measured with sstsr's distance directly: it is wrong for a pose just under a
+            rotation bound narrower than a turn, reporting about pi for a 0.006 rad miss.
+            """
+            request = result.request
+            q = tuple(snapshot.position(j) for j in request.joints)
+            goal = request.goal
+            if hasattr(goal, "configurations"):
+
+                def gap(joint: str, a: float, b: float) -> float:
+                    d = a - b
+                    return (
+                        abs((d + math.pi) % (2 * math.pi) - math.pi)
+                        if joint in continuous
+                        else abs(d)
+                    )
+
+                error = min(
+                    max(gap(j, a, b) for j, a, b in zip(request.joints, q, target, strict=True))
+                    for target in goal.configurations
+                )
+                return {
+                    "joint_error": error,
+                    "within": error <= ACHIEVED_JOINT_ERROR,
+                    "bound": ACHIEVED_JOINT_ERROR,
+                }
+            scene = ctx.planning_scene(snapshot, request.group)
+            planned = _matrix(scene.forward_kinematics(result.trajectory.goal, request.frame))
+            actual = _matrix(scene.forward_kinematics(q, request.frame))
+            in_region = min(float(_region(t).distance(planned)[0]) for t in goal.tsrs)
+            position = float(np.linalg.norm(actual[:3, 3] - planned[:3, 3]))
+            cos = (np.trace(planned[:3, :3].T @ actual[:3, :3]) - 1) / 2
+            rotation = float(math.acos(min(1.0, max(-1.0, cos))))
+            return {
+                "planned_goal_tsr_distance": in_region,
+                "position_error_m": position,
+                "rotation_error_rad": rotation,
+                "within": in_region == 0.0
+                and position <= ACHIEVED_POSITION_M
+                and rotation <= ACHIEVED_ROTATION_RAD,
+                "bounds": [ACHIEVED_POSITION_M, ACHIEVED_ROTATION_RAD],
+            }
 
         goals: dict[str, Any] = {
             "region": lambda s: arm.plan_to_tsr(
@@ -380,7 +468,11 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
             entry["prepared"] = {c.name: c.detail for c in ready.checks}
             entry["sampled_source"] = ready.command == result.trajectory.sample(PLAN_PERIOD_NS)
             execution = ctx.submit(ready.command, snapshot=snapshot, source="planner")
-            entry["state"] = ctx.run_until(execution, max_ticks=20_000).state.value
+            status = ctx.run_until(execution, max_ticks=20_000)
+            entry["state"] = status.state.value
+            entry["finished_ns"] = status.stamp.time_ns
+            entry["planned_in_snapshot"] = execution.submission.snapshot == snapshot.fingerprint()
+            entry["achieved"] = achieved(result, ctx.snapshot())
     (out / "scenario.json").write_text(json.dumps(record, indent=2) + "\n")
     return record
 
@@ -557,7 +649,10 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
         add(
             "planning_scenario",
             [p.get("state") for p in plans.values()] == ["succeeded"] * 2
-            and all(p.get("sampled_source") for p in plans.values()),
+            and all(
+                p.get("sampled_source") and p.get("planned_in_snapshot") for p in plans.values()
+            )
+            and all(p["achieved"]["within"] for p in plans.values()),
             f"{len(plans)} plans: {plans}",
         )
         compare(
