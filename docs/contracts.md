@@ -30,7 +30,8 @@ The public interface consists of the names in `ssrobot.__all__`; the
 `TrajectoryPiece`, `PieceValidation`, `TimingLaw`, `PathInterpolation`, and
 `ExecutionCheck`) are public there rather than at the top level; the names in
 `ssrobot.mujoco.__all__`, installed with the `mujoco` extra and specified in
-[mujoco.md](mujoco.md); and the `ssrobot` command (`init`, `inspect`, `doctor`), with
+[mujoco.md](mujoco.md); the names in `ssrobot.planning.__all__`, installed with the
+`planning` extra and specified in [planning.md](planning.md); and the `ssrobot` command (`init`, `inspect`, `doctor`), with
 the records its JSON options read and write. Every
 other module and name is implementation. It can be imported, but this contract does not
 cover it. The interface is closed: every type that a public name accepts, returns, or
@@ -853,7 +854,10 @@ as the `installed-conformance` artifact. The import report lists the distributio
 requirements, every non-standard-library module that importing `ssrobot` and its
 submodules loaded, the submodules, and the top-level public names. A second clean
 environment installs the wheel with the `mujoco` extra, runs the gate with
-`--integration mujoco` (`imports-mujoco.json`), and opens `MujocoRuntime` from it.
+`--integration mujoco` (`imports-mujoco.json`), and opens `MujocoRuntime` from it. A
+third installs it with the `mujoco` and `planning` extras together, runs the gate with
+`--integration planning` (`imports-planning.json`), and runs the README's plan from it
+on sscbirrt's native backend.
 
 | Artifact | Shows |
 | --- | --- |
@@ -896,6 +900,7 @@ environment installs the wheel with the `mujoco` extra, runs the gate with
 | `artifacts/test_planning_calls_requests_results_and_execution/planning_contracts.json` | On the example arm at its home snapshot: the request every planning call builds (configuration, configurations, pose at half speed and quarter acceleration, offset, and TSR with a path constraint), a scripted straight-line planner refused when it returns only geometry and no processor is selected (`untimed_result`), for a pose goal (`unsupported_goal`), and for effort limits (`unsupported_constraint`). Then `plan_to_configuration` returns a self-contained result (request, path, and a timed trajectory), which is sampled at 2 ms, checked against the effective limits, executed in MuJoCo, and reached, with nothing rebuilt. The result in wire form decodes equal. |
 | `artifacts/test_malformed_ambiguous_and_falsely_ready_records_are_refused/refusals.json` | Ambiguous manipulator, base, and end effector; a stale description; an out-of-limits goal; bad scaling; undeclared limits; a discontinuous, too-fast, or not-at-rest trajectory; a success without motion and a failure with it; a trajectory from another start or under other limits than its request's (`request_mismatch`); a prepared command with a failed check; a base goal at negotiation. Each with its code. |
 | MuJoCo runtime artifacts | See *Evidence* in [mujoco.md](mujoco.md). |
+| Planning adapter artifacts | See *Evidence* in [planning.md](planning.md). |
 | `artifacts/test_direct_responses_keep_causal_time/` | An external runtime's answers advancing `now`, a deadline counted from acceptance, a regressing answer causing a breach, and a manual runtime answering ahead of its tick being rolled back. |
 | `artifacts/test_replay_starts_a_trajectory_from_a_joint_resting_past_its_stop/trace.jsonl` | A replay recorded 0.5 mrad past a stop: a trajectory starting there succeeds, and only its first applied setpoint is clamped, with a `clipped` modification on that joint. |
 | `artifacts/test_applied_commands_stay_within_ownership/` | Applied commands on another source's arm, and beyond limits, both causing a breach. Nothing misleading is published, and every execution fails and releases ownership. |
