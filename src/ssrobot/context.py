@@ -11,14 +11,14 @@ import enum
 import math
 import numbers
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from types import TracebackType
-from typing import cast
+from typing import Any, cast
 
 from ssrobot.commands import ActionChunk, Command, command_components
 from ssrobot.conventions import ClockMode, Pose, Timestamp, check_name
-from ssrobot.description import EndEffector, RobotDescription
+from ssrobot.description import EndEffector, Manipulator, MobileBase, RobotDescription
 from ssrobot.errors import (
     CapabilityError,
     LifecycleError,
@@ -37,6 +37,23 @@ from ssrobot.execution import (
     Submission,
 )
 from ssrobot.observations import Observation, ObservationRequest
+from ssrobot.planning_contracts import (
+    BasePoseGoal,
+    ConfigurationGoal,
+    ConstraintClass,
+    Goal,
+    OffsetGoal,
+    Planner,
+    PlanningRequest,
+    PlanResult,
+    PoseGoal,
+    TrajectoryProcessor,
+    Tsr,
+    TsrGoal,
+    build_request,
+    check_result,
+    negotiate,
+)
 from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime, SnapshotRuntime
 from ssrobot.scene import (
     Attachment,
@@ -456,6 +473,63 @@ class RobotContext:
                 f"planning scene for {group!r} answered another group, snapshot, or resolution"
             )
         return _CheckedPlanningScene(self._description, scene)
+
+    # -- Planning --------------------------------------------------------------------
+
+    def manipulator(self, name: str | None = None) -> ManipulatorView:
+        """The named manipulator's planning view. The name may be left out only when
+        the robot has exactly one manipulator."""
+        manipulators = self._description.manipulators
+        if name is None:
+            if len(manipulators) != 1:
+                raise ValidationError(
+                    "ambiguous_manipulator",
+                    f"name one of {[m.name for m in manipulators]}",
+                    path="name",
+                )
+            return ManipulatorView(self, manipulators[0])
+        return ManipulatorView(self, self._description.manipulator(name))
+
+    def base(self, name: str | None = None) -> BaseView:
+        """The named mobile base's planning view. The name may be left out only when
+        the robot has exactly one base."""
+        bases = self._description.bases
+        if name is None:
+            if len(bases) != 1:
+                raise ValidationError(
+                    "ambiguous_base", f"name one of {[b.name for b in bases]}", path="name"
+                )
+            return BaseView(self, bases[0])
+        return BaseView(self, self._description.base(name))
+
+    def plan(
+        self,
+        request: PlanningRequest,
+        *,
+        snapshot: SceneSnapshot,
+        planner: Planner,
+        processor: TrajectoryProcessor | None = None,
+        abort: Callable[[], bool] | None = None,
+    ) -> PlanResult:
+        """Negotiate ``request`` with ``planner`` (and ``processor``, for a planner that
+        returns only geometry), then plan it in an isolated scene of ``snapshot``.
+
+        Nothing is planned unless negotiation succeeds. The result is checked against
+        the request; a planner answering another request, start, or limits is refused.
+        """
+        if not isinstance(request, PlanningRequest):
+            raise ValidationError("wrong_type", "request must be a PlanningRequest", path="request")
+        if not isinstance(snapshot, SceneSnapshot) or snapshot.fingerprint() != request.snapshot:
+            raise ValidationError(
+                "snapshot_mismatch", "the request was built in another snapshot", path="snapshot"
+            )
+        negotiate(request, planner.capabilities(request), processor)
+        scene = self.planning_scene(snapshot, request.group)
+        result = planner.plan(request, scene, abort=abort)
+        if not isinstance(result, PlanResult):
+            raise ValidationError("planner_contract", f"the planner answered {result!r}")
+        check_result(request, result)
+        return result
 
     # -- Commands --------------------------------------------------------------------
 
@@ -1081,3 +1155,216 @@ class _CheckedPlanningScene:
         if not isinstance(value, bool):
             raise ValidationError("runtime_contract", f"a validity query answered {value!r}")
         return value
+
+
+class ManipulatorView:
+    """Planning calls for one explicitly selected manipulator.
+
+    Each call builds a ``PlanningRequest`` from the description and a snapshot alone,
+    then plans it with ``RobotContext.plan``. Pose goals and path constraints apply to
+    the manipulator's end-effector frame unless ``frame`` names another. Nothing here
+    moves the robot: submit a prepared result to do that.
+    """
+
+    __slots__ = ("_context", "manipulator")
+
+    def __init__(self, context: RobotContext, manipulator: Manipulator) -> None:
+        self._context = context
+        self.manipulator = manipulator
+
+    @property
+    def name(self) -> str:
+        return self.manipulator.name
+
+    @property
+    def group(self) -> str:
+        return self.manipulator.group
+
+    @property
+    def frame(self) -> str | None:
+        """The end effector's tool center point frame, if the manipulator has one."""
+        name = self.manipulator.end_effector
+        if name is None:
+            return None
+        return self._context.description.end_effector(name).frame
+
+    def request(
+        self,
+        goal: Goal,
+        *,
+        snapshot: SceneSnapshot,
+        frame: str | None = None,
+        path_constraint: Sequence[Tsr] = (),
+        constraints: Sequence[ConstraintClass] = (),
+        velocity_scaling: float = 1.0,
+        acceleration_scaling: float = 1.0,
+        timeout_s: float = 10.0,
+        seed: int = 0,
+    ) -> PlanningRequest:
+        """The fully resolved request for ``goal``. Reads no runtime state."""
+        if isinstance(goal, BasePoseGoal):
+            raise ValidationError(
+                "unsupported_goal", "a manipulator does not plan base poses; use ctx.base()"
+            )
+        if frame is None:
+            frame = self.frame
+        needs_frame = bool(path_constraint) or not isinstance(goal, ConfigurationGoal)
+        if needs_frame and frame is None:
+            raise ValidationError(
+                "ambiguous_end_effector",
+                f"{self.name!r} has no end effector; name the frame to constrain",
+                path="frame",
+            )
+        return build_request(
+            self._context.description,
+            snapshot,
+            component=self.name,
+            group=self.group,
+            frame=frame if needs_frame else None,
+            goal=goal,
+            path_constraint=path_constraint,
+            constraints=constraints,
+            velocity_scaling=velocity_scaling,
+            acceleration_scaling=acceleration_scaling,
+            timeout_s=timeout_s,
+            seed=seed,
+        )
+
+    def plan(
+        self,
+        goal: Goal,
+        *,
+        snapshot: SceneSnapshot,
+        planner: Planner,
+        processor: TrajectoryProcessor | None = None,
+        abort: Callable[[], bool] | None = None,
+        **options: Any,
+    ) -> PlanResult:
+        """Build the request for ``goal`` and plan it; ``options`` go to ``request``."""
+        request = self.request(goal, snapshot=snapshot, **options)
+        return self._context.plan(
+            request, snapshot=snapshot, planner=planner, processor=processor, abort=abort
+        )
+
+    def plan_to_configuration(
+        self,
+        configuration: Sequence[float],
+        *,
+        snapshot: SceneSnapshot,
+        planner: Planner,
+        **options: Any,
+    ) -> PlanResult:
+        return self.plan_to_configurations(
+            [configuration], snapshot=snapshot, planner=planner, **options
+        )
+
+    def plan_to_configurations(
+        self,
+        configurations: Sequence[Sequence[float]],
+        *,
+        snapshot: SceneSnapshot,
+        planner: Planner,
+        **options: Any,
+    ) -> PlanResult:
+        """Plan to whichever of ``configurations`` the planner reaches."""
+        goal = ConfigurationGoal(
+            configurations=tuple(tuple(float(v) for v in q) for q in configurations)
+        )
+        return self.plan(goal, snapshot=snapshot, planner=planner, **options)
+
+    def plan_to_end_effector_pose(
+        self,
+        pose: Pose,
+        *,
+        snapshot: SceneSnapshot,
+        planner: Planner,
+        position_tolerance: float = 1e-3,
+        rotation_tolerance: float = 1e-2,
+        **options: Any,
+    ) -> PlanResult:
+        goal = PoseGoal(
+            pose=pose, position_tolerance=position_tolerance, rotation_tolerance=rotation_tolerance
+        )
+        return self.plan(goal, snapshot=snapshot, planner=planner, **options)
+
+    def plan_to_end_effector_offset(
+        self,
+        direction: Sequence[float],
+        distance: float,
+        *,
+        snapshot: SceneSnapshot,
+        planner: Planner,
+        position_tolerance: float = 1e-3,
+        rotation_tolerance: float = 1e-2,
+        **options: Any,
+    ) -> PlanResult:
+        """Move the end effector ``distance`` meters along the world ``direction`` in a
+        straight line, keeping its orientation."""
+        x, y, z = (float(v) for v in direction)
+        goal = OffsetGoal(
+            direction=(x, y, z),
+            distance=distance,
+            position_tolerance=position_tolerance,
+            rotation_tolerance=rotation_tolerance,
+        )
+        return self.plan(goal, snapshot=snapshot, planner=planner, **options)
+
+    def plan_to_tsr(
+        self, tsrs: Sequence[Tsr], *, snapshot: SceneSnapshot, planner: Planner, **options: Any
+    ) -> PlanResult:
+        """Plan into any one of the regions ``tsrs``."""
+        goal = TsrGoal(tsrs=tuple(tsrs))
+        return self.plan(goal, snapshot=snapshot, planner=planner, **options)
+
+
+class BaseView:
+    """Planning calls for one explicitly selected mobile base."""
+
+    __slots__ = ("_context", "base")
+
+    def __init__(self, context: RobotContext, base: MobileBase) -> None:
+        self._context = context
+        self.base = base
+
+    @property
+    def name(self) -> str:
+        return self.base.name
+
+    def request(
+        self,
+        pose: Pose,
+        *,
+        snapshot: SceneSnapshot,
+        velocity_scaling: float = 1.0,
+        acceleration_scaling: float = 1.0,
+        timeout_s: float = 10.0,
+        seed: int = 0,
+    ) -> PlanningRequest:
+        """The fully resolved request to bring the base frame to ``pose``."""
+        return build_request(
+            self._context.description,
+            snapshot,
+            component=self.name,
+            group=self.name,
+            frame=self.base.frame,
+            goal=BasePoseGoal(pose=pose),
+            velocity_scaling=velocity_scaling,
+            acceleration_scaling=acceleration_scaling,
+            timeout_s=timeout_s,
+            seed=seed,
+        )
+
+    def plan_to_base_pose(
+        self,
+        pose: Pose,
+        *,
+        snapshot: SceneSnapshot,
+        planner: Planner,
+        processor: TrajectoryProcessor | None = None,
+        abort: Callable[[], bool] | None = None,
+        **options: Any,
+    ) -> PlanResult:
+        request = self.request(pose, snapshot=snapshot, **options)
+        return self._context.plan(
+            request, snapshot=snapshot, planner=planner, processor=processor, abort=abort
+        )

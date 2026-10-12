@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.PoseGoal v1",
+  "$ref": "#/$defs/PoseGoal",
+  "$defs": {
+    "Pose": {
+      "type": "object",
+      "description": "A rigid transform: the pose of a child frame expressed in a parent frame.",
+      "properties": {
+        "position": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Child origin in parent coordinates.",
+          "x-unit": "m"
+        },
+        "quat_wxyz": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Unit quaternion (w, x, y, z) rotating child axes into parent.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "position",
+        "quat_wxyz"
+      ],
+      "additionalProperties": false
+    },
+    "PoseGoal": {
+      "type": "object",
+      "description": "Bring the request's frame to a world pose, within tolerances.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.PoseGoal"
+        },
+        "version": {
+          "const": 1
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose",
+          "description": "The frame's goal pose in the world."
+        },
+        "position_tolerance": {
+          "type": "number",
+          "description": "Allowed distance from the goal position.",
+          "x-unit": "m"
+        },
+        "rotation_tolerance": {
+          "type": "number",
+          "description": "Allowed rotation from the goal orientation, per axis.",
+          "x-unit": "rad"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "pose",
+        "position_tolerance",
+        "rotation_tolerance"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

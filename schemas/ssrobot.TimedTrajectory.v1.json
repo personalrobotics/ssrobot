@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.TimedTrajectory v1",
+  "$ref": "#/$defs/TimedTrajectory",
+  "$defs": {
+    "EffectiveLimits": {
+      "type": "object",
+      "description": "The velocity and acceleration limits a motion must respect: the description's",
+      "properties": {
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joint names, in group order."
+        },
+        "velocity": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Hardware velocity limit per joint.",
+          "x-unit": "joint/s"
+        },
+        "acceleration": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Hardware acceleration limit per joint.",
+          "x-unit": "joint/s^2"
+        },
+        "velocity_scaling": {
+          "type": "number",
+          "description": "Factor in (0, 1] on velocity.",
+          "x-unit": "1"
+        },
+        "acceleration_scaling": {
+          "type": "number",
+          "description": "Factor in (0, 1] on acceleration.",
+          "x-unit": "1"
+        },
+        "effective_velocity": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "velocity times velocity_scaling.",
+          "x-unit": "joint/s"
+        },
+        "effective_acceleration": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "acceleration times acceleration_scaling.",
+          "x-unit": "joint/s^2"
+        }
+      },
+      "required": [
+        "joints",
+        "velocity",
+        "acceleration",
+        "velocity_scaling",
+        "acceleration_scaling",
+        "effective_velocity",
+        "effective_acceleration"
+      ],
+      "additionalProperties": false
+    },
+    "Ramp": {
+      "type": "object",
+      "description": "One joint's motion over a piece: its start state, then constant-acceleration spans.",
+      "properties": {
+        "position": {
+          "type": "number",
+          "description": "Position at the piece's start.",
+          "x-unit": "joint"
+        },
+        "velocity": {
+          "type": "number",
+          "description": "Velocity at the piece's start.",
+          "x-unit": "joint/s"
+        },
+        "intervals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RampInterval"
+          },
+          "description": "Consecutive spans."
+        }
+      },
+      "required": [
+        "position",
+        "velocity",
+        "intervals"
+      ],
+      "additionalProperties": false
+    },
+    "RampInterval": {
+      "type": "object",
+      "description": "A span of constant acceleration.",
+      "properties": {
+        "duration": {
+          "type": "number",
+          "description": "Length of the span.",
+          "x-unit": "s"
+        },
+        "acceleration": {
+          "type": "number",
+          "description": "The joint's acceleration.",
+          "x-unit": "joint/s^2"
+        }
+      },
+      "required": [
+        "duration",
+        "acceleration"
+      ],
+      "additionalProperties": false
+    },
+    "TimedTrajectory": {
+      "type": "object",
+      "description": "An exact timed motion from rest to rest, as the component that produced it",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.TimedTrajectory"
+        },
+        "version": {
+          "const": 1
+        },
+        "group": {
+          "type": "string",
+          "description": "The joint group that moves."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joint names, in group order."
+        },
+        "law": {
+          "type": "string",
+          "enum": [
+            "piecewise_constant_acceleration"
+          ],
+          "description": "How position evolves within an interval."
+        },
+        "pieces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TrajectoryPiece"
+          },
+          "description": "Consecutive pieces."
+        },
+        "limits": {
+          "$ref": "#/$defs/EffectiveLimits",
+          "description": "The limits it was timed and checked under."
+        },
+        "validated": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "position_limits",
+              "collision",
+              "tsr_path",
+              "velocity_limits",
+              "acceleration_limits",
+              "effort_limits"
+            ]
+          },
+          "description": "Constraint classes its producer validated, sorted."
+        },
+        "validation_resolution": {
+          "type": "number",
+          "description": "Largest joint step at which its geometry was checked.",
+          "x-unit": "joint"
+        },
+        "producer": {
+          "type": "string",
+          "description": "What produced it, e.g. 'sscbirrt 3.5.0'."
+        },
+        "provenance": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Producer details as sorted (key, value) pairs."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "group",
+        "joints",
+        "law",
+        "pieces",
+        "limits",
+        "validated",
+        "validation_resolution",
+        "producer"
+      ],
+      "additionalProperties": false
+    },
+    "TrajectoryPiece": {
+      "type": "object",
+      "description": "An interval in which every joint follows its own ramp, all of one duration.",
+      "properties": {
+        "validation": {
+          "type": "string",
+          "enum": [
+            "planned",
+            "shortcut"
+          ],
+          "description": "How its geometry was checked."
+        },
+        "ramps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Ramp"
+          },
+          "description": "One ramp per joint, in joint order."
+        }
+      },
+      "required": [
+        "validation",
+        "ramps"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

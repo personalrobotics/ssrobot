@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.BasePoseGoal v1",
+  "$ref": "#/$defs/BasePoseGoal",
+  "$defs": {
+    "BasePoseGoal": {
+      "type": "object",
+      "description": "Bring a mobile base's frame to a world pose.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.BasePoseGoal"
+        },
+        "version": {
+          "const": 1
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose",
+          "description": "The base frame's goal pose in the world."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "pose"
+      ],
+      "additionalProperties": false
+    },
+    "Pose": {
+      "type": "object",
+      "description": "A rigid transform: the pose of a child frame expressed in a parent frame.",
+      "properties": {
+        "position": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Child origin in parent coordinates.",
+          "x-unit": "m"
+        },
+        "quat_wxyz": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Unit quaternion (w, x, y, z) rotating child axes into parent.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "position",
+        "quat_wxyz"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

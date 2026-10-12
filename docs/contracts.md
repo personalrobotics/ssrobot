@@ -41,6 +41,7 @@ uses them:
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
 | Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
 | Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
+| Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `PathInterpolation`, `TimedTrajectory`, `TimingLaw`, `TrajectoryPiece`, `PieceValidation`, `Ramp`, `RampInterval`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `RestToRestProcessor`, `PreparedTrajectory`, `ExecutionCheck` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
 | Error handling | `SsrobotError`, `ValidationError`, `CapabilityError`, `OwnershipError`, `StaleRevisionError`, `LifecycleError` |
 
@@ -127,6 +128,8 @@ trace. It validates everything going into the runtime and everything coming out.
 | `detach(object, *, revision=None, source="client")` | Open or faulted. Removes the attachment and its allowances and returns the new scene. |
 | `snapshot()` | Open or faulted. Captures a `SceneSnapshot` for planning. See *Snapshots and planning scenes*. |
 | `planning_scene(snapshot, group, *, edge_resolution=0.05)` | Open or faulted. An isolated `PlanningScene` for one joint group over a snapshot. |
+| `manipulator(name=None)`, `base(name=None)` | A planning view of one manipulator or mobile base. See *Planning requests and results*. |
+| `plan(request, *, snapshot, planner, processor=None, abort=None)` | Open or faulted. Negotiates, plans in an isolated planning scene, and checks the result against the request. |
 | `owners(component)`, `executions` | Every unfinished execution holding any of the component's resources, as `Ownership` entries; and every execution in submission order. |
 
 An `Execution` exposes `id`, `command`, `source`, `components`, `deadline`, `status`,
@@ -331,6 +334,110 @@ description is `stale_description`. It then refuses the command with `stale_snap
 `start_mismatch`. The `Submission` records the snapshot's fingerprint, so a trace links
 each plan to the world it was planned in.
 
+### Planning requests and results
+
+A planner answers a `PlanningRequest` with a `PlanResult`. Both are wire records, and
+nothing in them depends on the runtime that produced the snapshot.
+
+**Requests.** `ctx.manipulator(name)` and `ctx.base(name)` select what moves. The name
+may be left out only when the robot has exactly one; otherwise the call fails with
+`ambiguous_manipulator` or `ambiguous_base`. A view's `request(goal, *, snapshot, ...)`
+builds a fully resolved request from the description and the snapshot alone, so every
+runtime holding the same snapshot builds the same request:
+
+| Field | Meaning |
+| --- | --- |
+| `robot`, `description`, `snapshot`, `revision` | Who, and the snapshot (fingerprint and scene revision) it plans in |
+| `component`, `group`, `joints`, `start` | The manipulator or base, its joint group and joints in order, and their snapshot positions |
+| `frame` | The frame pose goals and path constraints constrain: the end effector's TCP unless `frame=` names another; `None` when nothing constrains a frame |
+| `goal` | `ConfigurationGoal` (one or more configurations, any one suffices), `PoseGoal` (world pose with position and per-axis rotation tolerances), `OffsetGoal` (a straight-line move of `distance` along a world `direction`), `TsrGoal` (any one of several regions), or `BasePoseGoal` |
+| `path_constraint` | `Tsr` regions `frame` must stay inside throughout; all apply |
+| `constraints` | Every `ConstraintClass` the motion must satisfy, sorted: always `position_limits`, `collision`, `velocity_limits`, `acceleration_limits`; `tsr_path` exactly when there is a path constraint; and any the caller adds, such as `effort_limits` |
+| `limits` | `EffectiveLimits`: each joint's declared velocity and acceleration limits, the request's scaling factors in (0, 1], and their products. The description is never changed. |
+| `timeout_s`, `seed` | The planning budget and the random seed. Cancellation is a call-time `abort` callable, not wire data. |
+
+A `Tsr` is the region of poses `origin @ T_w @ offset` with `T_w` translating within
+`position_bounds` (m) and rotating within `rotation_bounds` (roll, pitch, yaw about fixed
+axes, rad).
+
+Building a request refuses:
+
+| Case | Code |
+| --- | --- |
+| a snapshot of another description | `stale_description` (`StaleRevisionError`) |
+| a pose, offset, or TSR goal, or a path constraint, on a manipulator with no end effector and no `frame=` | `ambiguous_end_effector` |
+| a goal configuration of the wrong width, or outside position limits | `shape_mismatch`, `out_of_limits` |
+| a group joint with no declared velocity or acceleration limit | `undeclared_limits` |
+| a scaling factor outside (0, 1] | `out_of_limits` |
+| a base pose goal on a manipulator | `unsupported_goal` |
+
+**Negotiation.** `ctx.plan(request, *, snapshot, planner, processor=None, abort=None)`,
+and each `plan_to_*` call on a view, first negotiates the request
+with `planner.capabilities(request)` and the processor. A planner's `PlannerCapabilities` list the
+goal kinds it plans to, the constraint classes it validates, and the result forms it
+returns. Nothing is planned unless negotiation succeeds:
+
+| Case | Code (`CapabilityError`) |
+| --- | --- |
+| the planner cannot plan to the goal kind | `unsupported_goal` |
+| the planner returns only a geometric path and no processor is selected | `untimed_result` |
+| no selected planner or processor validates a required constraint class | `unsupported_constraint` |
+
+It then materializes `ctx.planning_scene(snapshot, request.group)` and calls
+`planner.plan(request, scene, abort=abort)`. The result is checked against the request
+(`planner_contract`): it answers this request's fingerprint, its path and trajectory
+move the request's joints from its start, and a trajectory was timed under the
+request's limits and validated every constraint class the request requires.
+
+| View call | Goal |
+| --- | --- |
+| `plan_to_configuration(q)`, `plan_to_configurations(qs)` | `ConfigurationGoal` |
+| `plan_to_end_effector_pose(pose, position_tolerance=1e-3, rotation_tolerance=1e-2)` | `PoseGoal` |
+| `plan_to_end_effector_offset(direction, distance, ...)` | `OffsetGoal` |
+| `plan_to_tsr(tsrs)` | `TsrGoal` |
+| `plan_to_base_pose(pose)` (on `ctx.base()`) | `BasePoseGoal` |
+
+Each also takes the request options (`frame`, `path_constraint`, `constraints`,
+`velocity_scaling`, `acceleration_scaling`, `timeout_s`, `seed`) and the planning
+options (`processor`, `abort`).
+
+**Results.** A `PlanResult` names the request, the planner, its backend, a
+`PlanStatus` (`succeeded`, `infeasible`, `timeout`, `cancelled`, `invalid_input`,
+`backend_failure`), and diagnostics that keep the planner's own messages. A success
+carries a `GeometricPath`, a `TimedTrajectory`, or both; a failure carries neither.
+When both are present their joints and endpoints agree.
+
+- A `GeometricPath` is waypoints joined by straight joint-space lines, checked at
+  `validation_resolution`. It has no timing.
+- A `TimedTrajectory` is an exact motion from rest to rest: consecutive pieces, each
+  with one ramp per joint, each ramp a start state and spans of constant acceleration
+  (`piecewise_constant_acceleration`). It records the `EffectiveLimits` it was timed
+  under, the constraint classes its producer validated, the validation resolution,
+  each piece's validation (`planned` along a path edge, or `shortcut`), and the
+  producer with its provenance. Decoding checks that every ramp in a piece lasts the
+  piece's duration, that position and velocity are continuous to 1e-9, that it starts
+  and ends at rest, and that no span exceeds the effective velocity or acceleration
+  (`inconsistent_timing`, `discontinuous`, `not_at_rest`, `out_of_limits`).
+  `evaluate(t)` is exact.
+
+Whoever changes geometry validates it. A planner may change geometry and timing
+together and return a `TimedTrajectory`. A planner that returns only a path needs an
+explicitly selected `TrajectoryProcessor` that never changes it. `RestToRestProcessor`
+is one: each segment follows one synchronized trapezoid, as fast as the most limiting
+joint allows, and comes to rest at every waypoint, so it stays on the path and
+validates only the velocity and acceleration limits.
+
+**Runtime commands.** `TimedTrajectory.sample(period_ns)` gives a `JointTrajectory`:
+positions every `period_ns` from 0 to the duration rounded up to a whole nanosecond,
+with a last interval shorter than half a period merged into the one before. Runtimes
+interpolate it linearly, so it is a different artifact from the source law.
+`ssrobot.validation.check_trajectory_rates(command, velocity, acceleration)` checks a
+command's chords against any per-joint limits, such as the effective ones, exactly as
+`submit` checks the description's. A `PreparedTrajectory` is a sampled command with
+the independent checks it passed under the runtime's interpolation. Every check must
+have passed, so a prepared command that decodes is ready to execute; one with a failed
+check is `execution_unready`.
+
 ## Lifecycle, ownership, and execution
 
 ### Context states
@@ -439,6 +546,7 @@ propagates, and leaving the `with` block still closes the runtime.
 | Length, position | m | `float` |
 | Angle | rad | `float` |
 | Time, duration | ns | `int` |
+| Planning budgets and trajectory spans | s | `float` |
 | Linear / angular velocity | m/s, rad/s | `float` |
 | Joint position | rad (revolute, continuous) or m (prismatic) | `float` |
 | Joint velocity, acceleration, effort | joint unit/s; joint unit/s²; N·m or N | `float` |
@@ -781,6 +889,8 @@ environment installs the wheel with the `mujoco` extra, runs the gate with
 | `artifacts/reference-robots/` (CI job `reference-robots`) | Geodude and ADA from their pinned asset commits: `doctor` and installed `inspect` reports for each, and `references.json` with commits, hashes, licenses, fingerprints, the build toolchain, and the Franka fixture's provenance. Each robot's `mujoco-startup.json` records what `MujocoRuntime` confirmed from the installed package and the result of driving it. Geodude: its four arm-group trajectories, and each gripper's requested and observed settled openings (0.000 closed, 0.968 open). ADA: its arm and articutool trajectories, and its gripper (0.001 closed, 0.998 open). The job renders with OSMesa, so ADA's wrist camera channels are confirmed. See *Reference robots* in packages.md. |
 | `artifacts/test_core_imports_no_backend/gate.txt` | Where `ssrobot` was imported from, and the gate's verdict. |
 | `artifacts/test_gate_finds_backend_imports_in_every_form/gate-forms.json` | Planted eager, lazy, `from`, aliased, multiline, dotted, and `import_module` backend imports, each failing the gate with its module, line, and dependency. An integration subpackage importing its own backend passes; one importing another backend, and a core module importing an integration, fail. |
+| `artifacts/test_planning_calls_requests_results_and_execution/planning_contracts.json` | On the example arm at its home snapshot: the request every planning call builds (configuration, configurations, pose at half speed and quarter acceleration, offset, and TSR with a path constraint), a scripted straight-line planner refused without a processor (`untimed_result`), for a pose goal (`unsupported_goal`), and for effort limits (`unsupported_constraint`), then its path timed by `RestToRestProcessor`, sampled at 2 ms, executed in MuJoCo, and reached. The geometric, timed, and combined results in wire form. |
+| `artifacts/test_malformed_ambiguous_and_falsely_ready_records_are_refused/refusals.json` | Ambiguous manipulator, base, and end effector; a stale description; an out-of-limits goal; bad scaling; undeclared limits; a discontinuous, too-fast, or not-at-rest trajectory; a success without motion and a failure with it; a prepared command with a failed check; a base goal at negotiation. Each with its code. |
 | MuJoCo runtime artifacts | See *Evidence* in [mujoco.md](mujoco.md). |
 | `artifacts/test_direct_responses_keep_causal_time/` | An external runtime's answers advancing `now`, a deadline counted from acceptance, a regressing answer causing a breach, and a manual runtime answering ahead of its tick being rolled back. |
 | `artifacts/test_replay_starts_a_trajectory_from_a_joint_resting_past_its_stop/trace.jsonl` | A replay recorded 0.5 mrad past a stop: a trajectory starting there succeeds, and only its first applied setpoint is clamped, with a `clipped` modification on that joint. |

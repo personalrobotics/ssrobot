@@ -8,6 +8,7 @@ and runtime-confirmed capabilities.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import replace
 from fractions import Fraction
 
@@ -106,8 +107,11 @@ def check_command(
             _check_limits(description, group, JointMode.POSITION, row, f"positions[{i}]", slack)
         for i, row in enumerate(command.velocities or ()):
             _check_limits(description, group, JointMode.VELOCITY, row, f"velocities[{i}]")
-        _check_speeds(description, command)
-        _check_accelerations(description, command)
+        check_trajectory_rates(
+            command,
+            [description.joint(j).limits.velocity for j in command.joints],
+            [description.joint(j).limits.acceleration for j in command.joints],
+        )
     else:
         _check_instant(description, command, info, "")
 
@@ -188,11 +192,25 @@ def _check_limits(
             raise ValidationError("out_of_limits", f"{name}={v} violates {bound}", path=path)
 
 
-def _check_speeds(description: RobotDescription, trajectory: JointTrajectory) -> None:
+def check_trajectory_rates(
+    trajectory: JointTrajectory,
+    velocity: Sequence[float | None],
+    acceleration: Sequence[float | None],
+) -> None:
+    """Raise unless the trajectory, interpolated linearly as runtimes do, stays within
+    the per-joint velocity and acceleration limits (None skips a joint). Exact, with a
+    1e-9 relative allowance. ``check_command`` applies it with the description's limits;
+    a planner adapter applies it with a request's effective limits."""
+    if len(velocity) != len(trajectory.joints) or len(acceleration) != len(trajectory.joints):
+        raise ValidationError("shape_mismatch", "one velocity and acceleration limit per joint")
+    _check_speeds(trajectory, velocity)
+    _check_accelerations(trajectory, acceleration)
+
+
+def _check_speeds(trajectory: JointTrajectory, caps: Sequence[float | None]) -> None:
     """Every segment's implied speed, |change| / duration, within each joint's velocity
     limit, whether or not the trajectory carries velocities."""
     times = trajectory.time_from_start_ns
-    caps = [description.joint(j).limits.velocity for j in trajectory.joints]
     for i in range(1, len(times)):
         duration_ns = times[i] - times[i - 1]  # an exact integer, however large
         before, after = trajectory.positions[i - 1], trajectory.positions[i]
@@ -210,7 +228,7 @@ def _check_speeds(description: RobotDescription, trajectory: JointTrajectory) ->
                 )
 
 
-def _check_accelerations(description: RobotDescription, trajectory: JointTrajectory) -> None:
+def _check_accelerations(trajectory: JointTrajectory, caps: Sequence[float | None]) -> None:
     """Every waypoint's discrete acceleration within each joint's acceleration limit.
 
     Runtimes interpolate linearly between waypoints, so a trajectory's speed is constant
@@ -220,7 +238,6 @@ def _check_accelerations(description: RobotDescription, trajectory: JointTraject
     change from and to rest, over half their one segment.
     """
     times = trajectory.time_from_start_ns
-    caps = [description.joint(j).limits.acceleration for j in trajectory.joints]
     if all(cap is None for cap in caps):
         return
     durations = [times[i] - times[i - 1] for i in range(1, len(times))]

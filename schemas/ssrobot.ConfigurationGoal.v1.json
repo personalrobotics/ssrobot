@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.ConfigurationGoal v1",
+  "$ref": "#/$defs/ConfigurationGoal",
+  "$defs": {
+    "ConfigurationGoal": {
+      "type": "object",
+      "description": "Reach any one of these configurations of the request's joints.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.ConfigurationGoal"
+        },
+        "version": {
+          "const": 1
+        },
+        "configurations": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "description": "Goal configurations, one value per joint in group order.",
+          "x-unit": "joint"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "configurations"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
