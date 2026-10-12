@@ -25,7 +25,10 @@ description it is opened with. Only `RobotContext` is user-facing.
 
 The public interface consists of the names in `ssrobot.__all__`; the
 `ssrobot.conformance` module (`run_conformance` and its `ConformanceReport`,
-`ConformanceCheck`, `CheckOutcome`, and `FaultInjector`); the names in
+`ConformanceCheck`, `CheckOutcome`, and `FaultInjector`); the
+`ssrobot.planning_contracts` module, whose encoding types (`Ramp`, `RampInterval`,
+`TrajectoryPiece`, `PieceValidation`, `TimingLaw`, `PathInterpolation`, and
+`ExecutionCheck`) are public there rather than at the top level; the names in
 `ssrobot.mujoco.__all__`, installed with the `mujoco` extra and specified in
 [mujoco.md](mujoco.md); the names in `ssrobot.planning.__all__`, installed with the
 `planning` extra and specified in [planning.md](planning.md); and the `ssrobot` command (`init`, `inspect`, `doctor`), with
@@ -42,7 +45,7 @@ uses them:
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
 | Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
 | Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
-| Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `PathInterpolation`, `TimedTrajectory`, `TimingLaw`, `TrajectoryPiece`, `PieceValidation`, `Ramp`, `RampInterval`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `RestToRestProcessor`, `PreparedTrajectory`, `ExecutionCheck` |
+| Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `TimedTrajectory`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `PreparedTrajectory` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
 | Error handling | `SsrobotError`, `ValidationError`, `CapabilityError`, `OwnershipError`, `StaleRevisionError`, `LifecycleError` |
 
@@ -385,10 +388,8 @@ returns. Nothing is planned unless negotiation succeeds:
 | no selected planner or processor validates a required constraint class | `unsupported_constraint` |
 
 It then materializes `ctx.planning_scene(snapshot, request.group)` and calls
-`planner.plan(request, scene, abort=abort)`. The result is checked against the request
-(`planner_contract`): it answers this request's fingerprint, its path and trajectory
-move the request's joints from its start, and a trajectory was timed under the
-request's limits and validated every constraint class the request requires.
+`planner.plan(request, scene, abort=abort)`. A result answering any other request is
+refused (`planner_contract`).
 
 | View call | Goal |
 | --- | --- |
@@ -402,11 +403,16 @@ Each also takes the request options (`frame`, `path_constraint`, `constraints`,
 `velocity_scaling`, `acceleration_scaling`, `timeout_s`, `seed`) and the planning
 options (`processor`, `abort`).
 
-**Results.** A `PlanResult` names the request, the planner, its backend, a
-`PlanStatus` (`succeeded`, `infeasible`, `timeout`, `cancelled`, `invalid_input`,
-`backend_failure`), and diagnostics that keep the planner's own messages. A success
-carries a `GeometricPath`, a `TimedTrajectory`, or both; a failure carries neither.
-When both are present their joints and endpoints agree.
+**Results.** A `PlanResult` carries the whole `PlanningRequest` it answers, so it is
+self-contained: every `plan_to_*` result can be prepared and executed, inspected, or
+decoded with nothing else. It also names the planner, its backend, a `PlanStatus`
+(`succeeded`, `infeasible`, `timeout`, `cancelled`, `invalid_input`, `backend_failure`),
+and diagnostics that keep the planner's own messages. A success carries a
+`GeometricPath`, a `TimedTrajectory`, or both; a failure carries neither. Building or
+decoding a result checks that it answers its request (`request_mismatch`): the path
+and trajectory move the request's joints from its start, a trajectory was timed under
+the request's limits and validated every constraint class the request requires, and a
+trajectory ends where the path does.
 
 - A `GeometricPath` is waypoints joined by straight joint-space lines, checked at
   `validation_resolution`. It has no timing.
@@ -423,10 +429,8 @@ When both are present their joints and endpoints agree.
 
 Whoever changes geometry validates it. A planner may change geometry and timing
 together and return a `TimedTrajectory`. A planner that returns only a path needs an
-explicitly selected `TrajectoryProcessor` that never changes it. `RestToRestProcessor`
-is one: each segment follows one synchronized trapezoid, as fast as the most limiting
-joint allows, and comes to rest at every waypoint, so it stays on the path and
-validates only the velocity and acceleration limits.
+explicitly selected `TrajectoryProcessor` that never changes it. Timing algorithms
+live in integrations; `ssrobot.planning` provides one.
 
 **Runtime commands.** `TimedTrajectory.sample(period_ns)` gives a `JointTrajectory`:
 positions every `period_ns` from 0 to the duration rounded up to a whole nanosecond,
@@ -893,8 +897,8 @@ on sscbirrt's native backend.
 | `artifacts/reference-robots/` (CI job `reference-robots`) | Geodude and ADA from their pinned asset commits: `doctor` and installed `inspect` reports for each, and `references.json` with commits, hashes, licenses, fingerprints, the build toolchain, and the Franka fixture's provenance. Each robot's `mujoco-startup.json` records what `MujocoRuntime` confirmed from the installed package and the result of driving it. Geodude: its four arm-group trajectories, and each gripper's requested and observed settled openings (0.000 closed, 0.968 open). ADA: its arm and articutool trajectories, and its gripper (0.001 closed, 0.998 open). The job renders with OSMesa, so ADA's wrist camera channels are confirmed. See *Reference robots* in packages.md. |
 | `artifacts/test_core_imports_no_backend/gate.txt` | Where `ssrobot` was imported from, and the gate's verdict. |
 | `artifacts/test_gate_finds_backend_imports_in_every_form/gate-forms.json` | Planted eager, lazy, `from`, aliased, multiline, dotted, and `import_module` backend imports, each failing the gate with its module, line, and dependency. An integration subpackage importing its own backend passes; one importing another backend, and a core module importing an integration, fail. |
-| `artifacts/test_planning_calls_requests_results_and_execution/planning_contracts.json` | On the example arm at its home snapshot: the request every planning call builds (configuration, configurations, pose at half speed and quarter acceleration, offset, and TSR with a path constraint), a scripted straight-line planner refused without a processor (`untimed_result`), for a pose goal (`unsupported_goal`), and for effort limits (`unsupported_constraint`), then its path timed by `RestToRestProcessor`, sampled at 2 ms, executed in MuJoCo, and reached. The geometric, timed, and combined results in wire form. |
-| `artifacts/test_malformed_ambiguous_and_falsely_ready_records_are_refused/refusals.json` | Ambiguous manipulator, base, and end effector; a stale description; an out-of-limits goal; bad scaling; undeclared limits; a discontinuous, too-fast, or not-at-rest trajectory; a success without motion and a failure with it; a prepared command with a failed check; a base goal at negotiation. Each with its code. |
+| `artifacts/test_planning_calls_requests_results_and_execution/planning_contracts.json` | On the example arm at its home snapshot: the request every planning call builds (configuration, configurations, pose at half speed and quarter acceleration, offset, and TSR with a path constraint), a scripted straight-line planner refused when it returns only geometry and no processor is selected (`untimed_result`), for a pose goal (`unsupported_goal`), and for effort limits (`unsupported_constraint`). Then `plan_to_configuration` returns a self-contained result (request, path, and a timed trajectory), which is sampled at 2 ms, checked against the effective limits, executed in MuJoCo, and reached, with nothing rebuilt. The result in wire form decodes equal. |
+| `artifacts/test_malformed_ambiguous_and_falsely_ready_records_are_refused/refusals.json` | Ambiguous manipulator, base, and end effector; a stale description; an out-of-limits goal; bad scaling; undeclared limits; a discontinuous, too-fast, or not-at-rest trajectory; a success without motion and a failure with it; a trajectory from another start or under other limits than its request's (`request_mismatch`); a prepared command with a failed check; a base goal at negotiation. Each with its code. |
 | MuJoCo runtime artifacts | See *Evidence* in [mujoco.md](mujoco.md). |
 | Planning adapter artifacts | See *Evidence* in [planning.md](planning.md). |
 | `artifacts/test_direct_responses_keep_causal_time/` | An external runtime's answers advancing `now`, a deadline counted from acceptance, a regressing answer causing a breach, and a manual runtime answering ahead of its tick being rolled back. |

@@ -8,8 +8,14 @@ whose every independent check passed, is ready to execute. See docs/contracts.md
 
 Whoever changes motion geometry validates it. A planner may optimize geometry and timing
 together and return a timed trajectory; a planner that returns only geometry needs an
-explicitly selected path-preserving ``TrajectoryProcessor``, such as
-``RestToRestProcessor``, which never leaves the path.
+explicitly selected path-preserving ``TrajectoryProcessor``, which never leaves the
+path; ``ssrobot.planning`` provides one.
+
+Goals, requests, results, paths, trajectories, and the planner protocols are top-level
+``ssrobot`` names. The encoding types inside a trajectory or a prepared command
+(``Ramp``, ``RampInterval``, ``TrajectoryPiece``, ``PieceValidation``, ``TimingLaw``,
+``PathInterpolation``, ``ExecutionCheck``) are public here, in
+``ssrobot.planning_contracts``.
 """
 
 from __future__ import annotations
@@ -694,13 +700,15 @@ def _check_ramp_limits(ramp: Ramp, vmax: float, amax: float, joint: str, path: s
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PlanResult(Record):
-    """A planner's answer to one request. A success carries a path, a trajectory, or
-    both; a failure carries neither, only diagnostics."""
+    """A planner's answer to one request, carrying the request itself, so a result is
+    self-contained: it can be prepared, inspected, or decoded without anything else. A
+    success carries a path, a trajectory, or both; a failure carries neither, only
+    diagnostics. Decoding checks that the motion answers the request."""
 
     SCHEMA = "ssrobot.PlanResult"
     VERSION = 1
 
-    request: str = field(metadata=meta("Fingerprint of the request it answers."))
+    request: PlanningRequest = field(metadata=meta("The request it answers."))
     planner: str = field(metadata=meta("Planner name and version."))
     backend: str = field(metadata=meta("The planner's backend that ran it."))
     status: PlanStatus = field(metadata=meta("How planning ended."))
@@ -713,10 +721,6 @@ class PlanResult(Record):
     )
 
     def _validate(self) -> None:
-        if not _FINGERPRINT.fullmatch(self.request):
-            raise ValidationError(
-                "invalid_fingerprint", "request must be a SHA-256 hex digest", path="request"
-            )
         check_name(self.planner, path="planner")
         check_name(self.backend, path="backend")
         has_motion = self.path is not None or self.trajectory is not None
@@ -728,22 +732,49 @@ class PlanResult(Record):
             raise ValidationError(
                 "unexpected_field", "a failure carries no path or trajectory", path="status"
             )
-        if self.path is not None and self.trajectory is not None:
-            path, trajectory = self.path, self.trajectory
-            if (path.group, path.joints) != (trajectory.group, trajectory.joints):
+        request = self.request
+        motions: list[tuple[str, str, tuple[str, ...], tuple[float, ...]]] = []
+        if self.path is not None:
+            path = self.path
+            motions.append(("path", path.group, path.joints, path.waypoints[0]))
+        if self.trajectory is not None:
+            trajectory = self.trajectory
+            motions.append(("trajectory", trajectory.group, trajectory.joints, trajectory.start))
+        for name, group, joints, start in motions:
+            if (group, joints) != (request.group, request.joints):
                 raise ValidationError(
-                    "joint_mismatch", "path and trajectory move other joints", path="trajectory"
+                    "request_mismatch", f"the {name} moves other joints", path=name
                 )
-            for name, a, b in (
-                ("start", path.waypoints[0], trajectory.start),
-                ("goal", path.waypoints[-1], trajectory.goal),
+            if any(
+                abs(a - b) > CONTINUITY_TOLERANCE for a, b in zip(start, request.start, strict=True)
             ):
-                if any(abs(x - y) > CONTINUITY_TOLERANCE for x, y in zip(a, b, strict=True)):
-                    raise ValidationError(
-                        "endpoint_mismatch",
-                        f"the trajectory's {name} is not the path's",
-                        path="trajectory",
-                    )
+                raise ValidationError(
+                    "request_mismatch", f"the {name} does not start at the start", path=name
+                )
+        if self.trajectory is not None:
+            trajectory = self.trajectory
+            if trajectory.limits != request.limits:
+                raise ValidationError(
+                    "request_mismatch",
+                    "the trajectory was timed under other limits",
+                    path="trajectory",
+                )
+            unvalidated = set(request.constraints) - set(trajectory.validated)
+            if unvalidated:
+                raise ValidationError(
+                    "request_mismatch",
+                    f"the trajectory does not validate {sorted(unvalidated)}",
+                    path="trajectory",
+                )
+            if self.path is not None and any(
+                abs(x - y) > CONTINUITY_TOLERANCE
+                for x, y in zip(self.path.waypoints[-1], trajectory.goal, strict=True)
+            ):
+                raise ValidationError(
+                    "endpoint_mismatch",
+                    "the trajectory's goal is not the path's",
+                    path="trajectory",
+                )
 
     def fingerprint(self) -> str:
         return fingerprint(self)
@@ -754,38 +785,10 @@ class PlanResult(Record):
 
 
 def check_result(request: PlanningRequest, result: PlanResult) -> None:
-    """Raise unless ``result`` answers ``request``: the same request, joints, start, and
-    limits, and a trajectory that validated every constraint the request requires."""
-    if result.request != request.fingerprint():
+    """Raise unless ``result`` answers exactly ``request``. Everything else about the
+    answer was checked when the result was built."""
+    if result.request != request:
         raise ValidationError("planner_contract", "the result answers another request")
-    motions: list[tuple[str, str, tuple[str, ...], tuple[float, ...]]] = []
-    if result.path is not None:
-        path = result.path
-        motions.append(("path", path.group, path.joints, path.waypoints[0]))
-    if result.trajectory is not None:
-        trajectory = result.trajectory
-        motions.append(("trajectory", trajectory.group, trajectory.joints, trajectory.start))
-    for name, group, joints, start in motions:
-        if (group, joints) != (request.group, request.joints):
-            raise ValidationError("planner_contract", f"the {name} moves other joints", path=name)
-        if any(
-            abs(a - b) > CONTINUITY_TOLERANCE for a, b in zip(start, request.start, strict=True)
-        ):
-            raise ValidationError(
-                "planner_contract", f"the {name} does not start at the request's start", path=name
-            )
-    if result.trajectory is not None:
-        if result.trajectory.limits != request.limits:
-            raise ValidationError(
-                "planner_contract", "the trajectory was timed under other limits", path="trajectory"
-            )
-        unvalidated = set(request.constraints) - set(result.trajectory.validated)
-        if unvalidated:
-            raise ValidationError(
-                "planner_contract",
-                f"the trajectory does not validate {sorted(unvalidated)}",
-                path="trajectory",
-            )
 
 
 # -- Capabilities and processors -------------------------------------------------------
@@ -866,66 +869,6 @@ def negotiate(
         raise CapabilityError(
             "unsupported_constraint",
             f"nothing selected validates {[str(c) for c in unsupported]}",
-        )
-
-
-class RestToRestProcessor:
-    """Times a geometric path along its own lines, coming to rest at every waypoint.
-
-    Each segment follows one synchronized trapezoid (or triangle) in its path
-    parameter, as fast as the most limiting joint allows. The motion never leaves the
-    path, so its collision and path-constraint validity are the path's; it validates
-    only the velocity and acceleration limits. Zero-length segments are skipped.
-    """
-
-    name = "rest_to_rest"
-    constraints = (ConstraintClass.ACCELERATION_LIMITS, ConstraintClass.VELOCITY_LIMITS)
-
-    def process(self, path: GeometricPath, limits: EffectiveLimits) -> TimedTrajectory:
-        if limits.joints != path.joints:
-            raise ValidationError("joint_mismatch", "limits must cover the path's joints")
-        vmax, amax = limits.effective_velocity, limits.effective_acceleration
-        pieces = []
-        for q0, q1 in zip(path.waypoints, path.waypoints[1:], strict=False):
-            delta = [b - a for a, b in zip(q0, q1, strict=True)]
-            moving = [k for k, d in enumerate(delta) if d != 0.0]
-            if not moving:
-                continue
-            # The path parameter s runs 0 to 1; joint k moves delta[k] * s.
-            speed = min(vmax[k] / abs(delta[k]) for k in moving)
-            accel = min(amax[k] / abs(delta[k]) for k in moving)
-            if speed * speed / accel >= 1.0:  # never reaches top speed: a triangle
-                t_ramp, t_cruise = math.sqrt(1.0 / accel), 0.0
-            else:
-                t_ramp, t_cruise = speed / accel, (1.0 - speed * speed / accel) / speed
-            pieces.append(
-                TrajectoryPiece(
-                    validation=PieceValidation.PLANNED,
-                    ramps=tuple(
-                        Ramp(
-                            position=a,
-                            velocity=0.0,
-                            intervals=(
-                                RampInterval(duration=t_ramp, acceleration=d * accel),
-                                RampInterval(duration=t_cruise, acceleration=0.0),
-                                RampInterval(duration=t_ramp, acceleration=-d * accel),
-                            ),
-                        )
-                        for a, d in zip(q0, delta, strict=True)
-                    ),
-                )
-            )
-        if not pieces:
-            raise ValidationError("empty_path", "the path does not move")
-        return TimedTrajectory(
-            group=path.group,
-            joints=path.joints,
-            law=TimingLaw.PIECEWISE_CONSTANT_ACCELERATION,
-            pieces=tuple(pieces),
-            limits=limits,
-            validated=tuple(sorted(self.constraints)),
-            validation_resolution=path.validation_resolution,
-            producer=self.name,
         )
 
 
