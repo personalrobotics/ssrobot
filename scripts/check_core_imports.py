@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any
 
 # Modules whose own definitions are public without a top-level name.
-PUBLIC_MODULES = frozenset({"ssrobot.conformance"})
+PUBLIC_MODULES = frozenset({"ssrobot.conformance", "ssrobot.planning_contracts"})
 
 # Integration subpackages, by name under the package, and the prohibited backends each
 # may use: those its extra installs.

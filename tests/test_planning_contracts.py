@@ -1,14 +1,16 @@
 """Neutral planning contracts and the planning calls on robot views (#20, #21).
 
 On the example arm in examples/scenes/pedestal.xml, every planning call builds its
-request from one snapshot; a scripted straight-line planner returns geometry only, which
-runs only after the explicitly selected ``RestToRestProcessor`` times it. Reports are
+request from one snapshot. A scripted planner answers with a self-contained result: the
+request, a straight joint-space path, and that path timed with one synchronized triangle
+per segment, which is sampled, checked, and executed. Reports are
 written under $SSROBOT_ARTIFACTS/<test>; each scenario runs twice and must be
 byte-identical. Reproduce with ``uv run pytest tests/test_planning_contracts.py``.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 from collections.abc import Callable
@@ -37,7 +39,6 @@ from ssrobot import (
     PreparedTrajectory,
     ReplayRuntime,
     ReplayScript,
-    RestToRestProcessor,
     ResultForm,
     RobotContext,
     RobotPackage,
@@ -51,7 +52,15 @@ from ssrobot import (
     loads,
 )
 from ssrobot.mujoco import MujocoRuntime
-from ssrobot.planning_contracts import BASE_CONSTRAINTS, negotiate
+from ssrobot.planning_contracts import (
+    BASE_CONSTRAINTS,
+    PieceValidation,
+    Ramp,
+    RampInterval,
+    TimingLaw,
+    TrajectoryPiece,
+    negotiate,
+)
 from ssrobot.validation import check_command, check_trajectory_rates
 from tests.test_mujoco_scene import ABOVE, ASIDE, OPTIONS, PACKAGE, SCENE, _arm
 
@@ -61,20 +70,64 @@ UP = ((0.0, 0.0), (0.0, 0.0), (0.0, 0.05))
 LEVEL_ROTATION = ((0.0, 0.0), (0.0, 0.0), (-math.pi, math.pi))
 
 
+def _triangles(
+    group: str, waypoints: tuple[tuple[float, ...], ...], limits: EffectiveLimits
+) -> TimedTrajectory:
+    """The waypoints timed with one synchronized triangle per segment: every joint
+    accelerates for half the segment and decelerates for the other half, slow enough
+    for the most limited joint. A test fixture, not a processor."""
+    vmax, amax = limits.effective_velocity, limits.effective_acceleration
+    pieces = []
+    for q0, q1 in itertools.pairwise(waypoints):
+        delta = [b - a for a, b in zip(q0, q1, strict=True)]
+        T = max(
+            max(2 * math.sqrt(abs(d) / a) for d, a in zip(delta, amax, strict=True)),
+            max(2 * abs(d) / v for d, v in zip(delta, vmax, strict=True)),
+        )
+        pieces.append(
+            TrajectoryPiece(
+                validation=PieceValidation.PLANNED,
+                ramps=tuple(
+                    Ramp(
+                        position=a,
+                        velocity=0.0,
+                        intervals=(
+                            RampInterval(duration=T / 2, acceleration=4 * d / T**2),
+                            RampInterval(duration=T / 2, acceleration=-4 * d / T**2),
+                        ),
+                    )
+                    for a, d in zip(q0, delta, strict=True)
+                ),
+            )
+        )
+    return TimedTrajectory(
+        group=group,
+        joints=limits.joints,
+        law=TimingLaw.PIECEWISE_CONSTANT_ACCELERATION,
+        pieces=tuple(pieces),
+        limits=limits,
+        validated=tuple(sorted(BASE_CONSTRAINTS)),
+        validation_resolution=0.05,
+        producer="triangles",
+    )
+
+
 class StraightLine:
     """A scripted planner: the straight joint-space line to the first goal
-    configuration, if the scene says it is valid. It returns geometry only."""
+    configuration, if the scene says it is valid, through its midpoint. With ``timed``
+    it also times the line; without, it returns geometry only."""
 
     name = "straight-line-1"
 
+    def __init__(self, *, timed: bool = True) -> None:
+        self.timed = timed
+
     def capabilities(self, request: PlanningRequest) -> PlannerCapabilities:
+        timed = (ResultForm.TIMED_TRAJECTORY,) if self.timed else ()
         return PlannerCapabilities(
             goals=(GoalKind.CONFIGURATION,),
-            constraints=(
-                ConstraintClass.COLLISION,
-                ConstraintClass.POSITION_LIMITS,
-            ),
-            results=(ResultForm.GEOMETRIC_PATH,),
+            constraints=BASE_CONSTRAINTS,
+            results=(ResultForm.GEOMETRIC_PATH, *timed),
         )
 
     def plan(
@@ -88,24 +141,26 @@ class StraightLine:
         goal = request.goal.configurations[0]
         if not scene.is_edge_valid(request.start, goal):
             return PlanResult(
-                request=request.fingerprint(),
+                request=request,
                 planner=self.name,
                 backend="python",
                 status=PlanStatus.INFEASIBLE,
                 diagnostics=(Diagnostic(code="edge_invalid", message="the line collides"),),
             )
         midpoint = tuple((a + b) / 2 for a, b in zip(request.start, goal, strict=True))
+        waypoints = (request.start, midpoint, goal)
         return PlanResult(
-            request=request.fingerprint(),
+            request=request,
             planner=self.name,
             backend="python",
             status=PlanStatus.SUCCEEDED,
             path=GeometricPath(
                 group=request.group,
                 joints=request.joints,
-                waypoints=(request.start, midpoint, goal),
+                waypoints=waypoints,
                 validation_resolution=scene.edge_resolution,
             ),
+            trajectory=_triangles(request.group, waypoints, request.limits) if self.timed else None,
         )
 
 
@@ -187,50 +242,39 @@ def _scenario(out: Path) -> dict[str, Any]:
         snapshot = ctx.snapshot()
         requests = _requests(ctx, snapshot)
         arm = ctx.manipulator("arm")
-        planner, processor = StraightLine(), RestToRestProcessor()
+        planner = StraightLine()
 
         refusals: dict[str, str] = {}
-        try:
-            arm.plan_to_configuration(ASIDE, snapshot=snapshot, planner=planner)
-        except SsrobotError as e:
-            refusals["geometry_without_processor"] = e.code
-        try:
-            arm.plan(requests["pose"].goal, snapshot=snapshot, planner=planner, processor=processor)
-        except SsrobotError as e:
-            refusals["pose_goal_to_configuration_planner"] = e.code
-        try:
-            arm.plan_to_configuration(
+        attempts: dict[str, Callable[[], object]] = {
+            "geometry_without_processor": lambda: arm.plan_to_configuration(
+                ASIDE, snapshot=snapshot, planner=StraightLine(timed=False)
+            ),
+            "pose_goal_to_configuration_planner": lambda: arm.plan(
+                requests["pose"].goal, snapshot=snapshot, planner=planner
+            ),
+            "effort_limits": lambda: arm.plan_to_configuration(
                 ASIDE,
                 snapshot=snapshot,
                 planner=planner,
-                processor=processor,
                 constraints=(ConstraintClass.EFFORT_LIMITS,),
-            )
-        except SsrobotError as e:
-            refusals["effort_limits"] = e.code
+            ),
+        }
+        for name, attempt in attempts.items():
+            refusals[name] = _refusal(attempt)
 
+        # The result is all a caller needs: the request travels inside it.
         result = arm.plan_to_configuration(
             ASIDE,
             snapshot=snapshot,
             planner=planner,
-            processor=processor,
             velocity_scaling=0.5,
             acceleration_scaling=0.5,
         )
-        assert result.path is not None
-        request = arm.request(
-            ConfigurationGoal(configurations=(ASIDE,)),
-            snapshot=snapshot,
-            velocity_scaling=0.5,
-            acceleration_scaling=0.5,
-        )
-        timed = processor.process(result.path, request.limits)
-        command = timed.sample(PERIOD_NS)
+        assert result.trajectory is not None and result.path is not None
+        command = result.trajectory.sample(PERIOD_NS)
         check_command(ctx.description, command, ctx.info)
-        check_trajectory_rates(
-            command, timed.limits.effective_velocity, timed.limits.effective_acceleration
-        )
-        both = replace(result, trajectory=timed)
+        limits = result.request.limits
+        check_trajectory_rates(command, limits.effective_velocity, limits.effective_acceleration)
         execution = ctx.run_until(
             ctx.submit(command, snapshot=snapshot, source="planner"), max_ticks=5_000
         )
@@ -239,15 +283,12 @@ def _scenario(out: Path) -> dict[str, Any]:
     report = {
         "snapshot": snapshot.fingerprint(),
         "requests": {name: json.loads(dumps(r)) for name, r in requests.items()},
-        "results": {
-            "geometric": json.loads(dumps(result)),
-            "timed": json.loads(dumps(timed)),
-            "both": json.loads(dumps(both)),
-        },
+        "result": json.loads(dumps(result)),
+        "decoded_equal": loads(dumps(result), PlanResult) == result,
         "command": {
             "waypoints": len(command.time_from_start_ns),
             "duration_ns": command.time_from_start_ns[-1],
-            "trajectory_duration_s": timed.duration,
+            "trajectory_duration_s": result.trajectory.duration,
             "off_polyline": _on_polyline(command, result.path),
             "goal": list(command.positions[-1]),
         },
@@ -260,9 +301,9 @@ def _scenario(out: Path) -> dict[str, Any]:
 
 
 def test_planning_calls_requests_results_and_execution(artifacts: Path, tmp_path: Path) -> None:
-    """Every planning call yields a fully resolved request; a geometry-only planner is
-    refused without a processor, and with ``RestToRestProcessor`` its path is timed
-    within the effective limits, sampled, and executed in MuJoCo."""
+    """Every planning call yields a fully resolved request. A plan_to_* result carries
+    its request, so it is sampled, checked against the effective limits, and executed
+    with nothing rebuilt. A geometry-only planner is refused without a processor."""
     report = _scenario(artifacts)
     _scenario(tmp_path)
     name = "planning_contracts.json"
@@ -290,10 +331,10 @@ def test_planning_calls_requests_results_and_execution(artifacts: Path, tmp_path
     assert report["command"]["goal"] == pytest.approx(list(ASIDE), abs=1e-12)
     assert report["execution"] == "succeeded"
     assert report["reached"] == pytest.approx(list(ASIDE), abs=0.03)
-    for name in ("geometric", "both"):
-        assert report["results"][name]["status"] == "succeeded"
-    assert report["results"]["geometric"]["trajectory"] is None
-    assert report["results"]["timed"]["validated"] == ["acceleration_limits", "velocity_limits"]
+    result = report["result"]
+    assert result["status"] == "succeeded" and report["decoded_equal"]
+    assert result["request"]["goal"]["configurations"] == [list(ASIDE)]
+    assert result["request"]["limits"]["velocity_scaling"] == 0.5
 
 
 def test_requests_are_the_same_on_every_runtime() -> None:
@@ -331,14 +372,13 @@ def _refusal(action: Callable[[], object]) -> str:
     return "accepted"
 
 
-def _timed(limits: EffectiveLimits) -> TimedTrajectory:
-    path = GeometricPath(
-        group="arm",
-        joints=limits.joints,
-        waypoints=((0.0, 0.0, 0.0), (0.5, -0.2, 0.1), (0.3, 0.2, 0.1)),
-        validation_resolution=0.05,
-    )
-    return RestToRestProcessor().process(path, limits)
+def _timed(limits: EffectiveLimits, start: tuple[float, ...]) -> TimedTrajectory:
+    waypoints = (start, (0.5, -0.2, 0.1), (0.3, 0.2, 0.1))
+    return _triangles("arm", waypoints, limits)
+
+
+def context_for(description: Any, script: ReplayScript) -> RobotContext:
+    return RobotContext(description, ReplayRuntime(script))
 
 
 def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Path) -> None:
@@ -350,8 +390,12 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
     _, live = _open()
     with live:
         snapshot = live.snapshot()
-    limits = EffectiveLimits.resolve(description, ("shoulder", "elbow", "wrist"))
-    good = _timed(limits)
+    request = (
+        context_for(description, script)
+        .manipulator()
+        .request(ConfigurationGoal(configurations=((0.3, 0.2, 0.1),)), snapshot=snapshot)
+    )
+    good = _timed(request.limits, request.start)
     encoded = json.loads(dumps(good))
 
     def tampered(edit: Callable[[dict[str, Any]], None]) -> Callable[[], object]:
@@ -363,8 +407,7 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
         d["pieces"][1]["ramps"][0]["position"] += 0.01
 
     def too_fast(d: dict[str, Any]) -> None:
-        for interval in d["pieces"][0]["ramps"][0]["intervals"]:
-            interval["acceleration"] *= 4.0
+        d["pieces"][0]["ramps"][0]["intervals"][0]["acceleration"] = 50.0  # the limit is 5
 
     def moving_at_start(d: dict[str, Any]) -> None:
         d["pieces"][0]["ramps"][1]["velocity"] = 0.1
@@ -380,7 +423,7 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
     bimanual = load_package(PACKAGE.parent / "bimanual_lift").description
 
     def context(d: Any) -> RobotContext:
-        return RobotContext(d, ReplayRuntime(script))
+        return context_for(d, script)
 
     def snapshot_of(d: Any) -> SceneSnapshot:
         return replace(snapshot, description=d.fingerprint())
@@ -391,11 +434,6 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
         .request(
             Pose(position=(1.0, 0.0, 0.0), quat_wxyz=IDENTITY), snapshot=snapshot_of(with_base)
         )
-    )
-    request = (
-        context(description)
-        .manipulator()
-        .request(ConfigurationGoal(configurations=(ASIDE,)), snapshot=snapshot)
     )
     failed = json.loads(
         json.dumps(
@@ -450,7 +488,7 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
         "not_at_rest": _refusal(tampered(moving_at_start)),
         "success_without_motion": _refusal(
             lambda: PlanResult(
-                request=request.fingerprint(),
+                request=request,
                 planner="p",
                 backend="b",
                 status=PlanStatus.SUCCEEDED,
@@ -458,18 +496,37 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
         ),
         "failure_with_motion": _refusal(
             lambda: PlanResult(
-                request=request.fingerprint(),
+                request=request,
                 planner="p",
                 backend="b",
                 status=PlanStatus.TIMEOUT,
                 trajectory=good,
             )
         ),
+        "trajectory_from_elsewhere": _refusal(
+            lambda: PlanResult(
+                request=request,
+                planner="p",
+                backend="b",
+                status=PlanStatus.SUCCEEDED,
+                trajectory=_timed(request.limits, (0.0, 0.0, 0.0)),
+            )
+        ),
+        "trajectory_under_other_limits": _refusal(
+            lambda: PlanResult(
+                request=request,
+                planner="p",
+                backend="b",
+                status=PlanStatus.SUCCEEDED,
+                trajectory=_timed(
+                    EffectiveLimits.resolve(description, request.joints, velocity_scaling=0.5),
+                    request.start,
+                ),
+            )
+        ),
         "falsely_ready": _refusal(lambda: loads(json.dumps(failed), PreparedTrajectory)),
         "base_goal_unsupported": _refusal(
-            lambda: negotiate(
-                base_request, StraightLine().capabilities(base_request), RestToRestProcessor()
-            )
+            lambda: negotiate(base_request, StraightLine().capabilities(base_request))
         ),
     }
     (artifacts / "refusals.json").write_text(json.dumps(refusals, indent=2) + "\n")
@@ -487,48 +544,10 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
         "not_at_rest": "not_at_rest",
         "success_without_motion": "missing_field",
         "failure_with_motion": "unexpected_field",
+        "trajectory_from_elsewhere": "request_mismatch",
+        "trajectory_under_other_limits": "request_mismatch",
         "falsely_ready": "execution_unready",
         "base_goal_unsupported": "unsupported_goal",
     }
     assert base_request.frame == "base" and base_request.component == "turntable"
     assert loads(dumps(base_request), PlanningRequest) == base_request
-
-
-def test_rest_to_rest_timing_is_exact_and_within_limits() -> None:
-    """The processor's trajectory reaches every waypoint at rest, its samples lie on the
-    polyline, and the sampled command respects the effective limits under linear
-    interpolation at every period tried, including the shortest and the coarsest."""
-    description = load_package(PACKAGE).description
-    joints = ("shoulder", "elbow", "wrist")
-    limits = EffectiveLimits.resolve(
-        description, joints, velocity_scaling=0.3, acceleration_scaling=0.7
-    )
-    path = GeometricPath(
-        group="arm",
-        joints=joints,
-        # a short hop that never reaches top speed, a long move that does, a reversal,
-        # a repeated waypoint, and a single-joint move
-        waypoints=(
-            (0.0, 0.0, 0.0),
-            (0.01, -0.01, 0.0),
-            (1.2, -0.9, 0.4),
-            (1.2, -0.9, 0.4),
-            (0.2, 0.3, -0.5),
-            (0.2, 0.3, 0.5),
-        ),
-        validation_resolution=0.05,
-    )
-    timed = RestToRestProcessor().process(path, limits)
-    distinct = [q for i, q in enumerate(path.waypoints) if i == 0 or q != path.waypoints[i - 1]]
-    elapsed = 0.0
-    for piece, q in zip(timed.pieces, distinct[1:], strict=True):
-        elapsed += piece.duration
-        position, velocity, _ = timed.evaluate(elapsed)
-        assert position == pytest.approx(q, abs=1e-12)
-        assert velocity == pytest.approx((0.0, 0.0, 0.0), abs=1e-12)
-    assert loads(dumps(timed), TimedTrajectory) == timed
-    for period in (1_000_000, PERIOD_NS, 10_000_000, 50_000_000):
-        command = timed.sample(period)
-        check_trajectory_rates(command, limits.effective_velocity, limits.effective_acceleration)
-        assert _on_polyline(command, path) < 1e-9
-        assert command.positions[-1] == pytest.approx(path.waypoints[-1], abs=1e-12)
