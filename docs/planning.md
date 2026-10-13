@@ -59,9 +59,11 @@ A plan lowers the request into sscbirrt:
 
 The robot model's forward kinematics of `frame` comes from the bound IK when there is
 one, and from the planning scene otherwise. A MuJoCo planning scene's native checker
-with ssik kinematics runs on sscbirrt's native backend: since sscbirrt 3.7, every ssik
-family does, the UR5e's and the JACO2's included. A scene without a native checker runs
-on the Python backend, and the result's diagnostics give the reasons.
+with ssik kinematics runs on sscbirrt's native backend when ssik's native solver
+supports the arm's family (`ssik.cpp.NATIVE_FAMILIES`): since sscbirrt 3.7, every such
+family does, including the UR5e's and the JACO2's. Other kinematics, or a scene without
+a native checker, use the Python backend, and the result's diagnostics give the
+reasons.
 
 Results map to `PlanStatus`:
 

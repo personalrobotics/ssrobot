@@ -17,8 +17,8 @@ ssrobot = "ssrobot.cli:main"
 # types directly.
 mujoco = ["mujoco==3.14.0", "sscbirrt[mujoco]>=3.7,<3.8"]
 # The sscbirrt, ssik, and sstsr adapter. 3.5 is the first sscbirrt to return a timed
-# trajectory under velocity and acceleration limits; 3.7 (with ssik 8.2) runs every ssik
-# family natively, the JACO2's included.
+# trajectory under velocity and acceleration limits; 3.7 (with ssik 8.2) runs every family
+# ssik's native solver supports natively, the UR5e's and the JACO2's included.
 planning = ["sscbirrt[ssik]>=3.7,<3.8"]
 
 [dependency-groups]
