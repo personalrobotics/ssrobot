@@ -59,9 +59,9 @@ A plan lowers the request into sscbirrt:
 
 The robot model's forward kinematics of `frame` comes from the bound IK when there is
 one, and from the planning scene otherwise. A MuJoCo planning scene's native checker
-and ssik kinematics of a family sscbirrt verifies natively run on sscbirrt's native
-backend; anything else runs on its Python backend, and the result's diagnostics give
-the reasons.
+with ssik kinematics runs on sscbirrt's native backend: since sscbirrt 3.7, every ssik
+family does, the UR5e's and the JACO2's included. A scene without a native checker runs
+on the Python backend, and the result's diagnostics give the reasons.
 
 Results map to `PlanStatus`:
 
@@ -138,8 +138,8 @@ Submit its command with the snapshot it was planned in.
 | `artifacts/test_neutral_providers_and_geometric_paths/` | The same query through a scene with no native checker plans on sscbirrt's Python backend and passes every check. Its path without the trajectory is refused without a processor (`untimed_result`); with `RestToRestProcessor` it is prepared and executed. A second run is byte-identical. |
 | `artifacts/test_preparation_never_claims_more_than_it_rechecks/evidence.json` | The bare example arm swings its elbow 0.5 rad, timed by `RestToRestProcessor`. A path validated at 0.01 is refused at a 20 ms period: its steps reach 0.031, though the scene's resolution is 0.05. At 2 ms its steps are 0.003 and it is accepted. With the tcp constrained to the straight line between its start and goal, a 10 s period gives two waypoints, both exactly on the line, but the executed step between them arcs 15 mm off it, so the plan is refused (`tsr_path`). |
 | `artifacts/test_adapter_refusals/refusals.json` | ssik cannot solve the three-joint arm (`kinematics_unavailable`); a pose goal without kinematics (`unsupported_goal`) and effort limits (`unsupported_constraint`) are refused at negotiation; a goal in collision is `infeasible`; an abort is `cancelled`; a path through the pedestal is never execution-ready (`execution_unready`). |
-| `artifacts/reference-robots/<robot>/scenario/run-{1,2}/` (CI job `reference-robots`) | The two-robot planning proof (#24): one function, given each robot's `scenario` data in `references/robots.toml`, plans from the installed package with ssik kinematics. Geodude's `right_arm` plans to a side-grasp band around a cylinder for its hand, and ADA's `arm`, which carries the articutool, to a band for its fork tip pointing down above the cylinder. Each then plans to its named configuration. Every plan is prepared and executed, and a fresh snapshot shows where the robot actually ended: Geodude's hand within 3.3 mm and 0.007 rad of the planned goal pose, ADA's fork tip within 4.0 mm and 0.015 rad, and both named configurations within 0.006 rad. An effort-limit constraint and a path-only result are refused, and the two runs hold the same files, byte-identical. |
+| `artifacts/reference-robots/<robot>/scenario/run-{1,2}/` (CI job `reference-robots`) | The two-robot planning proof (#24): one function, given each robot's `scenario` data in `references/robots.toml`, plans from the installed package with ssik kinematics. Geodude's `right_arm` plans to a side-grasp band around a cylinder for its hand, and ADA's `arm`, which carries the articutool, to a band for its fork tip pointing down above the cylinder. Each then plans to its named configuration. Every plan runs on sscbirrt's native backend, is prepared and executed, and a fresh snapshot shows where the robot actually ended: Geodude's hand within 1.9 mm and 0.004 rad of the planned goal pose, ADA's fork tip within 5.6 mm and 0.012 rad, and both named configurations within the runtime's 0.01 goal tolerance. An effort-limit constraint and a path-only result are refused, and the two runs hold the same files, byte-identical. |
 
-ADA's JACO2 uses ssik's `ikgeo.general_6r` solver, which sscbirrt does not yet run
-natively, so its pose, offset, and TSR queries plan on sscbirrt's Python backend; its
-first query also waits about 30 s for ssik to prepare that solver.
+ADA's JACO2 uses ssik's `ikgeo.general_6r` solver. ssik prepares it once, which takes
+about 30 s, and caches the result, so later queries, and later processes once the cache
+is warm, start at once.
