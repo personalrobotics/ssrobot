@@ -1,0 +1,15 @@
+<!-- The two-robot planning proof's scene for ada (#24): a cylinder 4 cm across and
+     12 cm tall, standing on a fixed stand within the arm's reach. MujocoRuntime(package,
+     scene=...) composes it with the robot: "cylinder" has a free joint, so it is an
+     object; "stand" has none, so it is a fixture. -->
+<mujoco model="ada-cylinder">
+  <worldbody>
+    <body name="stand" pos="0.3 0.0 0.300">
+      <geom type="box" size="0.05 0.05 0.300" rgba="0.6 0.4 0.2 1"/>
+    </body>
+    <body name="cylinder" pos="0.3 0.0 0.6605">
+      <freejoint/>
+      <geom type="cylinder" size="0.02 0.06" mass="0.1" rgba="0.2 0.4 0.8 1"/>
+    </body>
+  </worldbody>
+</mujoco>
