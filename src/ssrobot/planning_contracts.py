@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import enum
 import math
+import numbers
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -33,7 +34,7 @@ from ssrobot.conventions import Pose, check_name
 from ssrobot.description import RobotDescription
 from ssrobot.errors import CapabilityError, StaleRevisionError, ValidationError
 from ssrobot.execution import Diagnostic
-from ssrobot.scene import PlanningScene, SceneSnapshot
+from ssrobot.scene import Contact, PlanningScene, SceneSnapshot
 
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 
@@ -870,6 +871,522 @@ def negotiate(
             "unsupported_constraint",
             f"nothing selected validates {[str(c) for c in unsupported]}",
         )
+
+
+# -- Motion validation -----------------------------------------------------------------
+#
+# Responsibilities. Geometric validity belongs to the planner library, behind one
+# ``MotionValidator``: configurations, motions, paths, a timed trajectory's geometric
+# trace, collisions (held objects included, as the snapshot declares them), and path-wide
+# constraints. ssrobot owns execution readiness: the start state, joint, velocity, and
+# acceleration limits, timing, the runtime's interpolation, attachments as declared scene
+# state and their currency, and runtime capabilities. ssrobot never re-derives geometric
+# validity; a changed motion is put to the same validator.
+
+
+class ValidationGuarantee(enum.StrEnum):
+    DISCRETE = "discrete"
+    """Valid at the states the policy samples; nothing is claimed between them."""
+    CONTINUOUS = "continuous"
+    """Valid at every state along the motion."""
+
+
+class ValidationSubject(enum.StrEnum):
+    STATE = "state"
+    MOTION = "motion"
+    """One interval between two configurations under ``PathInterpolation.LINEAR``."""
+    PATH = "path"
+    TRAJECTORY = "trajectory"
+    """A complete timed trajectory under its law, over its whole time domain."""
+
+
+class ValidationFailure(enum.StrEnum):
+    POSITION_LIMITS = "position_limits"
+    COLLISION = "collision"
+    PATH_CONSTRAINT = "path_constraint"
+    AMBIGUOUS = "ambiguous"
+    """Within the policy's ambiguity band of a contact or bound: refused, never rounded."""
+    UNSUPPORTED_MOTION = "unsupported_motion"
+    """The validator cannot validate this motion as declared, such as a continuous joint
+    moving half a turn or more in one linear interval, which a validator that
+    interpolates the short way would validate as a different motion."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ValidationPolicy(Value):
+    """What a validator checks, how, and what its answer guarantees. The guarantee is
+    independent of the mechanism: a continuous certificate may itself subdivide, under a
+    bound that covers the gaps. Every setting the mechanism uses is recorded, so no
+    answer depends on a hidden one."""
+
+    name: str = field(metadata=meta("Policy name, e.g. 'joint_l2_subdivision'."))
+    mechanism: str = field(
+        metadata=meta("How it validates, e.g. 'joint_subdivision', 'adaptive_bounded', 'exact'.")
+    )
+    guarantee: ValidationGuarantee = field(metadata=meta("What a valid answer guarantees."))
+    resolution: float | None = field(
+        default=None, metadata=meta("Largest joint step between checked states.", unit="joint")
+    )
+    workspace_step_m: float | None = field(
+        default=None, metadata=meta("Largest workspace motion between checked states.", unit="m")
+    )
+    clearance_m: float | None = field(
+        default=None, metadata=meta("Clearance every checked state keeps.", unit="m")
+    )
+    ambiguity_band_m: float = field(
+        metadata=meta("Distances within this band of a contact are refused.", unit="m")
+    )
+    parameters: tuple[tuple[str, str], ...] = field(
+        default=(), metadata=meta("Every other mechanism setting, as sorted (key, value) pairs.")
+    )
+    summary: str = field(metadata=meta("The guarantee in words."))
+
+    def _validate(self) -> None:
+        check_name(self.name, path="name")
+        check_name(self.mechanism, path="mechanism")
+        if (
+            self.guarantee is ValidationGuarantee.DISCRETE
+            and self.resolution is None
+            and self.workspace_step_m is None
+        ):
+            raise ValidationError(
+                "inconsistent_policy",
+                "a discrete guarantee states the spacing of the states it checks: "
+                "resolution or workspace_step_m",
+                path="guarantee",
+            )
+        for name in ("resolution", "workspace_step_m", "clearance_m"):
+            value = getattr(self, name)
+            if value is not None and not value > 0:
+                raise ValidationError("out_of_limits", f"{name} must be positive", path=name)
+        if self.ambiguity_band_m < 0:
+            raise ValidationError(
+                "out_of_limits", "ambiguity_band_m must be >= 0", path="ambiguity_band_m"
+            )
+        if list(self.parameters) != sorted(dict(self.parameters).items()):
+            raise ValidationError(
+                "noncanonical_order", "parameter keys must be sorted and unique", path="parameters"
+            )
+        if not self.summary:
+            raise ValidationError("missing_field", "summary must not be empty", path="summary")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ValidatorIdentity(Value):
+    """Which validator answered, under which policy, for which scene and constraints."""
+
+    implementation: str = field(metadata=meta("Implementation name and version."))
+    policy: ValidationPolicy = field(metadata=meta("The policy it applies."))
+    snapshot: str = field(metadata=meta("Fingerprint of the scene snapshot it is bound to."))
+    group: str = field(metadata=meta("The joint group whose motions it validates."))
+    joints: tuple[str, ...] = field(metadata=meta("The group's joints, in order."))
+    constraints: str = field(
+        metadata=meta("Fingerprint of the constraints it applies; see constraints_identity.")
+    )
+
+    def _validate(self) -> None:
+        check_name(self.implementation, path="implementation")
+        check_name(self.group, path="group")
+        for name in ("snapshot", "constraints"):
+            if not _FINGERPRINT.fullmatch(getattr(self, name)):
+                raise ValidationError(
+                    "invalid_fingerprint", f"{name} must be a SHA-256 hex digest", path=name
+                )
+        if not self.joints:
+            raise ValidationError("shape_mismatch", "at least one joint is required", path="joints")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InvalidWitness(Value):
+    """The first invalid state found, where it is, and why."""
+
+    failure: ValidationFailure = field(metadata=meta("What failed."))
+    segment: int | None = field(
+        default=None, metadata=meta("Interval index, for a motion or path.", unit="count")
+    )
+    fraction: float | None = field(
+        default=None, metadata=meta("Position within the interval, 0 to 1.", unit="1")
+    )
+    time_s: float | None = field(
+        default=None, metadata=meta("Time into the trajectory, for a trajectory.", unit="s")
+    )
+    configuration: tuple[float, ...] = field(
+        metadata=meta("The first invalid configuration found.", unit="joint")
+    )
+    contacts: tuple[Contact, ...] = field(default=(), metadata=meta("The disallowed contacts."))
+    constraint: int | None = field(
+        default=None, metadata=meta("Index of the violated path constraint.", unit="count")
+    )
+    detail: str = field(default="", metadata=meta("A human-readable explanation."))
+
+    def _validate(self) -> None:
+        if self.fraction is not None and not 0.0 <= self.fraction <= 1.0:
+            raise ValidationError("out_of_limits", "fraction must be in [0, 1]", path="fraction")
+        if self.time_s is not None and self.time_s < 0:
+            raise ValidationError("out_of_limits", "time_s must be >= 0", path="time_s")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MotionValidation(Record):
+    """One validator's answer for one exact subject: valid under the reported policy, or
+    the first invalid state found. Its identities bind it to the scene, the motion, the
+    constraints, the policy, and the implementation, so equal inputs give equal reports."""
+
+    SCHEMA = "ssrobot.MotionValidation"
+    VERSION = 1
+
+    subject: ValidationSubject = field(metadata=meta("What was validated."))
+    motion: str = field(metadata=meta("Fingerprint of the exact subject; see *_identity."))
+    interpolation: PathInterpolation | None = field(
+        default=None, metadata=meta("How a motion or path is interpolated.")
+    )
+    law: TimingLaw | None = field(default=None, metadata=meta("A trajectory's law."))
+    intervals: int = field(metadata=meta("Intervals in the subject: 0 for a state.", unit="count"))
+    duration_s: float | None = field(
+        default=None, metadata=meta("A trajectory's duration.", unit="s")
+    )
+    validator: ValidatorIdentity = field(metadata=meta("Who answered, and under what policy."))
+    valid: bool = field(metadata=meta("Whether the subject is valid under the policy."))
+    witness: InvalidWitness | None = field(
+        default=None, metadata=meta("The first invalid state; present exactly when invalid.")
+    )
+    checks: int = field(metadata=meta("State or interval checks performed.", unit="count"))
+
+    def _validate(self) -> None:
+        if not _FINGERPRINT.fullmatch(self.motion):
+            raise ValidationError(
+                "invalid_fingerprint", "motion must be a SHA-256 hex digest", path="motion"
+            )
+        if self.checks < 1:
+            raise ValidationError(
+                "out_of_limits", "a report rests on at least one check", path="checks"
+            )
+        subject = self.subject
+        timed = subject is ValidationSubject.TRAJECTORY
+        if timed != (self.law is not None) or timed != (self.duration_s is not None):
+            raise ValidationError(
+                "inconsistent_subject", "law and duration_s go with a trajectory", path="law"
+            )
+        linear = subject in (ValidationSubject.MOTION, ValidationSubject.PATH)
+        if linear != (self.interpolation is not None):
+            raise ValidationError(
+                "inconsistent_subject",
+                "interpolation goes with a motion or a path",
+                path="interpolation",
+            )
+        expected = {ValidationSubject.STATE: 0, ValidationSubject.MOTION: 1}.get(subject)
+        if expected is not None and self.intervals != expected:
+            raise ValidationError(
+                "inconsistent_subject", f"a {subject} has {expected} intervals", path="intervals"
+            )
+        if expected is None and self.intervals < 1:
+            raise ValidationError(
+                "inconsistent_subject", f"a {subject} has at least one interval", path="intervals"
+            )
+        if self.duration_s is not None and not self.duration_s > 0:
+            raise ValidationError("out_of_limits", "duration_s must be positive", path="duration_s")
+        if self.valid != (self.witness is None):
+            raise ValidationError(
+                "inconsistent_validation",
+                "a witness is present exactly when the subject is invalid",
+                path="witness",
+            )
+        witness = self.witness
+        if witness is None:
+            return
+        if len(witness.configuration) != len(self.validator.joints):
+            raise ValidationError(
+                "shape_mismatch", "one witness value per joint", path="witness.configuration"
+            )
+        located = witness.segment is not None or witness.fraction is not None
+        if linear:
+            if witness.segment is None or witness.fraction is None or witness.time_s is not None:
+                raise ValidationError(
+                    "inconsistent_witness",
+                    "a motion or path witness has a segment and fraction",
+                    path="witness",
+                )
+            if not 0 <= witness.segment < self.intervals:
+                raise ValidationError(
+                    "inconsistent_witness",
+                    "the segment is outside the subject",
+                    path="witness.segment",
+                )
+        elif timed:
+            assert self.duration_s is not None
+            if located or witness.time_s is None or witness.time_s > self.duration_s:
+                raise ValidationError(
+                    "inconsistent_witness",
+                    "a trajectory witness has a time within the trajectory",
+                    path="witness.time_s",
+                )
+        elif located or witness.time_s is not None:
+            raise ValidationError(
+                "inconsistent_witness", "a state witness has no location", path="witness"
+            )
+
+    def fingerprint(self) -> str:
+        return fingerprint(self)
+
+
+def check_validation(
+    report: MotionValidation,
+    *,
+    validator: ValidatorIdentity,
+    subject: MotionSubject | TrajectorySubject,
+) -> None:
+    """Raise unless ``report`` answers exactly this question, from this validator, policy,
+    scene, and constraints, about this subject. Every field derived from the subject is
+    compared with the subject itself: the kind, the identity, the interpolation or law,
+    the number of intervals, and a trajectory's duration. A well-formed report about
+    anything else is refused (``validation_mismatch``), so evidence for one motion is
+    never taken for another."""
+
+    def mismatch(message: str, path: str) -> ValidationError:
+        return ValidationError("validation_mismatch", message, path=path)
+
+    if not isinstance(report, MotionValidation):
+        raise ValidationError("wrong_type", "report must be a MotionValidation", path="report")
+    if not isinstance(subject, MotionSubject | TrajectorySubject):
+        raise ValidationError(
+            "wrong_type", "subject must be a MotionSubject or TrajectorySubject", path="subject"
+        )
+    if report.validator != validator:
+        raise mismatch(
+            "the report is from another validator, policy, scene, or constraint set", "validator"
+        )
+    if (subject.group, subject.joints) != (validator.group, validator.joints):
+        raise mismatch("the subject moves another group than the validator's", "subject")
+    if isinstance(subject, TrajectorySubject):
+        expected: dict[str, object] = {
+            "subject": ValidationSubject.TRAJECTORY,
+            "interpolation": None,
+            "law": subject.law,
+            "intervals": len(subject.pieces),
+            "duration_s": subject.duration,
+        }
+    else:
+        expected = {
+            "subject": subject.kind,
+            "interpolation": subject.interpolation,
+            "law": None,
+            "intervals": len(subject.waypoints) - 1,
+            "duration_s": None,
+        }
+    expected["motion"] = fingerprint(subject)
+    for name, value in expected.items():
+        if getattr(report, name) != value:
+            raise mismatch(f"the report's {name} is not this subject's", name)
+
+
+class MotionValidator(Protocol):
+    """The one answer to "is this motion valid?" for one planning scene, group,
+    constraint set, and policy.
+
+    ``PathInterpolation.LINEAR`` is the straight line in raw joint values, as runtimes
+    execute it: continuous joints are not wrapped. Planning adapters and runtime
+    compilation ask the same validator. Integrations construct it; core has no factory.
+    """
+
+    @property
+    def identity(self) -> ValidatorIdentity: ...
+
+    def validate_state(self, q: Sequence[float]) -> MotionValidation: ...
+
+    def validate_motion(self, q0: Sequence[float], q1: Sequence[float]) -> MotionValidation: ...
+
+    def validate_path(self, path: GeometricPath) -> MotionValidation: ...
+
+    def validate_trajectory(self, trajectory: TimedTrajectory) -> MotionValidation: ...
+
+
+def _check_subject_joints(group: str, joints: tuple[str, ...]) -> None:
+    check_name(group, path="group")
+    if not joints:
+        raise ValidationError("shape_mismatch", "at least one joint is required", path="joints")
+    for i, name in enumerate(joints):
+        check_name(name, path=f"joints[{i}]")
+    if len(set(joints)) != len(joints):
+        raise ValidationError("duplicate_name", "joints repeat", path="joints")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MotionSubject(Value):
+    """A state, a motion, or a path, exactly: the canonical descriptor its identity and
+    ``check_validation`` use. Nothing about how it was found or checked."""
+
+    kind: ValidationSubject = field(metadata=meta("A state, a motion, or a path."))
+    group: str = field(metadata=meta("The joint group that moves."))
+    joints: tuple[str, ...] = field(metadata=meta("Joint names, in group order."))
+    waypoints: tuple[tuple[float, ...], ...] = field(
+        metadata=meta("The configurations, in order.", unit="joint")
+    )
+    interpolation: PathInterpolation | None = field(
+        default=None, metadata=meta("How consecutive waypoints are joined; None for a state.")
+    )
+
+    def _validate(self) -> None:
+        _check_subject_joints(self.group, self.joints)
+        for i, q in enumerate(self.waypoints):
+            if len(q) != len(self.joints):
+                raise ValidationError(
+                    "shape_mismatch",
+                    f"{len(q)} values for {len(self.joints)} joints",
+                    path=f"waypoints[{i}]",
+                )
+        count = len(self.waypoints)
+        shapes = {
+            ValidationSubject.STATE: (count == 1, self.interpolation is None),
+            ValidationSubject.MOTION: (
+                count == 2,
+                self.interpolation is PathInterpolation.LINEAR,
+            ),
+            ValidationSubject.PATH: (count >= 2, self.interpolation is not None),
+        }
+        if self.kind not in shapes:
+            raise ValidationError(
+                "inconsistent_subject", "a trajectory is a TrajectorySubject", path="kind"
+            )
+        if not all(shapes[self.kind]):
+            raise ValidationError(
+                "inconsistent_subject",
+                "a state is one waypoint with no interpolation, a motion two linear "
+                "waypoints, and a path at least two with an interpolation",
+                path="waypoints",
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TrajectorySubject(Value):
+    """A timed trajectory, exactly: the group and joints, the law, every piece's ramps
+    (so q(t) over the whole time domain), and the effective limits it is timed under.
+    Not how it was validated or produced."""
+
+    group: str = field(metadata=meta("The joint group that moves."))
+    joints: tuple[str, ...] = field(metadata=meta("Joint names, in group order."))
+    law: TimingLaw = field(metadata=meta("How position evolves within an interval."))
+    pieces: tuple[tuple[Ramp, ...], ...] = field(
+        metadata=meta("Each piece's ramps, one per joint, in order.")
+    )
+    limits: EffectiveLimits = field(metadata=meta("The limits it is timed under."))
+
+    def _validate(self) -> None:
+        _check_subject_joints(self.group, self.joints)
+        if not self.pieces:
+            raise ValidationError("shape_mismatch", "a trajectory needs a piece", path="pieces")
+        for i, ramps in enumerate(self.pieces):
+            if len(ramps) != len(self.joints):
+                raise ValidationError("shape_mismatch", "one ramp per joint", path=f"pieces[{i}]")
+        if self.limits.joints != self.joints:
+            raise ValidationError("joint_mismatch", "limits must cover the joints", path="limits")
+
+    @property
+    def duration(self) -> float:
+        """Seconds from start to goal, summed as ``TimedTrajectory.duration`` sums them."""
+        return math.fsum(ramps[0].duration for ramps in self.pieces)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConstraintSet(Value):
+    """What a validator enforces beyond the scene: the description (which fixes joint
+    limits and collision allowances) and the path constraints."""
+
+    description: str = field(metadata=meta("Fingerprint of the robot description."))
+    path_constraint: tuple[Tsr, ...] = field(
+        default=(), metadata=meta("Regions the constrained frame stays inside throughout.")
+    )
+    frame: str | None = field(default=None, metadata=meta("The constrained frame, if any."))
+
+
+def _configuration(values: Sequence[float], path: str) -> tuple[float, ...]:
+    """Real numbers as floats, so 1 and 1.0 are one configuration. Strings, bools, and
+    non-finite values are refused, never coerced."""
+    if isinstance(values, str | bytes) or not isinstance(values, Sequence):
+        raise ValidationError("wrong_type", f"{path} must be a sequence of numbers", path=path)
+    out: list[float] = []
+    for i, v in enumerate(values):
+        if isinstance(v, bool) or not isinstance(v, numbers.Real):
+            raise ValidationError("wrong_type", f"{path}[{i}] must be a number", path=path)
+        if not math.isfinite(v):
+            raise ValidationError("non_finite", f"{path}[{i}] must be finite", path=path)
+        out.append(float(v))
+    return tuple(out)
+
+
+def state_subject(group: str, joints: Sequence[str], q: Sequence[float]) -> MotionSubject:
+    return MotionSubject(
+        kind=ValidationSubject.STATE,
+        group=group,
+        joints=tuple(joints),
+        waypoints=(_configuration(q, "q"),),
+    )
+
+
+def motion_subject(
+    group: str, joints: Sequence[str], q0: Sequence[float], q1: Sequence[float]
+) -> MotionSubject:
+    return MotionSubject(
+        kind=ValidationSubject.MOTION,
+        group=group,
+        joints=tuple(joints),
+        waypoints=(_configuration(q0, "q0"), _configuration(q1, "q1")),
+        interpolation=PathInterpolation.LINEAR,
+    )
+
+
+def path_subject(path: GeometricPath) -> MotionSubject:
+    """The path's geometry; its validation resolution is evidence, not geometry."""
+    return MotionSubject(
+        kind=ValidationSubject.PATH,
+        group=path.group,
+        joints=path.joints,
+        waypoints=path.waypoints,
+        interpolation=path.interpolation,
+    )
+
+
+def trajectory_subject(trajectory: TimedTrajectory) -> TrajectorySubject:
+    """The exact timed trajectory. Each piece's validation tag, the validated classes,
+    the validation resolution, the producer, and the provenance are validation evidence,
+    not the trajectory, so two trajectories differing only there are one subject. Equal
+    motions represented with different pieces or ramps are different subjects; that
+    never lets one reuse the other's evidence wrongly."""
+    return TrajectorySubject(
+        group=trajectory.group,
+        joints=trajectory.joints,
+        law=trajectory.law,
+        pieces=tuple(piece.ramps for piece in trajectory.pieces),
+        limits=trajectory.limits,
+    )
+
+
+def state_identity(group: str, joints: Sequence[str], q: Sequence[float]) -> str:
+    return fingerprint(state_subject(group, joints, q))
+
+
+def motion_identity(
+    group: str, joints: Sequence[str], q0: Sequence[float], q1: Sequence[float]
+) -> str:
+    return fingerprint(motion_subject(group, joints, q0, q1))
+
+
+def path_identity(path: GeometricPath) -> str:
+    return fingerprint(path_subject(path))
+
+
+def trajectory_identity(trajectory: TimedTrajectory) -> str:
+    return fingerprint(trajectory_subject(trajectory))
+
+
+def constraints_identity(request: PlanningRequest) -> str:
+    """The constraints a validator for ``request`` enforces."""
+    return fingerprint(
+        ConstraintSet(
+            description=request.description,
+            path_constraint=request.path_constraint,
+            frame=request.frame if request.path_constraint else None,
+        )
+    )
 
 
 # -- Execution readiness ---------------------------------------------------------------

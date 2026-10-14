@@ -28,7 +28,8 @@ The public interface consists of the names in `ssrobot.__all__`; the
 `ConformanceCheck`, `CheckOutcome`, and `FaultInjector`); the
 `ssrobot.planning_contracts` module, whose encoding types (`Ramp`, `RampInterval`,
 `TrajectoryPiece`, `PieceValidation`, `TimingLaw`, `PathInterpolation`, and
-`ExecutionCheck`) are public there rather than at the top level; the names in
+`ExecutionCheck`), and the motion-validation types besides `MotionValidator` and
+`MotionValidation`, are public there rather than at the top level; the names in
 `ssrobot.mujoco.__all__`, installed with the `mujoco` extra and specified in
 [mujoco.md](mujoco.md); the names in `ssrobot.planning.__all__`, installed with the
 `planning` extra and specified in [planning.md](planning.md); and the `ssrobot` command (`init`, `inspect`, `doctor`), with
@@ -45,7 +46,7 @@ uses them:
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
 | Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
 | Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
-| Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `TimedTrajectory`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `PreparedTrajectory` |
+| Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `TimedTrajectory`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `PreparedTrajectory`, `MotionValidator`, `MotionValidation` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
 | Error handling | `SsrobotError`, `ValidationError`, `CapabilityError`, `OwnershipError`, `StaleRevisionError`, `LifecycleError` |
 
@@ -442,6 +443,98 @@ command's chords against any per-joint limits, such as the effective ones, exact
 the independent checks it passed under the runtime's interpolation. Every check must
 have passed, so a prepared command that decodes is ready to execute; one with a failed
 check is `execution_unready`.
+
+### Motion validation
+
+Whether a motion is valid has exactly one answer, from one `MotionValidator`, and it is
+claimed only to the extent the validator's reported policy guarantees.
+
+**Responsibilities.**
+- **The planner library validates what it returns, completely, behind the validator.**
+  For sscbirrt, that means:
+  - configurations, motions, and the final path;
+  - collisions, with held objects as the snapshot declares them, and path-wide
+    constraints such as TSRs;
+  - every timed trajectory it returns, under its own law and limits, over the whole time
+    domain: its geometric trace, and its time-domain invariants such as continuity,
+    rest at the ends, and velocity and acceleration within the limits it records.
+- **ssrobot independently verifies that neutral artifact and owns execution readiness.**
+  - `TimedTrajectory` and `PlanResult` ingress re-checks the returned trajectory's
+    continuity, rest, limits, and agreement with its request.
+  - ssrobot compiles the trajectory into the runtime's command and interpolation, and
+    checks the start state, the description's limits, and timing.
+  - It also checks attachments as declared scene state and their currency at submit
+    (`stale_snapshot`), and runtime capabilities.
+- **ssrobot never re-derives geometric validity.** When compiling changes the geometry,
+  it asks the same validator about the new motion.
+
+**The protocol** (`ssrobot.MotionValidator`) is bound when constructed to one planning
+scene, joint group, constraint set, and policy. Integrations construct it; core has no
+factory or registry. It answers four questions:
+
+| Call | Validates |
+| --- | --- |
+| `validate_state(q)` | one configuration |
+| `validate_motion(q0, q1)` | one interval under `PathInterpolation.LINEAR` |
+| `validate_path(path)` | a `GeometricPath`, every interval |
+| `validate_trajectory(trajectory)` | a `TimedTrajectory` under its law, over its whole time domain, not only its knots |
+
+`LINEAR` is the straight line in **raw** joint values, which is what runtimes execute.
+Continuous joints are not wrapped. A validator that would interpolate a continuous joint
+the short way must refuse an interval in which that joint moves half a turn or more
+(`unsupported_motion`), rather than validate a different motion.
+
+**The report** (`ssrobot.MotionValidation`) is one validator's answer for one exact
+subject:
+
+| Field | Meaning |
+| --- | --- |
+| `subject`, `motion` | What was validated, and its identity (the fingerprint of its subject descriptor): `state_identity`, `motion_identity`, or `path_identity` for the geometry, or `trajectory_identity` for the exact timed trajectory, which covers its law, every ramp (so q(t) over the whole time domain), and its effective limits. Validation evidence is not part of an identity: a path's validation resolution, or a trajectory's piece validation tags, validated classes, producer, and provenance. |
+| `interpolation` or `law`, `intervals`, `duration_s` | How the subject moves, and its extent |
+| `validator` | `ValidatorIdentity`: the implementation, its `ValidationPolicy`, the snapshot and group it is bound to, and `constraints_identity` (the description, which fixes limits and collision allowances, plus the path constraints) |
+| `valid`, `witness` | The verdict, and for an invalid subject the first invalid state: `failure`, its location (`segment` and `fraction` for a motion or path, `time_s` for a trajectory), configuration, contacts, and violated constraint |
+| `checks` | How many state or interval checks were made |
+
+`ValidationPolicy` states how a validator checks and what its answer guarantees, and the
+two are independent:
+- `guarantee`: `discrete`, valid at the states checked only, or `continuous`, valid at
+  every state;
+- `mechanism`, such as `joint_subdivision`, `adaptive_bounded`, or `exact`;
+- every setting the mechanism uses: `resolution` (joint), `workspace_step_m`,
+  `clearance_m`, and any others as sorted `parameters`;
+- `ambiguity_band_m`: a state within this distance of a contact is refused as
+  `ambiguous`, never rounded either way;
+- a one-line summary.
+
+A continuous certificate may itself subdivide, under a bound that covers the gaps. A
+discrete one must state the spacing of the states it checks, as `resolution` or
+`workspace_step_m`. No answer depends on an unreported setting.
+
+Decoding refuses a report that contradicts itself (`inconsistent_validation`,
+`inconsistent_witness`, `inconsistent_subject`, `inconsistent_policy`). Such reports
+include a path or trajectory with no intervals, and any report with no checks.
+
+**Subjects** are canonical descriptors: `MotionSubject` for a state, a motion, or a path,
+and `TrajectorySubject` for a timed trajectory. Build them with `state_subject`,
+`motion_subject`, `path_subject`, and `trajectory_subject`; an identity is a subject's
+fingerprint. They are validated, never coerced:
+- names are checked, and joints must be non-empty and unique;
+- every waypoint has one value per joint;
+- a state is one waypoint, a motion two linear ones, and a path at least two;
+- values must be real and finite; strings and bools are refused, and integers become
+  floats, so 1 and 1.0 are one configuration.
+
+A motion and a two-waypoint path are different subjects.
+
+`check_validation(report, validator=, subject=)` binds a report to the exact question
+asked. It compares the validator, and every field derived from the subject: the kind,
+the identity, the interpolation or law, the number of intervals, and a trajectory's
+duration. It refuses anything else (`validation_mismatch`), so evidence about one motion
+is never taken for another. Callers use it rather than re-checking reports themselves.
+
+Equal inputs give equal reports. The same scene, constraints, policy, implementation,
+and exact subject produce the same report, whether the planner or runtime compilation
+asks, in any order, any number of times.
 
 ## Lifecycle, ownership, and execution
 
@@ -900,6 +993,7 @@ on sscbirrt's native backend.
 | `artifacts/test_planning_calls_requests_results_and_execution/planning_contracts.json` | On the example arm at its home snapshot: the request every planning call builds (configuration, configurations, pose at half speed and quarter acceleration, offset, and TSR with a path constraint), a scripted straight-line planner refused when it returns only geometry and no processor is selected (`untimed_result`), for a pose goal (`unsupported_goal`), and for effort limits (`unsupported_constraint`). Then `plan_to_configuration` returns a self-contained result (request, path, and a timed trajectory), which is sampled at 2 ms, checked against the effective limits, executed in MuJoCo, and reached, with nothing rebuilt. The result in wire form decodes equal. |
 | `artifacts/test_malformed_ambiguous_and_falsely_ready_records_are_refused/refusals.json` | Ambiguous manipulator, base, and end effector; a stale description; an out-of-limits goal; bad scaling; undeclared limits; a discontinuous, too-fast, or not-at-rest trajectory; a success without motion and a failure with it; a trajectory from another start or under other limits than its request's (`request_mismatch`); a prepared command with a failed check; a base goal at negotiation. Each with its code. |
 | MuJoCo runtime artifacts | See *Evidence* in [mujoco.md](mujoco.md). |
+| `artifacts/test_motion_validator_contract_is_planner_neutral/reports.json` | A test-only validator for a toy world (one continuous joint, one bounded joint, a forbidden box in joint space), with no planner, simulator, or runtime behind it. It checks exactly, so it reports a continuous guarantee. Its reports cover a clear state, one in the box, and one beyond a limit; a clear motion, a half turn of the continuous joint (`unsupported_motion`), and a motion within the ambiguity band (`ambiguous`); a path clipping the box only between its knots, refused at segment 0, fraction 0.4; the clear path timed as an exact reparameterization, with the same verdict; and the same endpoints joined by a straight line (invalid) and by L-shaped timing (valid), with different identities. Two runs are byte-identical, and repeated or reordered queries give the same reports. `test_malformed_validation_reports_are_refused/refusals.json` holds the self-contradicting reports refused at decode. `test_reports_are_bound_to_their_exact_subject_and_validator` shows that a trajectory differing only in validation tags and provenance keeps its identity, while the same ramps under other limits get another, and that `check_validation` refuses a report about another motion, from another validator, of another subject kind, or with the right identity but the wrong interval count or duration. Malformed subjects (wrong widths, strings, bools, repeated or missing joints, non-finite values) are refused, and integer and float configurations share an identity. |
 | Planning adapter artifacts | See *Evidence* in [planning.md](planning.md). |
 | `artifacts/test_direct_responses_keep_causal_time/` | An external runtime's answers advancing `now`, a deadline counted from acceptance, a regressing answer causing a breach, and a manual runtime answering ahead of its tick being rolled back. |
 | `artifacts/test_replay_starts_a_trajectory_from_a_joint_resting_past_its_stop/trace.jsonl` | A replay recorded 0.5 mrad past a stop: a trajectory starting there succeeds, and only its first applied setpoint is clamped, with a `clipped` modification on that joint. |
