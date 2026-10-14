@@ -22,6 +22,13 @@ naming the missing package; core never imports it, and the dependency gate check
 
 ## Who owns what
 
+Motion validity is moving onto one validator (#132): the neutral `MotionValidator`
+contract in [contracts.md](contracts.md), *Motion validation*. When sscbirrt exposes
+its validator publicly (personalrobotics/sscbirrt#230), this adapter will wrap it.
+`prepare`'s own collision, path-constraint, and step-length loops, and
+`PlanningScene.is_edge_valid`, will then be removed. Until then, `prepare`'s checks
+below are a second definition of motion validity and can disagree with the planner's.
+
 Whoever changes the geometry of a motion validates the change:
 
 - **sscbirrt** plans the path, then smooths and times it under the request's effective
