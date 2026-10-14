@@ -390,28 +390,23 @@ def _line(start: Pose, goal: Pose) -> Tsr:
 def test_one_validator_answers_everywhere(artifacts: Path) -> None:
     """Every motion-validity answer comes from the planner's validator, and nothing else.
 
-    On the bare example arm, with the tcp constrained to the straight line between its
-    start and an elbow swing of 0.5 rad: both waypoints are on the line, but the motion
-    between them arcs off it. The validator subdivides the motion and refuses it, naming
-    the interior state. ``prepare`` has no loop of its own to disagree with it. The same
-    queries, repeated and reordered, give equal reports.
+    On the example arm in the pedestal scene, the shoulder swings from -0.5 to 0.5 rad
+    with the elbow lowered: both waypoints are valid states, but the motion between them
+    sweeps the fingers through the pedestal. The planner's validator subdivides the
+    motion and refuses it, naming the interior state and the contact. ``prepare`` has no
+    check of its own to disagree with it. Repeated and reordered queries give equal
+    reports. A path constraint the planner cannot plan with (no kinematics for this
+    three-joint arm) has no validator either.
     """
     package = load_package(PACKAGE)
     description = package.description
     planner = CBiRRT(description)
-    with RobotContext(description, MujocoRuntime(package)) as ctx:
+    start, goal = (-0.5, 0.3, 0.0), (0.5, 0.3, 0.0)
+    with RobotContext(description, MujocoRuntime(package, scene=SCENE, **OPTIONS)) as ctx:
         snapshot = ctx.snapshot()
         arm = ctx.manipulator()
         scene = ctx.planning_scene(snapshot, arm.group)
-        start = tuple(snapshot.position(j) for j in description.group(arm.group).joints)
-        goal = (start[0], start[1] + 0.5, start[2])
-        line = _line(scene.forward_kinematics(start, "tcp"), scene.forward_kinematics(goal, "tcp"))
-        request = arm.request(
-            ConfigurationGoal(configurations=(goal,)),
-            snapshot=snapshot,
-            path_constraint=(line,),
-            frame="tcp",
-        )
+        request = arm.request(ConfigurationGoal(configurations=(goal,)), snapshot=snapshot)
         validator = planner.validator(request, scene)
         swing = GeometricPath(
             group=arm.group,
@@ -421,20 +416,32 @@ def test_one_validator_answers_everywhere(artifacts: Path) -> None:
         )
         first = validator.validate_path(swing)
         knots = [validator.validate_state(start), validator.validate_state(goal)]
-        validator.validate_state(goal)  # other queries in between change nothing
+        validator.validate_motion(goal, start)  # other queries in between change nothing
         again = validator.validate_path(swing)
+        line = _line(scene.forward_kinematics(start, "tcp"), scene.forward_kinematics(goal, "tcp"))
+        constrained = arm.request(
+            ConfigurationGoal(configurations=(goal,)),
+            snapshot=snapshot,
+            path_constraint=(line,),
+            frame="tcp",
+        )
+        no_kinematics = _code(lambda: planner.validator(constrained, scene))
     report = {
         "policy": json.loads(dumps(first))["validator"]["policy"],
         "knots_valid": [k.valid for k in knots],
         "swing": json.loads(dumps(first)),
         "repeated_equal": again == first,
+        "path_constraint_without_kinematics": no_kinematics,
     }
     (artifacts / "evidence.json").write_text(json.dumps(report, indent=2) + "\n")
 
-    assert report["knots_valid"] == [True, True]  # both waypoints lie on the line
+    assert report["knots_valid"] == [True, True]
     witness = first.witness
     assert not first.valid and witness is not None
-    assert witness.failure is ValidationFailure.PATH_CONSTRAINT
+    assert witness.failure is ValidationFailure.COLLISION
     assert witness.segment == 0 and witness.fraction is not None and 0 < witness.fraction < 1
-    assert report["repeated_equal"]
+    assert ("left_finger", "pedestal") in {(c.first, c.second) for c in witness.contacts}
+    assert first.validator.implementation.endswith(" native")
     assert first.validator.policy.mechanism == "joint_subdivision"
+    assert report["repeated_equal"]
+    assert no_kinematics == "unsupported_constraint"

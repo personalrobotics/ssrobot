@@ -21,7 +21,7 @@ from sscbirrt.exceptions import (
 )
 
 from ssrobot.description import JointKind, RobotDescription
-from ssrobot.errors import ValidationError
+from ssrobot.errors import CapabilityError, ValidationError
 from ssrobot.execution import Diagnostic
 from ssrobot.planning._frames import box, matrix, region
 from ssrobot.planning._kinematics import SsikKinematics
@@ -165,6 +165,13 @@ class CBiRRT:
         if (scene.group, scene.joints) != (request.group, request.joints):
             raise ValidationError("joint_mismatch", "the scene plans other joints than the request")
         kinematics = self._kinematics_for(request)
+        if kinematics is None and (request.path_constraint or isinstance(request.goal, OffsetGoal)):
+            # sscbirrt projects onto a path constraint with IK, so neither its planner
+            # nor its validator accepts one without it.
+            raise CapabilityError(
+                "unsupported_constraint",
+                f"path constraints need kinematics for {request.component!r}",
+            )
         frame = request.frame or self.description.manipulator(request.component).tool_frame
         ik = None if kinematics is None else kinematics.bind(scene, frame)
         native = scene.native()
