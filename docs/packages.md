@@ -413,9 +413,10 @@ the uv version. The script then runs two public commands, and opens the runtime:
   bounds). From fresh snapshots it plans with sscbirrt and ssik to the region, then to
   the named configuration restricted to the manipulator's joints. Each plan keeps
   sscbirrt's path and timed trajectory; its prepared command is exactly that trajectory
-  sampled at 2 ms, checked independently, and executed. A fresh snapshot then records
-  what was achieved, which must be within bounds: for the region, that the planned goal
-  pose is in the request's regions and the frame ended within 1 cm and 0.02 rad of it;
+  sampled at 2 ms, validated by the same validator, and executed. A fresh snapshot records
+  what was physically achieved, which must be within bounds: for the region, that the
+  frame ended within 1 cm and 0.02 rad of the planned goal pose (computed in the scene
+  it was planned in);
   for the configuration, the largest joint error (continuous joints modulo a turn),
   within 0.01. An effort-limit constraint must fail negotiation
   (`unsupported_constraint`) and the path alone must not be execution ready
