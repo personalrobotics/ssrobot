@@ -45,8 +45,10 @@ from ssrobot.planning_contracts import (
     check_validation,
     motion_identity,
     path_identity,
+    path_subject,
     state_identity,
     trajectory_identity,
+    trajectory_subject,
 )
 from tests.test_planning_contracts import _triangles
 
@@ -528,41 +530,57 @@ def test_reports_are_bound_to_their_exact_subject_and_validator() -> None:
     world, banded = IntervalWorld(), IntervalWorld(band=0.05)
     path = _path((0.0, 0.0), (1.0, 1.0))
     report = world.validate_path(path)
-    check_validation(
-        report, validator=world.identity, subject=ValidationSubject.PATH, motion=path_identity(path)
-    )
-    other = _path((0.0, 0.0), (1.0, 0.0))
+    traj_report = world.validate_trajectory(timed)
+    check_validation(report, validator=world.identity, subject=path_subject(path))
+    check_validation(traj_report, validator=world.identity, subject=trajectory_subject(timed))
+    assert traj_report.duration_s is not None
+
+    def bound(r: MotionValidation, subject: Any, validator: Any = None) -> Callable[[], object]:
+        return lambda: check_validation(r, validator=validator or world.identity, subject=subject)
+
     codes = {
-        "other_motion": _refusal(
-            lambda: check_validation(
-                report,
-                validator=world.identity,
-                subject=ValidationSubject.PATH,
-                motion=path_identity(other),
+        "other_motion": _refusal(bound(report, path_subject(_path((0.0, 0.0), (1.0, 0.0))))),
+        "other_validator": _refusal(bound(report, path_subject(path), banded.identity)),
+        "other_subject_kind": _refusal(bound(report, trajectory_subject(timed))),
+        # Right fingerprint, wrong derived fields: each is refused.
+        "path_interval_count": _refusal(bound(replace(report, intervals=2), path_subject(path))),
+        "trajectory_interval_count": _refusal(
+            bound(replace(traj_report, intervals=99), trajectory_subject(timed))
+        ),
+        "trajectory_duration": _refusal(
+            bound(
+                replace(traj_report, duration_s=traj_report.duration_s + 1.0),
+                trajectory_subject(timed),
             )
         ),
-        "other_validator": _refusal(
-            lambda: check_validation(
-                report,
-                validator=banded.identity,
-                subject=ValidationSubject.PATH,
-                motion=path_identity(path),
-            )
-        ),
-        "other_subject_kind": _refusal(
-            lambda: check_validation(
-                report,
-                validator=world.identity,
-                subject=ValidationSubject.TRAJECTORY,
-                motion=path_identity(path),
-            )
+        "motion_as_two_waypoint_path": _refusal(
+            bound(world.validate_motion((0.0, 0.0), (1.0, 1.0)), path_subject(path))
         ),
     }
-    assert codes == {
-        "other_motion": "validation_mismatch",
-        "other_validator": "validation_mismatch",
-        "other_subject_kind": "validation_mismatch",
+    assert codes == {name: "validation_mismatch" for name in codes}
+    assert motion_identity(GROUP, JOINTS, (0.0, 0.0), (1.0, 1.0)) != path_identity(path)
+
+    # Subjects are validated, never coerced.
+    malformed = {
+        "too_few_values": lambda: state_identity(GROUP, JOINTS, (1.0,)),
+        "endpoint_widths_differ": lambda: motion_identity(GROUP, JOINTS, (0.0, 0.0), (1.0,)),
+        "string_value": lambda: state_identity(GROUP, JOINTS, ("1.0", 0.0)),  # type: ignore[arg-type]
+        "bool_value": lambda: state_identity(GROUP, JOINTS, (True, 0.0)),
+        "repeated_joint": lambda: state_identity(GROUP, ("turn", "turn"), (0.0, 0.0)),
+        "no_joints": lambda: state_identity(GROUP, (), ()),
+        "non_finite": lambda: state_identity(GROUP, JOINTS, (math.nan, 0.0)),
     }
+    assert {name: _refusal(f) for name, f in malformed.items()} == {
+        "too_few_values": "shape_mismatch",
+        "endpoint_widths_differ": "shape_mismatch",
+        "string_value": "wrong_type",
+        "bool_value": "wrong_type",
+        "repeated_joint": "duplicate_name",
+        "no_joints": "shape_mismatch",
+        "non_finite": "non_finite",
+    }
+    assert state_identity(GROUP, JOINTS, (1, 0)) == state_identity(GROUP, JOINTS, (1.0, 0.0))
+
     # A continuous guarantee may itself subdivide under a covering bound.
     ValidationPolicy(
         name="adaptive",

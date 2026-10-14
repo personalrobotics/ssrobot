@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import enum
 import math
+import numbers
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -1132,25 +1133,50 @@ def check_validation(
     report: MotionValidation,
     *,
     validator: ValidatorIdentity,
-    subject: ValidationSubject,
-    motion: str,
+    subject: MotionSubject | TrajectorySubject,
 ) -> None:
-    """Raise unless ``report`` answers exactly this question: this subject kind, this
-    exact motion (its ``*_identity``), from this validator, policy, scene, and
-    constraints. A well-formed report about anything else is refused, so callers never
-    take evidence for one motion as evidence for another."""
+    """Raise unless ``report`` answers exactly this question, from this validator, policy,
+    scene, and constraints, about this subject. Every field derived from the subject is
+    compared with the subject itself: the kind, the identity, the interpolation or law,
+    the number of intervals, and a trajectory's duration. A well-formed report about
+    anything else is refused (``validation_mismatch``), so evidence for one motion is
+    never taken for another."""
+
+    def mismatch(message: str, path: str) -> ValidationError:
+        return ValidationError("validation_mismatch", message, path=path)
+
     if not isinstance(report, MotionValidation):
         raise ValidationError("wrong_type", "report must be a MotionValidation", path="report")
+    if not isinstance(subject, MotionSubject | TrajectorySubject):
+        raise ValidationError(
+            "wrong_type", "subject must be a MotionSubject or TrajectorySubject", path="subject"
+        )
     if report.validator != validator:
-        raise ValidationError(
-            "validation_mismatch",
-            "the report is from another validator, policy, scene, or constraint set",
-            path="validator",
+        raise mismatch(
+            "the report is from another validator, policy, scene, or constraint set", "validator"
         )
-    if report.subject is not subject or report.motion != motion:
-        raise ValidationError(
-            "validation_mismatch", f"the report is not about this {subject}", path="motion"
-        )
+    if (subject.group, subject.joints) != (validator.group, validator.joints):
+        raise mismatch("the subject moves another group than the validator's", "subject")
+    if isinstance(subject, TrajectorySubject):
+        expected: dict[str, object] = {
+            "subject": ValidationSubject.TRAJECTORY,
+            "interpolation": None,
+            "law": subject.law,
+            "intervals": len(subject.pieces),
+            "duration_s": subject.duration,
+        }
+    else:
+        expected = {
+            "subject": subject.kind,
+            "interpolation": subject.interpolation,
+            "law": None,
+            "intervals": len(subject.waypoints) - 1,
+            "duration_s": None,
+        }
+    expected["motion"] = fingerprint(subject)
+    for name, value in expected.items():
+        if getattr(report, name) != value:
+            raise mismatch(f"the report's {name} is not this subject's", name)
 
 
 class MotionValidator(Protocol):
@@ -1174,11 +1200,22 @@ class MotionValidator(Protocol):
     def validate_trajectory(self, trajectory: TimedTrajectory) -> MotionValidation: ...
 
 
+def _check_subject_joints(group: str, joints: tuple[str, ...]) -> None:
+    check_name(group, path="group")
+    if not joints:
+        raise ValidationError("shape_mismatch", "at least one joint is required", path="joints")
+    for i, name in enumerate(joints):
+        check_name(name, path=f"joints[{i}]")
+    if len(set(joints)) != len(joints):
+        raise ValidationError("duplicate_name", "joints repeat", path="joints")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MotionSubject(Value):
-    """The geometry a state, motion, or path identity covers: nothing about how it was
-    found or checked."""
+    """A state, a motion, or a path, exactly: the canonical descriptor its identity and
+    ``check_validation`` use. Nothing about how it was found or checked."""
 
+    kind: ValidationSubject = field(metadata=meta("A state, a motion, or a path."))
     group: str = field(metadata=meta("The joint group that moves."))
     joints: tuple[str, ...] = field(metadata=meta("Joint names, in group order."))
     waypoints: tuple[tuple[float, ...], ...] = field(
@@ -1188,12 +1225,42 @@ class MotionSubject(Value):
         default=None, metadata=meta("How consecutive waypoints are joined; None for a state.")
     )
 
+    def _validate(self) -> None:
+        _check_subject_joints(self.group, self.joints)
+        for i, q in enumerate(self.waypoints):
+            if len(q) != len(self.joints):
+                raise ValidationError(
+                    "shape_mismatch",
+                    f"{len(q)} values for {len(self.joints)} joints",
+                    path=f"waypoints[{i}]",
+                )
+        count = len(self.waypoints)
+        shapes = {
+            ValidationSubject.STATE: (count == 1, self.interpolation is None),
+            ValidationSubject.MOTION: (
+                count == 2,
+                self.interpolation is PathInterpolation.LINEAR,
+            ),
+            ValidationSubject.PATH: (count >= 2, self.interpolation is not None),
+        }
+        if self.kind not in shapes:
+            raise ValidationError(
+                "inconsistent_subject", "a trajectory is a TrajectorySubject", path="kind"
+            )
+        if not all(shapes[self.kind]):
+            raise ValidationError(
+                "inconsistent_subject",
+                "a state is one waypoint with no interpolation, a motion two linear "
+                "waypoints, and a path at least two with an interpolation",
+                path="waypoints",
+            )
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TrajectorySubject(Value):
-    """What an exact timed-trajectory identity covers: the group and joints, the law, every
-    piece's ramps (so q(t) over the whole time domain), and the effective limits it is
-    timed under. Not how it was validated or produced."""
+    """A timed trajectory, exactly: the group and joints, the law, every piece's ramps
+    (so q(t) over the whole time domain), and the effective limits it is timed under.
+    Not how it was validated or produced."""
 
     group: str = field(metadata=meta("The joint group that moves."))
     joints: tuple[str, ...] = field(metadata=meta("Joint names, in group order."))
@@ -1202,6 +1269,21 @@ class TrajectorySubject(Value):
         metadata=meta("Each piece's ramps, one per joint, in order.")
     )
     limits: EffectiveLimits = field(metadata=meta("The limits it is timed under."))
+
+    def _validate(self) -> None:
+        _check_subject_joints(self.group, self.joints)
+        if not self.pieces:
+            raise ValidationError("shape_mismatch", "a trajectory needs a piece", path="pieces")
+        for i, ramps in enumerate(self.pieces):
+            if len(ramps) != len(self.joints):
+                raise ValidationError("shape_mismatch", "one ramp per joint", path=f"pieces[{i}]")
+        if self.limits.joints != self.joints:
+            raise ValidationError("joint_mismatch", "limits must cover the joints", path="limits")
+
+    @property
+    def duration(self) -> float:
+        """Seconds from start to goal, summed as ``TimedTrajectory.duration`` sums them."""
+        return math.fsum(ramps[0].duration for ramps in self.pieces)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1216,53 +1298,84 @@ class ConstraintSet(Value):
     frame: str | None = field(default=None, metadata=meta("The constrained frame, if any."))
 
 
-def state_identity(group: str, joints: Sequence[str], q: Sequence[float]) -> str:
-    return fingerprint(
-        MotionSubject(group=group, joints=tuple(joints), waypoints=(tuple(map(float, q)),))
+def _configuration(values: Sequence[float], path: str) -> tuple[float, ...]:
+    """Real numbers as floats, so 1 and 1.0 are one configuration. Strings, bools, and
+    non-finite values are refused, never coerced."""
+    if isinstance(values, str | bytes) or not isinstance(values, Sequence):
+        raise ValidationError("wrong_type", f"{path} must be a sequence of numbers", path=path)
+    out: list[float] = []
+    for i, v in enumerate(values):
+        if isinstance(v, bool) or not isinstance(v, numbers.Real):
+            raise ValidationError("wrong_type", f"{path}[{i}] must be a number", path=path)
+        if not math.isfinite(v):
+            raise ValidationError("non_finite", f"{path}[{i}] must be finite", path=path)
+        out.append(float(v))
+    return tuple(out)
+
+
+def state_subject(group: str, joints: Sequence[str], q: Sequence[float]) -> MotionSubject:
+    return MotionSubject(
+        kind=ValidationSubject.STATE,
+        group=group,
+        joints=tuple(joints),
+        waypoints=(_configuration(q, "q"),),
     )
+
+
+def motion_subject(
+    group: str, joints: Sequence[str], q0: Sequence[float], q1: Sequence[float]
+) -> MotionSubject:
+    return MotionSubject(
+        kind=ValidationSubject.MOTION,
+        group=group,
+        joints=tuple(joints),
+        waypoints=(_configuration(q0, "q0"), _configuration(q1, "q1")),
+        interpolation=PathInterpolation.LINEAR,
+    )
+
+
+def path_subject(path: GeometricPath) -> MotionSubject:
+    """The path's geometry; its validation resolution is evidence, not geometry."""
+    return MotionSubject(
+        kind=ValidationSubject.PATH,
+        group=path.group,
+        joints=path.joints,
+        waypoints=path.waypoints,
+        interpolation=path.interpolation,
+    )
+
+
+def trajectory_subject(trajectory: TimedTrajectory) -> TrajectorySubject:
+    """The exact timed trajectory. Each piece's validation tag, the validated classes,
+    the validation resolution, the producer, and the provenance are validation evidence,
+    not the trajectory, so two trajectories differing only there are one subject. Equal
+    motions represented with different pieces or ramps are different subjects; that
+    never lets one reuse the other's evidence wrongly."""
+    return TrajectorySubject(
+        group=trajectory.group,
+        joints=trajectory.joints,
+        law=trajectory.law,
+        pieces=tuple(piece.ramps for piece in trajectory.pieces),
+        limits=trajectory.limits,
+    )
+
+
+def state_identity(group: str, joints: Sequence[str], q: Sequence[float]) -> str:
+    return fingerprint(state_subject(group, joints, q))
 
 
 def motion_identity(
     group: str, joints: Sequence[str], q0: Sequence[float], q1: Sequence[float]
 ) -> str:
-    return fingerprint(
-        MotionSubject(
-            group=group,
-            joints=tuple(joints),
-            waypoints=(tuple(map(float, q0)), tuple(map(float, q1))),
-            interpolation=PathInterpolation.LINEAR,
-        )
-    )
+    return fingerprint(motion_subject(group, joints, q0, q1))
 
 
 def path_identity(path: GeometricPath) -> str:
-    """The path's geometry: its validation resolution is evidence, not geometry."""
-    return fingerprint(
-        MotionSubject(
-            group=path.group,
-            joints=path.joints,
-            waypoints=path.waypoints,
-            interpolation=path.interpolation,
-        )
-    )
+    return fingerprint(path_subject(path))
 
 
 def trajectory_identity(trajectory: TimedTrajectory) -> str:
-    """The exact timed trajectory: its law, every ramp, and its effective limits. Each
-    piece's validation tag, the validated classes, the validation resolution, the
-    producer, and the provenance are validation evidence, not the trajectory, so two
-    trajectories differing only there share an identity. Equal motions represented with
-    different pieces or ramps get different identities; that never lets one reuse the
-    other's evidence wrongly."""
-    return fingerprint(
-        TrajectorySubject(
-            group=trajectory.group,
-            joints=trajectory.joints,
-            law=trajectory.law,
-            pieces=tuple(piece.ramps for piece in trajectory.pieces),
-            limits=trajectory.limits,
-        )
-    )
+    return fingerprint(trajectory_subject(trajectory))
 
 
 def constraints_identity(request: PlanningRequest) -> str:
