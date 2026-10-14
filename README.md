@@ -65,7 +65,7 @@ since changed. [docs/mujoco.md](docs/mujoco.md) describes what it binds and how 
 
 With the `planning` extra as well, sscbirrt plans in a snapshot and times the motion
 under the arm's velocity and acceleration limits. `prepare` samples it for the control
-tick and checks the command independently before it runs:
+tick and has the planner's own validator check the command before it runs:
 
 ```python
 import ssrobot
@@ -76,13 +76,15 @@ package = ssrobot.load_package("examples/packages/mujoco_arm")
 runtime = MujocoRuntime(package, scene="examples/scenes/pedestal.xml")
 with ssrobot.RobotContext(package.description, runtime) as ctx:
     arm = ctx.manipulator()                                  # the only manipulator
+    planner = CBiRRT(package.description)
     snapshot = ctx.snapshot()
     plan = arm.plan_to_configuration(
-        (-0.6, -0.4, 0.0), snapshot=snapshot, planner=CBiRRT(package.description),
-        velocity_scaling=0.5,
+        (-0.6, -0.4, 0.0), snapshot=snapshot, planner=planner, velocity_scaling=0.5
     )                                                        # carries its request
     scene = ctx.planning_scene(snapshot, arm.group)
-    ready = prepare(plan, scene, description=package.description, period_ns=2_000_000)
+    validator = planner.validator(plan.request, scene)       # the one the plan was checked by
+    ready = prepare(plan, scene, validator=validator, description=package.description,
+                    period_ns=2_000_000)
     status = ctx.run_until(ctx.submit(ready.command, snapshot=snapshot), max_ticks=5_000)
     print(status.state.value, plan.backend, round(plan.trajectory.duration, 2), "s")
 ```

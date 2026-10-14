@@ -108,11 +108,6 @@ def _isolation(out: Path) -> dict[str, Any]:
             second.forward_kinematics(q, "flange")
             second.contacts(q)
         after = {"first": _answers(first, q0), "second": _answers(second, q0)}
-        edges = {
-            "lift": first.is_edge_valid(q0, ABOVE),
-            "carry": first.is_edge_valid(ABOVE, ASIDE),
-            "down_to_floor": first.is_edge_valid(q0, FLOOR),
-        }
         decoded = loads(dumps(snapshot), SceneSnapshot)
         copy = ctx.planning_scene(decoded, "arm")
         report = {
@@ -126,7 +121,6 @@ def _isolation(out: Path) -> dict[str, Any]:
             "start": start,
             "after_mutation": after,
             "probes": probes,
-            "edges": edges,
             "native": type(first.native()).__name__,
             "independent_tcp": _independent_tcp(snapshot),
             "decoded_equal": decoded == snapshot,
@@ -160,7 +154,6 @@ def test_planning_scenes_are_isolated_and_agree(artifacts: Path, tmp_path: Path)
     assert ["robot_environment", "world", "box"] in probes["floor"]["contacts"]  # carried
     assert not probes["into_pedestal"]["valid"]
     assert ["robot_environment", "left_finger", "pedestal"] in probes["into_pedestal"]["contacts"]
-    assert report["edges"] == {"lift": True, "carry": True, "down_to_floor": False}
     assert report["native"] == "NativeCollisionChecker"
     assert report["decoded_equal"] and report["decoded_answers"] == probes
 
@@ -187,7 +180,6 @@ def _refusals(ctx: RobotContext) -> dict[str, str]:
     attempts: dict[str, Callable[[], object]] = {
         "another_world": lambda: ctx.planning_scene(foreign, "arm"),
         "unknown_group": lambda: ctx.planning_scene(snapshot, "legs"),
-        "zero_resolution": lambda: ctx.planning_scene(snapshot, "arm", edge_resolution=0.0),
         "short_q": lambda: scene.is_valid((0.0, 0.0)),
         "non_finite_q": lambda: scene.contacts((0.0, float("nan"), 0.0)),
         "unknown_frame": lambda: scene.forward_kinematics(q0, "elbow_pad"),
@@ -258,7 +250,6 @@ def test_planning_refuses_what_does_not_apply(artifacts: Path) -> None:
     assert codes == {
         "another_world": "incompatible_snapshot",
         "unknown_group": "unknown_reference",
-        "zero_resolution": "out_of_limits",
         "short_q": "shape_mismatch",
         "non_finite_q": "non_finite",
         "unknown_frame": "unknown_reference",

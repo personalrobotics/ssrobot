@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.PlanResult v1",
+  "title": "ssrobot.PlanResult v2",
   "$ref": "#/$defs/PlanResult",
   "$defs": {
     "BasePoseGoal": {
@@ -51,6 +51,40 @@
         "schema",
         "version",
         "configurations"
+      ],
+      "additionalProperties": false
+    },
+    "Contact": {
+      "type": "object",
+      "description": "A contact that makes a planning-scene configuration invalid.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "self_collision",
+            "robot_environment"
+          ],
+          "description": "Which rule the contact breaks."
+        },
+        "first": {
+          "type": "string",
+          "description": "A description frame, scene object or fixture, or 'world'."
+        },
+        "second": {
+          "type": "string",
+          "description": "A description frame, scene object or fixture, or 'world'."
+        },
+        "distance": {
+          "type": "number",
+          "description": "Signed distance; negative is penetration.",
+          "x-unit": "m"
+        }
+      },
+      "required": [
+        "kind",
+        "first",
+        "second",
+        "distance"
       ],
       "additionalProperties": false
     },
@@ -196,6 +230,201 @@
       ],
       "additionalProperties": false
     },
+    "InvalidWitness": {
+      "type": "object",
+      "description": "The first invalid state found, where it is, and why.",
+      "properties": {
+        "failure": {
+          "type": "string",
+          "enum": [
+            "position_limits",
+            "collision",
+            "path_constraint",
+            "ambiguous",
+            "unsupported_motion"
+          ],
+          "description": "What failed."
+        },
+        "segment": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Interval index, for a motion or path.",
+          "x-unit": "count"
+        },
+        "fraction": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Position within the interval, 0 to 1.",
+          "x-unit": "1"
+        },
+        "time_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Time into the trajectory, for a trajectory.",
+          "x-unit": "s"
+        },
+        "configuration": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The first invalid configuration found.",
+          "x-unit": "joint"
+        },
+        "contacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Contact"
+          },
+          "description": "The disallowed contacts."
+        },
+        "constraint": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Index of the violated path constraint.",
+          "x-unit": "count"
+        },
+        "detail": {
+          "type": "string",
+          "description": "A human-readable explanation."
+        }
+      },
+      "required": [
+        "failure",
+        "configuration"
+      ],
+      "additionalProperties": false
+    },
+    "MotionValidation": {
+      "type": "object",
+      "description": "One validator's answer for one exact subject: valid under the reported policy, or",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.MotionValidation"
+        },
+        "version": {
+          "const": 1
+        },
+        "subject": {
+          "type": "string",
+          "enum": [
+            "state",
+            "motion",
+            "path",
+            "trajectory"
+          ],
+          "description": "What was validated."
+        },
+        "motion": {
+          "type": "string",
+          "description": "Fingerprint of the exact subject; see *_identity."
+        },
+        "interpolation": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "linear"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a motion or path is interpolated."
+        },
+        "law": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "piecewise_constant_acceleration"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A trajectory's law."
+        },
+        "intervals": {
+          "type": "integer",
+          "description": "Intervals in the subject: 0 for a state.",
+          "x-unit": "count"
+        },
+        "duration_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A trajectory's duration.",
+          "x-unit": "s"
+        },
+        "validator": {
+          "$ref": "#/$defs/ValidatorIdentity",
+          "description": "Who answered, and under what policy."
+        },
+        "valid": {
+          "type": "boolean",
+          "description": "Whether the subject is valid under the policy."
+        },
+        "witness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InvalidWitness"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The first invalid state; present exactly when invalid."
+        },
+        "checks": {
+          "type": "integer",
+          "description": "State or interval checks performed.",
+          "x-unit": "count"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "subject",
+        "motion",
+        "intervals",
+        "validator",
+        "valid",
+        "checks"
+      ],
+      "additionalProperties": false
+    },
     "OffsetGoal": {
       "type": "object",
       "description": "Move the request's frame in a straight line: ``distance`` along ``direction`` in",
@@ -259,7 +488,7 @@
           "const": "ssrobot.PlanResult"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "request": {
           "$ref": "#/$defs/PlanningRequest",
@@ -313,6 +542,13 @@
             }
           ],
           "description": "The planner's timed trajectory, if it times motion."
+        },
+        "validation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MotionValidation"
+          },
+          "description": "The planner's report for the path, then for the trajectory, if any."
         }
       },
       "required": [
@@ -868,6 +1104,141 @@
         "schema",
         "version",
         "tsrs"
+      ],
+      "additionalProperties": false
+    },
+    "ValidationPolicy": {
+      "type": "object",
+      "description": "What a validator checks, how, and what its answer guarantees. The guarantee is",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Policy name, e.g. 'joint_l2_subdivision'."
+        },
+        "mechanism": {
+          "type": "string",
+          "description": "How it validates, e.g. 'joint_subdivision', 'adaptive_bounded', 'exact'."
+        },
+        "guarantee": {
+          "type": "string",
+          "enum": [
+            "discrete",
+            "continuous"
+          ],
+          "description": "What a valid answer guarantees."
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Largest joint step between checked states.",
+          "x-unit": "joint"
+        },
+        "workspace_step_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Largest workspace motion between checked states.",
+          "x-unit": "m"
+        },
+        "clearance_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Clearance every checked state keeps.",
+          "x-unit": "m"
+        },
+        "ambiguity_band_m": {
+          "type": "number",
+          "description": "Distances within this band of a contact are refused.",
+          "x-unit": "m"
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Every other mechanism setting, as sorted (key, value) pairs."
+        },
+        "summary": {
+          "type": "string",
+          "description": "The guarantee in words."
+        }
+      },
+      "required": [
+        "name",
+        "mechanism",
+        "guarantee",
+        "ambiguity_band_m",
+        "summary"
+      ],
+      "additionalProperties": false
+    },
+    "ValidatorIdentity": {
+      "type": "object",
+      "description": "Which validator answered, under which policy, for which scene and constraints.",
+      "properties": {
+        "implementation": {
+          "type": "string",
+          "description": "Implementation name and version."
+        },
+        "policy": {
+          "$ref": "#/$defs/ValidationPolicy",
+          "description": "The policy it applies."
+        },
+        "snapshot": {
+          "type": "string",
+          "description": "Fingerprint of the scene snapshot it is bound to."
+        },
+        "group": {
+          "type": "string",
+          "description": "The joint group whose motions it validates."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The group's joints, in order."
+        },
+        "constraints": {
+          "type": "string",
+          "description": "Fingerprint of the constraints it applies; see constraints_identity."
+        }
+      },
+      "required": [
+        "implementation",
+        "policy",
+        "snapshot",
+        "group",
+        "joints",
+        "constraints"
       ],
       "additionalProperties": false
     }

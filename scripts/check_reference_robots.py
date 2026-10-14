@@ -437,6 +437,7 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
             entry["trajectory_pieces"] = len(result.trajectory.pieces)
             entry["trajectory_duration_s"] = result.trajectory.duration
             scene = ctx.planning_scene(snapshot, arm.group)
+            validator = planner.validator(result.request, scene)
             if name == "region":
                 try:
                     arm.plan_to_tsr(
@@ -451,8 +452,9 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
                     record["refusals"]["unsupported_constraint"] = error.code
                 try:
                     prepare(
-                        replace(result, trajectory=None),
+                        replace(result, trajectory=None, validation=result.validation[:1]),
                         scene,
+                        validator=validator,
                         description=description,
                         period_ns=PLAN_PERIOD_NS,
                     )
@@ -460,13 +462,29 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
                 except SsrobotError as error:
                     record["refusals"]["path_only_result"] = error.code
             try:
-                ready = prepare(result, scene, description=description, period_ns=PLAN_PERIOD_NS)
+                ready = prepare(
+                    result,
+                    scene,
+                    validator=validator,
+                    description=description,
+                    period_ns=PLAN_PERIOD_NS,
+                )
             except SsrobotError as error:
                 entry["prepared"] = f"{error.code}: {error.message}"
                 continue
             (out / f"{name}.prepared.json").write_text(dumps(ready) + "\n")
             entry["prepared"] = {c.name: c.detail for c in ready.checks}
             entry["sampled_source"] = ready.command == result.trajectory.sample(PLAN_PERIOD_NS)
+            # One validator answered for the path, the trajectory, and the command.
+            entry["validation"] = {
+                "implementation": ready.compiled_validation.validator.implementation,
+                "policy": ready.compiled_validation.validator.policy.summary,
+                "path": result.validation[0].valid,
+                "trajectory": result.validation[1].valid,
+                "compiled": ready.compiled_validation.valid,
+                "compiled_checks": ready.compiled_validation.checks,
+                "geometry_preserved": ready.geometry_preserved,
+            }
             execution = ctx.submit(ready.command, snapshot=snapshot, source="planner")
             status = ctx.run_until(execution, max_ticks=20_000)
             entry["state"] = status.state.value
@@ -650,7 +668,10 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
             "planning_scenario",
             [p.get("state") for p in plans.values()] == ["succeeded"] * 2
             and all(
-                p.get("sampled_source") and p.get("planned_in_snapshot") for p in plans.values()
+                p.get("sampled_source")
+                and p.get("planned_in_snapshot")
+                and p.get("validation", {}).get("compiled")
+                for p in plans.values()
             )
             and all(p["achieved"]["within"] for p in plans.values()),
             f"{len(plans)} plans: {plans}",

@@ -132,7 +132,7 @@ trace. It validates everything going into the runtime and everything coming out.
 | `attach(object, end_effector, *, transform=None, allow=None, revision=None, source="client")` | Open only. Declares a scene object held by an end effector and returns the new scene. Changes nothing unless it succeeds. |
 | `detach(object, *, revision=None, source="client")` | Open or faulted. Removes the attachment and its allowances and returns the new scene. |
 | `snapshot()` | Open or faulted. Captures a `SceneSnapshot` for planning. See *Snapshots and planning scenes*. |
-| `planning_scene(snapshot, group, *, edge_resolution=0.05)` | Open or faulted. An isolated `PlanningScene` for one joint group over a snapshot. |
+| `planning_scene(snapshot, group)` | Open or faulted. An isolated `PlanningScene` for one joint group over a snapshot. |
 | `manipulator(name=None)`, `base(name=None)` | A planning view of one manipulator or mobile base. See *Planning requests and results*. |
 | `plan(request, *, snapshot, planner, processor=None, abort=None)` | Open or faulted. Negotiates, plans in an isolated planning scene, and checks the result against the request. |
 | `owners(component)`, `executions` | Every unfinished execution holding any of the component's resources, as `Ownership` entries; and every execution in submission order. |
@@ -283,7 +283,7 @@ answer: the runtime's description, name, world, revision, joints, objects, fixtu
 and attachments must all match its own. The stamp is a direct answer, like `submit`'s. Anything else is a contract
 breach. A good snapshot is traced as a `snapshot` record.
 
-`ctx.planning_scene(snapshot, group, *, edge_resolution=0.05)` materializes a
+`ctx.planning_scene(snapshot, group)` materializes a
 `PlanningScene`:
 - **Over one joint group.** The group's joints vary. Every other joint, object, and
   attachment stays as in the snapshot, and each held object moves with its end effector
@@ -302,14 +302,12 @@ Materializing refuses:
 | a snapshot from another runtime, or another simulated world (`model` is not `world()`) | `incompatible_snapshot` |
 | a snapshot whose joints are not the description's, in order; whose objects or fixtures are not this scene's; or whose attachments name an unknown end effector, or allow a name that is neither a frame nor a fixture | `incompatible_snapshot` |
 | an undeclared group | `unknown_reference` |
-| an `edge_resolution` that is not finite and positive | `out_of_limits` |
 
 | Query | Answer |
 | --- | --- |
 | `forward_kinematics(q, frame)` | `frame`'s world `Pose` at `q`. A camera's frame is its optical frame, as in observations. |
 | `is_valid(q)` | `False` outside joint limits or with any disallowed contact. |
 | `contacts(q)` | Every disallowed `Contact`: `self_collision` or `robot_environment`, naming description frames, objects, fixtures, or `world`, with the signed distance. |
-| `is_edge_valid(q0, q1)` | Whether every configuration on the straight joint-space line is valid. It is checked at both ends and at least every `edge_resolution` in each joint between them. |
 | `native()` | A backend-native checker a planner adapter may use instead, or `None`. Its type is the backend's. |
 
 `q` is one finite real number per group joint, in group order. A bool or a string is
@@ -415,6 +413,19 @@ and trajectory move the request's joints from its start, a trajectory was timed 
 the request's limits and validated every constraint class the request requires, and a
 trajectory ends where the path does.
 
+A success also carries its evidence (`PlanResult` version 2): `validation` holds the
+planner's own `MotionValidation` for the path and then for the trajectory, which is
+validated with that path as its source. Decoding refuses a success unless:
+- there is one report per returned motion (`missing_validation`);
+- every report is valid (`invalid_motion`);
+- the reports share one validator, bound to the request's snapshot, group, and
+  `constraints_identity` (`validation_mismatch`);
+- each report is about exactly its motion (`check_subject`).
+
+Every planner also answers `validator(request, scene)`, which returns the
+`MotionValidator` its reports come from. Runtime compilation asks that validator about
+any motion the plan did not already cover.
+
 - A `GeometricPath` is waypoints joined by straight joint-space lines, checked at
   `validation_resolution`. It has no timing.
 - A `TimedTrajectory` is an exact motion from rest to rest: consecutive pieces, each
@@ -439,10 +450,19 @@ with a last interval shorter than half a period merged into the one before. Runt
 interpolate it linearly, so it is a different artifact from the source law.
 `ssrobot.validation.check_trajectory_rates(command, velocity, acceleration)` checks a
 command's chords against any per-joint limits, such as the effective ones, exactly as
-`submit` checks the description's. A `PreparedTrajectory` is a sampled command with
-the independent checks it passed under the runtime's interpolation. Every check must
-have passed, so a prepared command that decodes is ready to execute; one with a failed
-check is `execution_unready`.
+`submit` checks the description's. A `PreparedTrajectory` (version 2) is a sampled
+command, ready to execute. It holds:
+- the readiness checks it passed;
+- `source_validation`, the validator's report on the source trajectory;
+- `compiled_validation`, the same validator's report on the command as a linear path,
+  which is how the runtime executes it;
+- `geometry_preserved`, which is true only when the command traces exactly the
+  validated source path.
+
+Decoding refuses it unless every check passed, both reports are valid and come from one
+validator, the source report is about `source`, and the compiled report is about
+exactly the command (`execution_unready`, `validation_mismatch`). One that decodes is
+ready to execute.
 
 ### Motion validation
 
@@ -991,7 +1011,7 @@ on sscbirrt's native backend.
 | `artifacts/test_core_imports_no_backend/gate.txt` | Where `ssrobot` was imported from, and the gate's verdict. |
 | `artifacts/test_gate_finds_backend_imports_in_every_form/gate-forms.json` | Planted eager, lazy, `from`, aliased, multiline, dotted, and `import_module` backend imports, each failing the gate with its module, line, and dependency. An integration subpackage importing its own backend passes; one importing another backend, and a core module importing an integration, fail. |
 | `artifacts/test_planning_calls_requests_results_and_execution/planning_contracts.json` | On the example arm at its home snapshot: the request every planning call builds (configuration, configurations, pose at half speed and quarter acceleration, offset, and TSR with a path constraint), a scripted straight-line planner refused when it returns only geometry and no processor is selected (`untimed_result`), for a pose goal (`unsupported_goal`), and for effort limits (`unsupported_constraint`). Then `plan_to_configuration` returns a self-contained result (request, path, and a timed trajectory), which is sampled at 2 ms, checked against the effective limits, executed in MuJoCo, and reached, with nothing rebuilt. The result in wire form decodes equal. |
-| `artifacts/test_malformed_ambiguous_and_falsely_ready_records_are_refused/refusals.json` | Ambiguous manipulator, base, and end effector; a stale description; an out-of-limits goal; bad scaling; undeclared limits; a discontinuous, too-fast, or not-at-rest trajectory; a success without motion and a failure with it; a trajectory from another start or under other limits than its request's (`request_mismatch`); a prepared command with a failed check; a base goal at negotiation. Each with its code. |
+| `artifacts/test_malformed_ambiguous_and_falsely_ready_records_are_refused/refusals.json` | Ambiguous manipulator, base, and end effector; a stale description; an out-of-limits goal; bad scaling; undeclared limits; a discontinuous, too-fast, or not-at-rest trajectory; a success without motion and a failure with it; a trajectory from another start or under other limits than its request's (`request_mismatch`); a complete prepared command, with valid evidence from a scripted validator, but one check marked failed; a base goal at negotiation. Each with its code. |
 | MuJoCo runtime artifacts | See *Evidence* in [mujoco.md](mujoco.md). |
 | `artifacts/test_motion_validator_contract_is_planner_neutral/reports.json` | A test-only validator for a toy world (one continuous joint, one bounded joint, a forbidden box in joint space), with no planner, simulator, or runtime behind it. It checks exactly, so it reports a continuous guarantee. Its reports cover a clear state, one in the box, and one beyond a limit; a clear motion, a half turn of the continuous joint (`unsupported_motion`), and a motion within the ambiguity band (`ambiguous`); a path clipping the box only between its knots, refused at segment 0, fraction 0.4; the clear path timed as an exact reparameterization, with the same verdict; and the same endpoints joined by a straight line (invalid) and by L-shaped timing (valid), with different identities. Two runs are byte-identical, and repeated or reordered queries give the same reports. `test_malformed_validation_reports_are_refused/refusals.json` holds the self-contradicting reports refused at decode. `test_reports_are_bound_to_their_exact_subject_and_validator` shows that a trajectory differing only in validation tags and provenance keeps its identity, while the same ramps under other limits get another, and that `check_validation` refuses a report about another motion, from another validator, of another subject kind, or with the right identity but the wrong interval count or duration. Malformed subjects (wrong widths, strings, bools, repeated or missing joints, non-finite values) are refused, and integer and float configurations share an identity. |
 | Planning adapter artifacts | See *Evidence* in [planning.md](planning.md). |

@@ -440,9 +440,7 @@ class RobotContext:
         self._emit(TraceKind.SNAPSHOT, self._runtime_source, taken, taken.stamp)
         return taken
 
-    def planning_scene(
-        self, snapshot: SceneSnapshot, group: str, *, edge_resolution: float = 0.05
-    ) -> PlanningScene:
+    def planning_scene(self, snapshot: SceneSnapshot, group: str) -> PlanningScene:
         """An isolated planning scene for ``group`` over ``snapshot``.
 
         A snapshot from an earlier revision is allowed: planning on the past is fine, and
@@ -451,27 +449,9 @@ class RobotContext:
         self._require("planning_scene")
         self._check_world(snapshot)
         joints = self._description.group(group).joints
-        if (
-            isinstance(edge_resolution, bool)
-            or not isinstance(edge_resolution, int | float)
-            or not math.isfinite(edge_resolution)
-            or edge_resolution <= 0
-        ):
-            raise ValidationError(
-                "out_of_limits",
-                "edge_resolution must be finite and positive",
-                path="edge_resolution",
-            )
-        scene = self._snapshots.planning_scene(snapshot, group, float(edge_resolution))
-        if (
-            scene.group != group
-            or scene.joints != joints
-            or scene.snapshot != snapshot
-            or scene.edge_resolution != float(edge_resolution)
-        ):
-            raise self._breach(
-                f"planning scene for {group!r} answered another group, snapshot, or resolution"
-            )
+        scene = self._snapshots.planning_scene(snapshot, group)
+        if scene.group != group or scene.joints != joints or scene.snapshot != snapshot:
+            raise self._breach(f"planning scene for {group!r} answered another group or snapshot")
         return _CheckedPlanningScene(self._description, scene)
 
     # -- Planning --------------------------------------------------------------------
@@ -1093,10 +1073,6 @@ class _CheckedPlanningScene:
     def snapshot(self) -> SceneSnapshot:
         return self._scene.snapshot
 
-    @property
-    def edge_resolution(self) -> float:
-        return self._scene.edge_resolution
-
     def forward_kinematics(self, q: Sequence[float], frame: str) -> Pose:
         configuration = self._configuration(q)
         if frame not in self._frames:
@@ -1118,10 +1094,6 @@ class _CheckedPlanningScene:
         ):
             raise ValidationError("runtime_contract", f"contacts answered {contacts!r}")
         return contacts
-
-    def is_edge_valid(self, q0: Sequence[float], q1: Sequence[float]) -> bool:
-        a, b = self._configuration(q0, "q0"), self._configuration(q1, "q1")
-        return self._within(a) and self._within(b) and self._answer(self._scene.is_edge_valid(a, b))
 
     def native(self) -> object | None:
         return self._scene.native()

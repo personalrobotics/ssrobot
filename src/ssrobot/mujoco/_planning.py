@@ -6,7 +6,6 @@ sscbirrt.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -77,7 +76,6 @@ class MujocoPlanningScene:
         snapshot: SceneSnapshot,
         group: str,
         joints: tuple[str, ...],
-        edge_resolution: float,
         model: Any,
         data: Any,
         frames: dict[str, FrameBinding],
@@ -88,7 +86,6 @@ class MujocoPlanningScene:
         self._snapshot = snapshot
         self._group = group
         self._joints = joints
-        self._edge_resolution = edge_resolution
         self._model = model
         self._data = data
         self._frames = frames
@@ -107,10 +104,6 @@ class MujocoPlanningScene:
     @property
     def snapshot(self) -> SceneSnapshot:
         return self._snapshot
-
-    @property
-    def edge_resolution(self) -> float:
-        return self._edge_resolution
 
     def forward_kinematics(self, q: Sequence[float], frame: str) -> Pose:
         for address, value in zip(self._addresses, q, strict=True):
@@ -135,15 +128,6 @@ class MujocoPlanningScene:
             for c in self._checker.native.invalid_contacts(list(q))
         )
 
-    def is_edge_valid(self, q0: Sequence[float], q1: Sequence[float]) -> bool:
-        span = max((abs(b - a) for a, b in zip(q0, q1, strict=True)), default=0.0)
-        steps = max(1, math.ceil(span / self._edge_resolution))
-        for i in range(steps + 1):
-            t = i / steps
-            if not self.is_valid([a + t * (b - a) for a, b in zip(q0, q1, strict=True)]):
-                return False
-        return True
-
     def native(self) -> object | None:
         """sscbirrt's ``NativeCollisionChecker`` for this scene."""
         checker: object = self._checker
@@ -160,7 +144,6 @@ def materialize(
     fixtures: dict[str, int],
     snapshot: SceneSnapshot,
     group: str,
-    edge_resolution: float,
 ) -> MujocoPlanningScene:
     """Build a planning scene for ``group`` from a snapshot the runtime has checked."""
     reason = native_mujoco.unavailable_reason()
@@ -272,7 +255,6 @@ def materialize(
         snapshot=snapshot,
         group=group,
         joints=joints,
-        edge_resolution=edge_resolution,
         model=model,
         data=data,
         frames=bound,
