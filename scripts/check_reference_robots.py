@@ -365,7 +365,7 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
 
         continuous = {j.name for j in description.joints if j.kind is JointKind.CONTINUOUS}
 
-        def achieved(result: Any, snapshot: Any) -> dict[str, Any]:
+        def achieved(result: Any, planned_in: Any, snapshot: Any) -> dict[str, Any]:
             """Where the robot actually is after executing, in a fresh snapshot.
 
             For a configuration goal: the largest joint error to the goal, continuous
@@ -397,8 +397,12 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
                     "within": error <= ACHIEVED_JOINT_ERROR,
                     "bound": ACHIEVED_JOINT_ERROR,
                 }
+            # The planned pose in the scene it was planned in; where the robot ended in
+            # the scene now. Joints outside the group (ADA's articutool) can settle
+            # during execution, which moves the frame without changing the plan.
+            plan_scene = ctx.planning_scene(planned_in, request.group)
+            planned = _matrix(plan_scene.forward_kinematics(result.trajectory.goal, request.frame))
             scene = ctx.planning_scene(snapshot, request.group)
-            planned = _matrix(scene.forward_kinematics(result.trajectory.goal, request.frame))
             actual = _matrix(scene.forward_kinematics(q, request.frame))
             in_region = min(float(_region(t).distance(planned)[0]) for t in goal.tsrs)
             position = float(np.linalg.norm(actual[:3, 3] - planned[:3, 3]))
@@ -472,7 +476,7 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
             entry["state"] = status.state.value
             entry["finished_ns"] = status.stamp.time_ns
             entry["planned_in_snapshot"] = execution.submission.snapshot == snapshot.fingerprint()
-            entry["achieved"] = achieved(result, ctx.snapshot())
+            entry["achieved"] = achieved(result, snapshot, ctx.snapshot())
     (out / "scenario.json").write_text(json.dumps(record, indent=2) + "\n")
     return record
 
