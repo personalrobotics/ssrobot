@@ -16,6 +16,7 @@ import itertools
 import json
 import math
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ from ssrobot.planning_contracts import (
     ValidationPolicy,
     ValidationSubject,
     ValidatorIdentity,
+    check_validation,
     motion_identity,
     path_identity,
     state_identity,
@@ -129,6 +131,7 @@ class IntervalWorld:
         self._band = band
         policy = ValidationPolicy(
             name="exact_box",
+            mechanism="exact",
             guarantee=ValidationGuarantee.CONTINUOUS,
             ambiguity_band_m=band,
             summary="Every state along the motion is checked against the box exactly.",
@@ -462,8 +465,15 @@ def test_malformed_validation_reports_are_refused(artifacts: Path) -> None:
     def witness_outside(d: dict[str, Any]) -> None:
         d["witness"]["segment"] = 3
 
-    def continuous_with_resolution(d: dict[str, Any]) -> None:
-        d["validator"]["policy"]["resolution"] = 0.05
+    def discrete_without_spacing(d: dict[str, Any]) -> None:
+        d["validator"]["policy"]["guarantee"] = "discrete"
+
+    def path_without_intervals(d: dict[str, Any]) -> None:
+        d["intervals"] = 0
+        d["witness"]["segment"] = None
+
+    def no_checks(d: dict[str, Any]) -> None:
+        d["checks"] = 0
 
     def trajectory_without_law(d: dict[str, Any]) -> None:
         d["subject"] = "trajectory"
@@ -472,7 +482,9 @@ def test_malformed_validation_reports_are_refused(artifacts: Path) -> None:
         "valid_with_witness": _refusal(edited(claim_valid)),
         "invalid_without_witness": _refusal(edited(drop_witness)),
         "witness_outside_subject": _refusal(edited(witness_outside)),
-        "continuous_with_resolution": _refusal(edited(continuous_with_resolution)),
+        "discrete_without_spacing": _refusal(edited(discrete_without_spacing)),
+        "path_without_intervals": _refusal(edited(path_without_intervals)),
+        "no_checks": _refusal(edited(no_checks)),
         "trajectory_without_law": _refusal(edited(trajectory_without_law)),
     }
     (artifacts / "refusals.json").write_text(json.dumps(codes, indent=2) + "\n")
@@ -480,6 +492,84 @@ def test_malformed_validation_reports_are_refused(artifacts: Path) -> None:
         "valid_with_witness": "inconsistent_validation",
         "invalid_without_witness": "inconsistent_validation",
         "witness_outside_subject": "inconsistent_witness",
-        "continuous_with_resolution": "inconsistent_policy",
+        "discrete_without_spacing": "inconsistent_policy",
+        "path_without_intervals": "inconsistent_subject",
+        "no_checks": "out_of_limits",
         "trajectory_without_law": "inconsistent_subject",
     }
+
+
+def test_reports_are_bound_to_their_exact_subject_and_validator() -> None:
+    """The exact trajectory identity covers q(t) and the limits, not validation
+    provenance; and a well-formed report about any other motion, or from any other
+    validator, is refused by the one core binding check."""
+    timed = _triangles(GROUP, ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0)), _limits())
+    retagged = replace(
+        timed,
+        pieces=tuple(replace(p, validation=PieceValidation.SHORTCUT) for p in timed.pieces),
+        validated=(),
+        validation_resolution=0.25,
+        producer="elsewhere",
+        provenance=(("note", "same motion"),),
+    )
+    assert trajectory_identity(retagged) == trajectory_identity(timed)  # provenance only
+    looser = EffectiveLimits(
+        joints=JOINTS,
+        velocity=(2.0, 2.0),
+        acceleration=(4.0, 4.0),
+        velocity_scaling=1.0,
+        acceleration_scaling=1.0,
+        effective_velocity=(2.0, 2.0),
+        effective_acceleration=(4.0, 4.0),
+    )
+    # The same q(t), timed under other limits, is another trajectory.
+    assert trajectory_identity(replace(timed, limits=looser)) != trajectory_identity(timed)
+
+    world, banded = IntervalWorld(), IntervalWorld(band=0.05)
+    path = _path((0.0, 0.0), (1.0, 1.0))
+    report = world.validate_path(path)
+    check_validation(
+        report, validator=world.identity, subject=ValidationSubject.PATH, motion=path_identity(path)
+    )
+    other = _path((0.0, 0.0), (1.0, 0.0))
+    codes = {
+        "other_motion": _refusal(
+            lambda: check_validation(
+                report,
+                validator=world.identity,
+                subject=ValidationSubject.PATH,
+                motion=path_identity(other),
+            )
+        ),
+        "other_validator": _refusal(
+            lambda: check_validation(
+                report,
+                validator=banded.identity,
+                subject=ValidationSubject.PATH,
+                motion=path_identity(path),
+            )
+        ),
+        "other_subject_kind": _refusal(
+            lambda: check_validation(
+                report,
+                validator=world.identity,
+                subject=ValidationSubject.TRAJECTORY,
+                motion=path_identity(path),
+            )
+        ),
+    }
+    assert codes == {
+        "other_motion": "validation_mismatch",
+        "other_validator": "validation_mismatch",
+        "other_subject_kind": "validation_mismatch",
+    }
+    # A continuous guarantee may itself subdivide under a covering bound.
+    ValidationPolicy(
+        name="adaptive",
+        mechanism="adaptive_bounded",
+        guarantee=ValidationGuarantee.CONTINUOUS,
+        resolution=0.05,
+        clearance_m=0.002,
+        ambiguity_band_m=0.0005,
+        summary="Subdivides until the workspace motion between states is within the clearance.",
+    )

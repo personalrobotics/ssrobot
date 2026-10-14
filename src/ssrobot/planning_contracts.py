@@ -913,34 +913,48 @@ class ValidationFailure(enum.StrEnum):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ValidationPolicy(Value):
-    """What a validator checks and what its answer guarantees. Every answer reports its
-    policy, so none depends on a hidden resolution."""
+    """What a validator checks, how, and what its answer guarantees. The guarantee is
+    independent of the mechanism: a continuous certificate may itself subdivide, under a
+    bound that covers the gaps. Every setting the mechanism uses is recorded, so no
+    answer depends on a hidden one."""
 
     name: str = field(metadata=meta("Policy name, e.g. 'joint_l2_subdivision'."))
+    mechanism: str = field(
+        metadata=meta("How it validates, e.g. 'joint_subdivision', 'adaptive_bounded', 'exact'.")
+    )
     guarantee: ValidationGuarantee = field(metadata=meta("What a valid answer guarantees."))
     resolution: float | None = field(
-        default=None, metadata=meta("Largest joint step between sampled states.", unit="joint")
+        default=None, metadata=meta("Largest joint step between checked states.", unit="joint")
+    )
+    workspace_step_m: float | None = field(
+        default=None, metadata=meta("Largest workspace motion between checked states.", unit="m")
     )
     clearance_m: float | None = field(
-        default=None, metadata=meta("Clearance every sampled state keeps.", unit="m")
+        default=None, metadata=meta("Clearance every checked state keeps.", unit="m")
     )
     ambiguity_band_m: float = field(
         metadata=meta("Distances within this band of a contact are refused.", unit="m")
     )
     parameters: tuple[tuple[str, str], ...] = field(
-        default=(), metadata=meta("Other policy settings as sorted (key, value) pairs.")
+        default=(), metadata=meta("Every other mechanism setting, as sorted (key, value) pairs.")
     )
     summary: str = field(metadata=meta("The guarantee in words."))
 
     def _validate(self) -> None:
         check_name(self.name, path="name")
-        if self.guarantee is ValidationGuarantee.CONTINUOUS and self.resolution is not None:
+        check_name(self.mechanism, path="mechanism")
+        if (
+            self.guarantee is ValidationGuarantee.DISCRETE
+            and self.resolution is None
+            and self.workspace_step_m is None
+        ):
             raise ValidationError(
                 "inconsistent_policy",
-                "a continuous guarantee samples no resolution",
-                path="resolution",
+                "a discrete guarantee states the spacing of the states it checks: "
+                "resolution or workspace_step_m",
+                path="guarantee",
             )
-        for name in ("resolution", "clearance_m"):
+        for name in ("resolution", "workspace_step_m", "clearance_m"):
             value = getattr(self, name)
             if value is not None and not value > 0:
                 raise ValidationError("out_of_limits", f"{name} must be positive", path=name)
@@ -1042,8 +1056,10 @@ class MotionValidation(Record):
             raise ValidationError(
                 "invalid_fingerprint", "motion must be a SHA-256 hex digest", path="motion"
             )
-        if self.checks < 0:
-            raise ValidationError("out_of_limits", "checks must be >= 0", path="checks")
+        if self.checks < 1:
+            raise ValidationError(
+                "out_of_limits", "a report rests on at least one check", path="checks"
+            )
         subject = self.subject
         timed = subject is ValidationSubject.TRAJECTORY
         if timed != (self.law is not None) or timed != (self.duration_s is not None):
@@ -1058,9 +1074,13 @@ class MotionValidation(Record):
                 path="interpolation",
             )
         expected = {ValidationSubject.STATE: 0, ValidationSubject.MOTION: 1}.get(subject)
-        if (expected is not None and self.intervals != expected) or self.intervals < 0:
+        if expected is not None and self.intervals != expected:
             raise ValidationError(
                 "inconsistent_subject", f"a {subject} has {expected} intervals", path="intervals"
+            )
+        if expected is None and self.intervals < 1:
+            raise ValidationError(
+                "inconsistent_subject", f"a {subject} has at least one interval", path="intervals"
             )
         if self.duration_s is not None and not self.duration_s > 0:
             raise ValidationError("out_of_limits", "duration_s must be positive", path="duration_s")
@@ -1108,6 +1128,31 @@ class MotionValidation(Record):
         return fingerprint(self)
 
 
+def check_validation(
+    report: MotionValidation,
+    *,
+    validator: ValidatorIdentity,
+    subject: ValidationSubject,
+    motion: str,
+) -> None:
+    """Raise unless ``report`` answers exactly this question: this subject kind, this
+    exact motion (its ``*_identity``), from this validator, policy, scene, and
+    constraints. A well-formed report about anything else is refused, so callers never
+    take evidence for one motion as evidence for another."""
+    if not isinstance(report, MotionValidation):
+        raise ValidationError("wrong_type", "report must be a MotionValidation", path="report")
+    if report.validator != validator:
+        raise ValidationError(
+            "validation_mismatch",
+            "the report is from another validator, policy, scene, or constraint set",
+            path="validator",
+        )
+    if report.subject is not subject or report.motion != motion:
+        raise ValidationError(
+            "validation_mismatch", f"the report is not about this {subject}", path="motion"
+        )
+
+
 class MotionValidator(Protocol):
     """The one answer to "is this motion valid?" for one planning scene, group,
     constraint set, and policy.
@@ -1146,12 +1191,17 @@ class MotionSubject(Value):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TrajectorySubject(Value):
-    """The motion a trajectory identity covers: its joints, law, and pieces."""
+    """What an exact timed-trajectory identity covers: the group and joints, the law, every
+    piece's ramps (so q(t) over the whole time domain), and the effective limits it is
+    timed under. Not how it was validated or produced."""
 
     group: str = field(metadata=meta("The joint group that moves."))
     joints: tuple[str, ...] = field(metadata=meta("Joint names, in group order."))
     law: TimingLaw = field(metadata=meta("How position evolves within an interval."))
-    pieces: tuple[TrajectoryPiece, ...] = field(metadata=meta("The trajectory's pieces."))
+    pieces: tuple[tuple[Ramp, ...], ...] = field(
+        metadata=meta("Each piece's ramps, one per joint, in order.")
+    )
+    limits: EffectiveLimits = field(metadata=meta("The limits it is timed under."))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1198,14 +1248,19 @@ def path_identity(path: GeometricPath) -> str:
 
 
 def trajectory_identity(trajectory: TimedTrajectory) -> str:
-    """The trajectory's motion: its limits, validation record, and provenance are
-    evidence, not motion."""
+    """The exact timed trajectory: its law, every ramp, and its effective limits. Each
+    piece's validation tag, the validated classes, the validation resolution, the
+    producer, and the provenance are validation evidence, not the trajectory, so two
+    trajectories differing only there share an identity. Equal motions represented with
+    different pieces or ramps get different identities; that never lets one reuse the
+    other's evidence wrongly."""
     return fingerprint(
         TrajectorySubject(
             group=trajectory.group,
             joints=trajectory.joints,
             law=trajectory.law,
-            pieces=trajectory.pieces,
+            pieces=tuple(piece.ramps for piece in trajectory.pieces),
+            limits=trajectory.limits,
         )
     )
 

@@ -234,11 +234,15 @@
     },
     "ValidationPolicy": {
       "type": "object",
-      "description": "What a validator checks and what its answer guarantees. Every answer reports its",
+      "description": "What a validator checks, how, and what its answer guarantees. The guarantee is",
       "properties": {
         "name": {
           "type": "string",
           "description": "Policy name, e.g. 'joint_l2_subdivision'."
+        },
+        "mechanism": {
+          "type": "string",
+          "description": "How it validates, e.g. 'joint_subdivision', 'adaptive_bounded', 'exact'."
         },
         "guarantee": {
           "type": "string",
@@ -257,8 +261,20 @@
               "type": "null"
             }
           ],
-          "description": "Largest joint step between sampled states.",
+          "description": "Largest joint step between checked states.",
           "x-unit": "joint"
+        },
+        "workspace_step_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Largest workspace motion between checked states.",
+          "x-unit": "m"
         },
         "clearance_m": {
           "anyOf": [
@@ -269,7 +285,7 @@
               "type": "null"
             }
           ],
-          "description": "Clearance every sampled state keeps.",
+          "description": "Clearance every checked state keeps.",
           "x-unit": "m"
         },
         "ambiguity_band_m": {
@@ -293,7 +309,7 @@
             "minItems": 2,
             "maxItems": 2
           },
-          "description": "Other policy settings as sorted (key, value) pairs."
+          "description": "Every other mechanism setting, as sorted (key, value) pairs."
         },
         "summary": {
           "type": "string",
@@ -302,6 +318,7 @@
       },
       "required": [
         "name",
+        "mechanism",
         "guarantee",
         "ambiguity_band_m",
         "summary"

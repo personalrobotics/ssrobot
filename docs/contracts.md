@@ -485,22 +485,35 @@ subject:
 
 | Field | Meaning |
 | --- | --- |
-| `subject`, `motion` | What was validated, and the fingerprint of its exact geometry: `state_identity`, `motion_identity`, `path_identity`, `trajectory_identity`. Evidence such as a path's validation resolution or a trajectory's provenance is not geometry, so it is not part of the identity. |
+| `subject`, `motion` | What was validated, and its identity: `state_identity`, `motion_identity`, or `path_identity` for the geometry, or `trajectory_identity` for the exact timed trajectory, which covers its law, every ramp (so q(t) over the whole time domain), and its effective limits. Validation evidence is not part of an identity: a path's validation resolution, or a trajectory's piece validation tags, validated classes, producer, and provenance. |
 | `interpolation` or `law`, `intervals`, `duration_s` | How the subject moves, and its extent |
 | `validator` | `ValidatorIdentity`: the implementation, its `ValidationPolicy`, the snapshot and group it is bound to, and `constraints_identity` (the description, which fixes limits and collision allowances, plus the path constraints) |
 | `valid`, `witness` | The verdict, and for an invalid subject the first invalid state: `failure`, its location (`segment` and `fraction` for a motion or path, `time_s` for a trajectory), configuration, contacts, and violated constraint |
 | `checks` | How many state or interval checks were made |
 
-`ValidationPolicy` states what an answer guarantees:
-- `guarantee`: `discrete`, valid at sampled states only, or `continuous`;
-- `resolution` and `clearance_m`, as the policy uses them;
+`ValidationPolicy` states how a validator checks and what its answer guarantees, and the
+two are independent:
+- `guarantee`: `discrete`, valid at the states checked only, or `continuous`, valid at
+  every state;
+- `mechanism`, such as `joint_subdivision`, `adaptive_bounded`, or `exact`;
+- every setting the mechanism uses: `resolution` (joint), `workspace_step_m`,
+  `clearance_m`, and any others as sorted `parameters`;
 - `ambiguity_band_m`: a state within this distance of a contact is refused as
   `ambiguous`, never rounded either way;
-- other parameters, and a one-line summary.
+- a one-line summary.
 
-No answer depends on an unreported setting. Decoding refuses a report that contradicts
-itself (`inconsistent_validation`, `inconsistent_witness`, `inconsistent_subject`,
-`inconsistent_policy`).
+A continuous certificate may itself subdivide, under a bound that covers the gaps. A
+discrete one must state the spacing of the states it checks, as `resolution` or
+`workspace_step_m`. No answer depends on an unreported setting.
+
+Decoding refuses a report that contradicts itself (`inconsistent_validation`,
+`inconsistent_witness`, `inconsistent_subject`, `inconsistent_policy`). Such reports
+include a path or trajectory with no intervals, and any report with no checks.
+
+`check_validation(report, validator=, subject=, motion=)` binds a report to the question
+asked. It refuses (`validation_mismatch`) a well-formed report from another validator,
+policy, scene, or constraint set, or about another subject or motion. Callers use it
+rather than each re-checking a report themselves.
 
 Equal inputs give equal reports. The same scene, constraints, policy, implementation,
 and exact subject produce the same report, whether the planner or runtime compilation
@@ -963,7 +976,7 @@ on sscbirrt's native backend.
 | `artifacts/test_planning_calls_requests_results_and_execution/planning_contracts.json` | On the example arm at its home snapshot: the request every planning call builds (configuration, configurations, pose at half speed and quarter acceleration, offset, and TSR with a path constraint), a scripted straight-line planner refused when it returns only geometry and no processor is selected (`untimed_result`), for a pose goal (`unsupported_goal`), and for effort limits (`unsupported_constraint`). Then `plan_to_configuration` returns a self-contained result (request, path, and a timed trajectory), which is sampled at 2 ms, checked against the effective limits, executed in MuJoCo, and reached, with nothing rebuilt. The result in wire form decodes equal. |
 | `artifacts/test_malformed_ambiguous_and_falsely_ready_records_are_refused/refusals.json` | Ambiguous manipulator, base, and end effector; a stale description; an out-of-limits goal; bad scaling; undeclared limits; a discontinuous, too-fast, or not-at-rest trajectory; a success without motion and a failure with it; a trajectory from another start or under other limits than its request's (`request_mismatch`); a prepared command with a failed check; a base goal at negotiation. Each with its code. |
 | MuJoCo runtime artifacts | See *Evidence* in [mujoco.md](mujoco.md). |
-| `artifacts/test_motion_validator_contract_is_planner_neutral/reports.json` | A test-only validator for a toy world (one continuous joint, one bounded joint, a forbidden box in joint space), with no planner, simulator, or runtime behind it. It checks exactly, so it reports a continuous guarantee. Its reports cover a clear state, one in the box, and one beyond a limit; a clear motion, a half turn of the continuous joint (`unsupported_motion`), and a motion within the ambiguity band (`ambiguous`); a path clipping the box only between its knots, refused at segment 0, fraction 0.4; the clear path timed as an exact reparameterization, with the same verdict; and the same endpoints joined by a straight line (invalid) and by L-shaped timing (valid), with different identities. Two runs are byte-identical, and repeated or reordered queries give the same reports. `test_malformed_validation_reports_are_refused/refusals.json` holds the self-contradicting reports refused at decode. |
+| `artifacts/test_motion_validator_contract_is_planner_neutral/reports.json` | A test-only validator for a toy world (one continuous joint, one bounded joint, a forbidden box in joint space), with no planner, simulator, or runtime behind it. It checks exactly, so it reports a continuous guarantee. Its reports cover a clear state, one in the box, and one beyond a limit; a clear motion, a half turn of the continuous joint (`unsupported_motion`), and a motion within the ambiguity band (`ambiguous`); a path clipping the box only between its knots, refused at segment 0, fraction 0.4; the clear path timed as an exact reparameterization, with the same verdict; and the same endpoints joined by a straight line (invalid) and by L-shaped timing (valid), with different identities. Two runs are byte-identical, and repeated or reordered queries give the same reports. `test_malformed_validation_reports_are_refused/refusals.json` holds the self-contradicting reports refused at decode. `test_reports_are_bound_to_their_exact_subject_and_validator` shows that a trajectory differing only in validation tags and provenance keeps its identity, while the same ramps under other limits get another, and that `check_validation` refuses a report about another motion, from another validator, or of another subject kind. |
 | Planning adapter artifacts | See *Evidence* in [planning.md](planning.md). |
 | `artifacts/test_direct_responses_keep_causal_time/` | An external runtime's answers advancing `now`, a deadline counted from acceptance, a regressing answer causing a breach, and a manual runtime answering ahead of its tick being rolled back. |
 | `artifacts/test_replay_starts_a_trajectory_from_a_joint_resting_past_its_stop/trace.jsonl` | A replay recorded 0.5 mrad past a stop: a trajectory starting there succeeds, and only its first applied setpoint is clamped, with a `clipped` modification on that joint. |
