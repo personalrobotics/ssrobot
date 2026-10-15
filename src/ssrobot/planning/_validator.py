@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from importlib.metadata import version
 from typing import Any
 
@@ -79,8 +79,16 @@ class SscbirrtValidator:
     in a witness come from the planning scene, so they carry ssrobot's names.
     """
 
-    def __init__(self, validator: Any, *, request: PlanningRequest, scene: PlanningScene) -> None:
+    def __init__(
+        self,
+        validator: Any,
+        *,
+        request: PlanningRequest,
+        scene: PlanningScene,
+        goal: Callable[[Sequence[float]], float],
+    ) -> None:
         self._validator = validator
+        self._goal = goal
         self._scene = scene
         self._group = request.group
         self._joints = request.joints
@@ -147,6 +155,9 @@ class SscbirrtValidator:
             path=None if path is None else [np.array(q) for q in path.waypoints],
         )
         return self.record(self._validator.validate_trajectory(native), subject, evidence=path)
+
+    def goal_distance(self, q: Sequence[float]) -> float:
+        return float(self._goal(state_subject(self._group, self._joints, q).waypoints[0]))
 
     def record(
         self,

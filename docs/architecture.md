@@ -70,7 +70,7 @@ argument.
 ```python
 import ssrobot
 from ssrobot.mujoco import MujocoRuntime            # `mujoco` extra
-from ssrobot.planning import CBiRRT, SsikKinematics, prepare  # `planning` extra
+from ssrobot.planning import CBiRRT, SsikKinematics  # `planning` extra
 
 package = ssrobot.load_installed_package("geodude_assets")
 planner = CBiRRT(kinematics=SsikKinematics.from_package(package, "right_arm"))
@@ -78,10 +78,7 @@ with ssrobot.RobotContext(package.description, MujocoRuntime(package, scene="tab
     arm = ctx.manipulator("right_arm")              # explicit; there is no active arm
     snapshot = ctx.snapshot()                       # the world the plan is made in
     plan = arm.plan_to_end_effector_pose(goal, snapshot=snapshot, planner=planner)
-    scene = ctx.planning_scene(snapshot, arm.group)
-    ready = prepare(plan, scene, validator=planner.validator(plan.request, scene),
-                    description=package.description, contract=ctx.trajectory_contract)
-    execution = ctx.submit(ready.command, snapshot=snapshot, source="planner")
+    execution = ctx.execute(plan, planner=planner)  # compiled for this runtime, then submitted
     result = ctx.run_until(execution)               # steps the manual clock to a terminal state
 ```
 
@@ -109,10 +106,7 @@ with ssrobot.RobotContext(robot, MujocoRuntime(scene="tabletop.xml")) as ctx:
     arm = ctx.manipulator("right_arm")
     snapshot = ctx.snapshot()
     approach = arm.plan_to_tsr(pregrasp, snapshot=snapshot, planner=planner)
-    scene = ctx.planning_scene(snapshot, arm.group)
-    ready = prepare(approach, scene, validator=planner.validator(approach.request, scene),
-                    description=robot, contract=ctx.trajectory_contract)
-    ctx.run_until(ctx.submit(ready.command, snapshot=snapshot, source="planner"))  # planner owns the arm…
+    ctx.run_until(ctx.execute(approach, planner=planner))  # planner owns the arm…
     PolicyRunner(ctx, grasp_policy).run_episode()   # …then ownership passes to the policy
 ```
 

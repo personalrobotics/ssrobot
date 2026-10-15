@@ -146,7 +146,7 @@ class Submission(Record):
     """A command accepted by a context for execution, with its source and deadline."""
 
     SCHEMA = "ssrobot.Submission"
-    VERSION = 1
+    VERSION = 2
 
     execution: str = field(metadata=meta("Execution identifier assigned by the context."))
     source: str = field(metadata=meta("Who submitted it, e.g. 'planner' or 'policy:act'."))
@@ -158,13 +158,22 @@ class Submission(Record):
         default=None,
         metadata=meta("Fingerprint of the snapshot the command was planned on, if given."),
     )
+    prepared: str | None = field(
+        default=None,
+        metadata=meta(
+            "Fingerprint of the PreparedTrajectory the command was compiled as, when "
+            "RobotContext.execute submitted it; the trace's preceding compiled record."
+        ),
+    )
 
     def _validate(self) -> None:
         check_name(self.execution, path="execution")
         check_name(self.source, path="source")
-        if self.snapshot is not None and not (
-            len(self.snapshot) == 64 and all(c in "0123456789abcdef" for c in self.snapshot)
-        ):
-            raise ValidationError(
-                "invalid_fingerprint", "snapshot must be a SHA-256 hex digest", path="snapshot"
-            )
+        for name in ("snapshot", "prepared"):
+            value = getattr(self, name)
+            if value is not None and not (
+                len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+            ):
+                raise ValidationError(
+                    "invalid_fingerprint", f"{name} must be a SHA-256 hex digest", path=name
+                )

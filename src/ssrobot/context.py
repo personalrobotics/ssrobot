@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from types import TracebackType
 from typing import Any, cast
 
+from ssrobot._wire import fingerprint
 from ssrobot.commands import ActionChunk, Command, TrajectoryContract, command_components
 from ssrobot.conventions import ClockMode, Pose, Timestamp, check_name
 from ssrobot.description import EndEffector, Manipulator, MobileBase, RobotDescription
@@ -47,6 +48,7 @@ from ssrobot.planning_contracts import (
     PlanningRequest,
     PlanResult,
     PoseGoal,
+    PreparedTrajectory,
     TrajectoryProcessor,
     Tsr,
     TsrGoal,
@@ -54,6 +56,7 @@ from ssrobot.planning_contracts import (
     check_result,
     negotiate,
 )
+from ssrobot.preparation import prepare
 from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime, SnapshotRuntime
 from ssrobot.scene import (
     Attachment,
@@ -83,6 +86,7 @@ _S = ContextState
 ALLOWED_STATES: dict[str, frozenset[ContextState]] = {
     "observe": frozenset({_S.OPEN, _S.FAULTED}),
     "submit": frozenset({_S.OPEN}),
+    "execute": frozenset({_S.OPEN}),
     "cancel": frozenset({_S.OPEN, _S.FAULTED}),
     "stop": frozenset({_S.OPEN, _S.FAULTED}),
     "step": frozenset({_S.OPEN, _S.FAULTED}),
@@ -203,6 +207,9 @@ class RobotContext:
         self._submissions = 0
         self._breached = False
         self._scene: SceneState | None = None
+        # Snapshots captured at the current scene revision, by fingerprint: the ones a
+        # plan may still be executed against. Older revisions are stale anyway.
+        self._captured: dict[str, SceneSnapshot] = {}
 
     # -- Properties ------------------------------------------------------------------
 
@@ -451,6 +458,7 @@ class RobotContext:
             raise self._breach(f"snapshot answered {taken!r} for scene {scene!r}")
         self._accept_direct(taken.stamp)
         self._emit(TraceKind.SNAPSHOT, self._runtime_source, taken, taken.stamp)
+        self._captured[taken.fingerprint()] = taken
         return taken
 
     def planning_scene(self, snapshot: SceneSnapshot, group: str) -> PlanningScene:
@@ -544,6 +552,67 @@ class RobotContext:
         is the one the command was planned on: if the scene has changed since, the
         command is refused (``stale_snapshot``), and the trace records which it was.
         """
+        return self._submit(command, source=source, timeout_ns=timeout_ns, snapshot=snapshot)
+
+    def execute(
+        self,
+        plan: PlanResult,
+        *,
+        planner: Planner,
+        processor: TrajectoryProcessor | None = None,
+        source: str = "planner",
+        timeout_ns: int | None = None,
+    ) -> Execution:
+        """Compile a successful plan for this runtime and submit it; nonblocking.
+
+        The plan must have been made on a snapshot this context captured at the scene's
+        current revision (``stale_snapshot`` otherwise). Its command is compiled by
+        ``prepare`` for ``trajectory_contract``, with ``planner``'s validator for the
+        plan's request in that snapshot's planning scene, then submitted with the
+        snapshot. Any refusal comes before anything reaches the runtime. The trace
+        records the ``PreparedTrajectory`` (``compiled``) just before its ``submitted``
+        record, which names it. ``processor`` times a path-only plan, as in ``prepare``;
+        nothing is replanned, retimed, or retried.
+        """
+        self._require("execute")
+        if not isinstance(plan, PlanResult):
+            raise ValidationError("wrong_type", "the plan must be a PlanResult", path="plan")
+        contract = self.trajectory_contract
+        snapshot = self._captured.get(plan.request.snapshot)
+        if snapshot is None:
+            raise StaleRevisionError(
+                "stale_snapshot",
+                "the plan's snapshot was not captured by this context at scene revision "
+                f"{self.scene.revision}",
+                path="plan",
+            )
+        self._check_current(snapshot)
+        scene = self.planning_scene(snapshot, plan.request.group)
+        prepared = prepare(
+            plan,
+            scene,
+            validator=planner.validator(plan.request, scene),
+            description=self._description,
+            contract=contract,
+            processor=processor,
+        )
+        return self._submit(
+            prepared.command,
+            source=source,
+            timeout_ns=timeout_ns,
+            snapshot=snapshot,
+            prepared=prepared,
+        )
+
+    def _submit(
+        self,
+        command: Command,
+        *,
+        source: str,
+        timeout_ns: int | None,
+        snapshot: SceneSnapshot | None,
+        prepared: PreparedTrajectory | None = None,
+    ) -> Execution:
         info = self._require("submit")
         check_name(source, path="source")
         check_command(self._description, command, info)
@@ -577,6 +646,8 @@ class RobotContext:
             if holder not in superseded:
                 superseded.append(holder)
 
+        if prepared is not None:
+            self._emit(TraceKind.COMPILED, source, prepared)
         self._submissions += 1
         execution_id = f"e{self._submissions}"
         status = self._runtime.submit(execution_id, command)
@@ -603,6 +674,7 @@ class RobotContext:
             command=command,
             deadline=deadline,
             snapshot=None if snapshot is None else snapshot.fingerprint(),
+            prepared=None if prepared is None else fingerprint(prepared),
         )
         execution = Execution(self, submission, components, resources)
         self._executions[execution_id] = execution
@@ -836,6 +908,7 @@ class RobotContext:
     def _commit(self, scene: SceneState, source: str, stamp: Timestamp | None = None) -> SceneState:
         scene = replace(scene, revision=scene.revision + 1)
         self._scene = scene
+        self._captured.clear()
         self._emit(TraceKind.SCENE, source, scene, stamp)
         return scene
 

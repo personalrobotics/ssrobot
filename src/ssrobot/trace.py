@@ -14,6 +14,7 @@ from ssrobot.conventions import check_name
 from ssrobot.errors import ValidationError
 from ssrobot.execution import AppliedCommand, ExecutionStatus, RuntimeHealth, Submission
 from ssrobot.observations import Observation
+from ssrobot.planning_contracts import PreparedTrajectory
 from ssrobot.runtime import RuntimeInfo
 from ssrobot.scene import AttachmentViolation, SceneSnapshot, SceneState
 
@@ -23,6 +24,10 @@ class TraceKind(enum.StrEnum):
     """The runtime opened; payload is its ``RuntimeInfo``."""
     OBSERVED = "observed"
     """A client observed; payload is the ``Observation``."""
+    COMPILED = "compiled"
+    """``RobotContext.execute`` compiled a plan for this runtime; payload is the
+    ``PreparedTrajectory``. The ``submitted`` record that follows names it by
+    fingerprint (``Submission.prepared``)."""
     SUBMITTED = "submitted"
     """A command was accepted for execution; payload is the ``Submission``."""
     STATUS = "status"
@@ -54,11 +59,13 @@ TracePayload = (
     | SceneState
     | AttachmentViolation
     | SceneSnapshot
+    | PreparedTrajectory
 )
 
 _PAYLOAD: dict[TraceKind, type[Record] | None] = {
     TraceKind.OPENED: RuntimeInfo,
     TraceKind.OBSERVED: Observation,
+    TraceKind.COMPILED: PreparedTrajectory,
     TraceKind.SUBMITTED: Submission,
     TraceKind.STATUS: ExecutionStatus,
     TraceKind.APPLIED: AppliedCommand,

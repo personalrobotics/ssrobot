@@ -178,6 +178,16 @@ class ScriptedValidator:
             **fields,
         )
 
+    def goal_distance(self, q: Any) -> float:
+        goal = self._request.goal
+        assert isinstance(goal, ConfigurationGoal)  # the scripted planner's only goal
+        return float(
+            min(
+                max(abs(a - b) for a, b in zip(q, target, strict=True))
+                for target in goal.configurations
+            )
+        )
+
     def validate_state(self, q: Any) -> MotionValidation:
         subject = state_subject(self._request.group, self._request.joints, q)
         (state,) = subject.waypoints

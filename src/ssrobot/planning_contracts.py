@@ -1267,6 +1267,13 @@ class MotionValidator(Protocol):
         states, recorded as the report's ``evidence``, never as part of the subject."""
         ...
 
+    def goal_distance(self, q: Sequence[float]) -> float:
+        """How far ``q`` is from the request's goal, with the goal as planning lowered
+        it: for a configuration goal, the largest joint gap to the nearest goal
+        configuration, continuous joints modulo a turn; for a region, the distance to the
+        nearest goal region. 0 inside the goal; never negative."""
+        ...
+
 
 def _check_subject_joints(group: str, joints: tuple[str, ...]) -> None:
     check_name(group, path="group")

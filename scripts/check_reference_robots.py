@@ -308,10 +308,13 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
     the robot's frames around the object. The function never asks which robot it has.
     In order, from a fresh snapshot each time, it plans with sscbirrt (and ssik) to the
     region, then to the named configuration restricted to the manipulator's joints.
-    Each plan keeps sscbirrt's path and its timed trajectory, is prepared (sampled and
-    checked independently) and executed with its snapshot. Before
+    Each plan keeps sscbirrt's path and its timed trajectory and is executed with
+    ``ctx.execute``, which compiles it for the runtime's declared contract, validates
+    it, and submits it with its snapshot; the trace links the compiled artifact to the
+    submission. Offline ``prepare`` of the same inputs must give the same artifact. Before
     executing the first, it shows that an unsupported constraint fails negotiation and
-    a path-only result is not execution-ready. After each execution a fresh snapshot
+    a path-only result is not execution-ready; after it, that declaring the object held
+    makes the same plan stale, refused with nothing submitted. After each execution a fresh snapshot
     records what was achieved: the frame's distance to the request's region, or the
     joint error to the configuration. Writes each result and prepared command, and
     scenario.json with every execution's outcome, under ``out``. No full trace: each
@@ -321,9 +324,19 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
 
     import numpy as np
 
-    from ssrobot import ConstraintClass, Pose, RobotContext, SsrobotError, Tsr
+    from ssrobot import (
+        ConstraintClass,
+        Pose,
+        PreparedTrajectory,
+        RobotContext,
+        SsrobotError,
+        TraceKind,
+        Tsr,
+        prepare,
+    )
+    from ssrobot._wire import fingerprint
     from ssrobot.mujoco import MujocoRuntime
-    from ssrobot.planning import CBiRRT, SsikKinematics, prepare
+    from ssrobot.planning import CBiRRT, SsikKinematics
 
     out.mkdir(parents=True, exist_ok=True)
     description = package.description
@@ -331,7 +344,16 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
     named_joints = description.group(named.group).joints
     record: dict[str, Any] = {"plans": {}, "refusals": {}}
     runtime = MujocoRuntime(package, keyframe=keyframe, scene=spec["scene"])
-    with RobotContext(description, runtime) as ctx:
+    # Only the records that link a plan to its execution: a full trace repeats each
+    # 2 ms trajectory in every applied record.
+    links = (TraceKind.SNAPSHOT, TraceKind.COMPILED, TraceKind.SUBMITTED, TraceKind.STATUS)
+    linked: list[Any] = []
+
+    def keep(r: Any) -> None:
+        if r.kind in links:
+            linked.append(r)
+
+    with RobotContext(description, runtime, sinks=[keep]) as ctx:
         arm = ctx.manipulator(spec["manipulator"])
         planner = CBiRRT(description, kinematics=SsikKinematics.from_package(package, arm.name))
         joints = description.group(arm.group).joints
@@ -447,21 +469,29 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
                     record["refusals"]["path_only_result"] = "accepted"
                 except SsrobotError as error:
                     record["refusals"]["path_only_result"] = error.code
+            # The normal path: one call compiles for this runtime, validates, and submits.
+            before = len(linked)
             try:
-                ready = prepare(
-                    result,
-                    scene,
-                    validator=validator,
-                    description=description,
-                    contract=ctx.trajectory_contract,
-                )
+                execution = ctx.execute(result, planner=planner)
             except SsrobotError as error:
-                entry["prepared"] = f"{error.code}: {error.message}"
+                entry["executed"] = f"{error.code}: {error.message}"
                 continue
+            status = ctx.run_until(execution, max_ticks=20_000)
+            ready = next(r.payload for r in linked[before:] if r.kind is TraceKind.COMPILED)
+            assert isinstance(ready, PreparedTrajectory)
             (out / f"{name}.prepared.json").write_text(dumps(ready) + "\n")
+            entry["contract"] = json.loads(dumps(ready.contract))
             entry["prepared"] = {c.name: c.detail for c in ready.checks}
             entry["sampled_source"] = ready.command == result.trajectory.sample(
-                ctx.trajectory_contract.period_ns
+                ready.contract.period_ns
+            )
+            # Offline compilation of the same inputs is the same artifact.
+            entry["offline_identical"] = ready == prepare(
+                result,
+                scene,
+                validator=validator,
+                description=description,
+                contract=ctx.trajectory_contract,
             )
             # One validator answered for the path, the trajectory, and the command.
             entry["validation"] = {
@@ -473,12 +503,37 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
                 "compiled_checks": ready.compiled_validation.checks,
                 "geometry_preserved": ready.geometry_preserved,
             }
-            execution = ctx.submit(ready.command, snapshot=snapshot, source="planner")
-            status = ctx.run_until(execution, max_ticks=20_000)
+            kinds = [r.kind.value for r in linked[before:]]
+            entry["trace"] = {
+                "records": kinds[: kinds.index("status") + 1],
+                "submission_names_compiled": execution.submission.prepared == fingerprint(ready),
+                "submission_names_snapshot": execution.submission.snapshot
+                == snapshot.fingerprint(),
+                "terminal": [
+                    r.payload.state.value
+                    for r in linked[before:]
+                    if r.kind is TraceKind.STATUS and r.payload.execution == execution.id
+                ][-1],
+            }
             entry["state"] = status.state.value
             entry["finished_ns"] = status.stamp.time_ns
             entry["planned_in_snapshot"] = execution.submission.snapshot == snapshot.fingerprint()
             entry["achieved"] = achieved(result, snapshot, ctx.snapshot())
+            if name == "region":
+                # Declaring the object held changes the scene: the same plan is now stale,
+                # and is refused before anything is submitted.
+                effector = description.manipulator(arm.name).end_effector
+                ctx.attach(spec["object"], effector)
+                submitted = sum(r.kind is TraceKind.SUBMITTED for r in linked)
+                try:
+                    ctx.execute(result, planner=planner)
+                    record["refusals"]["stale_snapshot"] = "accepted"
+                except SsrobotError as error:
+                    record["refusals"]["stale_snapshot"] = error.code
+                record["refusals"]["submitted_when_stale"] = (
+                    sum(r.kind is TraceKind.SUBMITTED for r in linked) - submitted
+                )
+                ctx.detach(spec["object"])
     (out / "scenario.json").write_text(json.dumps(record, indent=2) + "\n")
     return record
 
@@ -658,6 +713,9 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
             and all(
                 p.get("sampled_source")
                 and p.get("planned_in_snapshot")
+                and p.get("offline_identical")
+                and p.get("trace", {}).get("submission_names_compiled")
+                and p.get("trace", {}).get("terminal") == "succeeded"
                 and p.get("validation", {}).get("compiled")
                 for p in plans.values()
             )
@@ -669,6 +727,8 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
             {
                 "unsupported_constraint": "unsupported_constraint",
                 "path_only_result": "untimed_result",
+                "stale_snapshot": "stale_snapshot",
+                "submitted_when_stale": 0,
             },
             refusals,
         )

@@ -46,7 +46,7 @@ uses them:
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
 | Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
 | Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
-| Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `TimedTrajectory`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `PreparedTrajectory`, `MotionValidator`, `MotionValidation` |
+| Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `TimedTrajectory`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `PreparedTrajectory`, `prepare`, `MotionValidator`, `MotionValidation` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
 | Error handling | `SsrobotError`, `ValidationError`, `CapabilityError`, `OwnershipError`, `StaleRevisionError`, `LifecycleError` |
 
@@ -123,6 +123,7 @@ trace. It validates everything going into the runtime and everything coming out.
 | `trajectory_contract` | The `TrajectoryContract` the runtime declared in `RuntimeInfo.trajectory`. Fails with `trajectory_contract_undeclared` (a `CapabilityError`) when it declared none. |
 | `observe(request)` | Checks the request against declared and available channels, then checks that the observation answers it on the runtime clock. |
 | `submit(command, *, source="client", timeout_ns=None, snapshot=None)` | Validates, takes ownership, and returns a passive `Execution`. Does not advance time. With `snapshot`, the snapshot the command was planned on, it is refused (`stale_snapshot`) if the scene has moved past it. |
+| `execute(plan, *, planner, processor=None, source="planner", timeout_ns=None)` | Compiles a successful plan for `trajectory_contract` with `ssrobot.prepare` and `planner`'s validator, then submits it with its snapshot; returns the `Execution`. The plan's snapshot must have been captured by this context at the current scene revision (`stale_snapshot`). Every refusal precedes submission. The trace's `compiled` record holds the `PreparedTrajectory`, and the `Submission` names its fingerprint (`prepared`). See planning.md. |
 | `cancel(execution)` | Cancels one unfinished execution (`canceled`). |
 | `stop(components=None)` | Cancels every unfinished execution touching the components, or all of them (`stopped`). |
 | `step()` | Manual clocks only: advances one control tick, then applies the runtime's update. |
@@ -515,7 +516,7 @@ claimed only to the extent the validator's reported policy guarantees.
 
 **The protocol** (`ssrobot.MotionValidator`) is bound when constructed to one planning
 scene, joint group, constraint set, and policy. Integrations construct it; core has no
-factory or registry. It answers four questions:
+factory or registry. It answers four validity questions, and one about the goal:
 
 | Call | Validates |
 | --- | --- |
@@ -523,6 +524,7 @@ factory or registry. It answers four questions:
 | `validate_motion(q0, q1)` | one interval under `PathInterpolation.LINEAR` |
 | `validate_path(path)` | a `GeometricPath`, every interval |
 | `validate_trajectory(trajectory)` | a `TimedTrajectory` under its law, over its whole time domain, not only its knots |
+| `goal_distance(q)` | not validity: how far `q` is from the request's goal, as planning lowered it (largest joint gap to the nearest goal configuration, continuous joints modulo a turn, or distance to the nearest goal region). Compilation's `goal` check uses it, so goal satisfaction has one definition. |
 
 `LINEAR` is the straight line in **raw** joint values, which is what runtimes execute.
 Continuous joints are not wrapped. A validator that would interpolate a continuous joint
@@ -804,7 +806,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`Observation`](../schemas/ssrobot.Observation.v1.json) | Timestamped readings, one per requested channel. |
 | [`ExecutionStatus`](../schemas/ssrobot.ExecutionStatus.v1.json) | The state of a submitted command. |
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v1.json) | What was requested, what was applied, and every modification between them. |
-| [`Submission`](../schemas/ssrobot.Submission.v1.json) | A command accepted for execution, with its identifier, source, and deadline. |
+| [`Submission`](../schemas/ssrobot.Submission.v2.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
 | [`TraceRecord`](../schemas/ssrobot.TraceRecord.v1.json) | One event in a trace. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
@@ -889,10 +891,13 @@ Every event becomes one `TraceRecord`, passed synchronously to each sink in orde
 | --- | --- |
 | `schema`, `version` | `ssrobot.TraceRecord`, 1 |
 | `sequence` | 0, 1, 2, … with no gaps |
-| `kind` | `opened`, `observed`, `submitted`, `status`, `applied`, `health`, `scene`, `violation`, `snapshot`, `stepped`, `closed` |
+| `kind` | `opened`, `observed`, `compiled`, `submitted`, `status`, `applied`, `health`, `scene`, `violation`, `snapshot`, `stepped`, `closed` |
 | `clock`, `time_ns` | Runtime time of the event. Runtime events use their own stamps, and everything else uses the context's `now`. Never decreases along a trace. |
-| `source` | The submitter for `submitted` and `applied` and for a client's `scene` change, `runtime:<name>` for what the runtime reported, and `context` for the context's own decisions |
-| `payload` | `RuntimeInfo`, `Observation`, `Submission`, `ExecutionStatus`, `AppliedCommand`, `RuntimeHealth`, `SceneState`, `AttachmentViolation`, or `SceneSnapshot` by kind; none for `stepped` and `closed` |
+| `source` | The submitter for `compiled`, `submitted`, and `applied` and for a client's `scene` change, `runtime:<name>` for what the runtime reported, and `context` for the context's own decisions |
+| `payload` | `RuntimeInfo`, `Observation`, `PreparedTrajectory`, `Submission`, `ExecutionStatus`, `AppliedCommand`, `RuntimeHealth`, `SceneState`, `AttachmentViolation`, or `SceneSnapshot` by kind; none for `stepped` and `closed` |
+
+`ctx.execute` traces `compiled` immediately before its `submitted` record; that
+`Submission.prepared` is the compiled record's fingerprint.
 
 A context whose runtime has a scene traces its initial `SceneState` right after
 `opened`. A runtime without one adds no `scene` records.

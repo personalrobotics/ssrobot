@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Sequence
 from importlib.metadata import version
 from typing import Any
 
@@ -198,10 +199,40 @@ class CBiRRT:
 
     def validator(self, request: PlanningRequest, scene: PlanningScene) -> SscbirrtValidator:
         """The validator ``plan`` applies to ``request`` in ``scene``."""
-        planner, constraints, _ = self._setup(request, scene)
+        planner, constraints, goals = self._setup(request, scene)
         return SscbirrtValidator(
-            planner.validator(constraint_tsrs=constraints or None), request=request, scene=scene
+            planner.validator(constraint_tsrs=constraints or None),
+            request=request,
+            scene=scene,
+            goal=self._goal_distance(request, scene, goals),
         )
+
+    def _goal_distance(
+        self, request: PlanningRequest, scene: PlanningScene, goals: dict[str, list[Any]]
+    ) -> Callable[[Sequence[float]], float]:
+        """``goal_distance`` for the goal as ``plan`` lowers it: the same configurations,
+        continuous joints modulo a turn, or the same goal regions about the same frame."""
+        if "goal" in goals:
+            continuous = np.array(
+                [self.description.joint(j).kind is JointKind.CONTINUOUS for j in request.joints]
+            )
+
+            def configuration(q: Sequence[float]) -> float:
+                gaps = []
+                for target in goals["goal"]:
+                    d = np.array(q) - target
+                    d[continuous] = (d[continuous] + math.pi) % (2 * math.pi) - math.pi
+                    gaps.append(float(np.abs(d).max()))
+                return min(gaps)
+
+            return configuration
+        frame = request.frame or self.description.manipulator(request.component).tool_frame
+
+        def regions(q: Sequence[float]) -> float:
+            pose = matrix(scene.forward_kinematics(tuple(q), frame))
+            return min(float(t.distance(pose)[0]) for t in goals["goal_tsrs"])
+
+        return regions
 
     def plan(
         self,
@@ -212,7 +243,10 @@ class CBiRRT:
     ) -> PlanResult:
         planner, constraints, goals = self._setup(request, scene, abort)
         validator = SscbirrtValidator(
-            planner.validator(constraint_tsrs=constraints or None), request=request, scene=scene
+            planner.validator(constraint_tsrs=constraints or None),
+            request=request,
+            scene=scene,
+            goal=self._goal_distance(request, scene, goals),
         )
         limits = request.limits
         try:

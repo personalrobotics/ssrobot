@@ -40,16 +40,19 @@ from ssrobot import (
     SsrobotError,
     TimedTrajectory,
     TraceKind,
+    TraceRecord,
     TrajectoryContract,
     TrajectoryInterpolation,
     Tsr,
     dumps,
     load_package,
     loads,
+    prepare,
     read_trace,
 )
+from ssrobot._wire import fingerprint
 from ssrobot.mujoco import MujocoRuntime
-from ssrobot.planning import CBiRRT, RestToRestProcessor, SsikKinematics, prepare
+from ssrobot.planning import CBiRRT, RestToRestProcessor, SsikKinematics
 from ssrobot.planning_contracts import (
     ValidationFailure,
     path_identity,
@@ -99,17 +102,19 @@ def _carry(out: Path) -> dict[str, Any]:
     description = package.description
     planner = CBiRRT(description)
     report: dict[str, Any] = {}
+    records: list[TraceRecord] = []
     with (
         JsonlTrace(out / "trace.jsonl") as trace,
         RobotContext(
-            description, MujocoRuntime(package, scene=SCENE, **OPTIONS), sinks=[trace]
+            description,
+            MujocoRuntime(package, scene=SCENE, **OPTIONS),
+            sinks=[trace, records.append],
         ) as ctx,
     ):
         _hold(ctx)
         arm = ctx.manipulator()
         for name, goal in (("lift", ABOVE), ("carry", ASIDE)):
             snapshot = ctx.snapshot()
-            # The plan carries its request: it goes straight to preparation.
             result = arm.plan_to_configuration(
                 goal,
                 snapshot=snapshot,
@@ -117,17 +122,21 @@ def _carry(out: Path) -> dict[str, Any]:
                 velocity_scaling=0.5,
                 acceleration_scaling=0.5,
             )
+            # One call: compiled for this runtime's contract, validated, and submitted.
+            execution = ctx.execute(result, planner=planner)
+            status = ctx.run_until(execution, max_ticks=5_000)
+            ready = [r.payload for r in records if r.kind is TraceKind.COMPILED][-1]
+            assert isinstance(ready, PreparedTrajectory)
+            # Offline compilation of the same inputs gives the same artifact.
             scene = ctx.planning_scene(snapshot, arm.group)
             validator = planner.validator(result.request, scene)
-            # Compiled for the contract this runtime declared, not one the caller chose.
-            ready = prepare(
+            offline = prepare(
                 result,
                 scene,
                 validator=validator,
                 description=description,
                 contract=ctx.trajectory_contract,
             )
-            assert ready.contract == ctx.info.trajectory
             assert result.path is not None and result.trajectory is not None
             # The same validator answers the same way through the public call.
             assert validator.validate_path(result.path) == result.validation[0]
@@ -135,12 +144,30 @@ def _carry(out: Path) -> dict[str, Any]:
                 validator.validate_trajectory(result.trajectory, result.path)
                 == result.validation[1]
             )
-            execution = ctx.submit(ready.command, snapshot=snapshot, source="planner")
-            status = ctx.run_until(execution, max_ticks=5_000)
             report[name] = _case(out, name, result, ready)
+            report[name]["offline_identical"] = offline == ready
+            report[name]["linked"] = {
+                "contract": ready.contract == ctx.info.trajectory,
+                "snapshot": execution.submission.snapshot == snapshot.fingerprint(),
+                "prepared": execution.submission.prepared == fingerprint(ready),
+                "command": execution.command == ready.command,
+            }
             report[name]["execution"] = status.state.value
             report[name]["reached"] = [round(v, 2) for v in _arm(ctx)]
         report["held"] = [a.held for a in ctx.scene.attachments]
+
+        # Once the scene changes, the carry's snapshot is stale: refused before submitting.
+        def submitted() -> int:
+            return sum(r.kind is TraceKind.SUBMITTED for r in records)
+
+        before = submitted()
+        ctx.detach("box")
+        try:
+            ctx.execute(result, planner=planner)
+            report["after_scene_change"] = "accepted"
+        except SsrobotError as error:
+            report["after_scene_change"] = error.code
+        report["submitted_after_refusal"] = submitted() - before
     report["violations"] = sum(
         r.kind is TraceKind.VIOLATION for r in read_trace(out / "trace.jsonl")
     )
@@ -180,7 +207,10 @@ def test_sscbirrt_plans_a_carry_that_executes(artifacts: Path, tmp_path: Path) -
         assert prepared.source_validation == result.validation[1]
         assert prepared.compiled_validation.validator == prepared.source_validation.validator
         assert not prepared.geometry_preserved  # 2 ms chords are a new motion
+        assert case["offline_identical"] and all(case["linked"].values())
     assert report["held"] == [True] and report["violations"] == 0
+    assert report["after_scene_change"] == "stale_snapshot"
+    assert report["submitted_after_refusal"] == 0
 
 
 def _paths(out: Path) -> dict[str, Any]:

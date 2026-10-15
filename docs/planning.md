@@ -14,18 +14,19 @@ uv add "ssrobot[mujoco,planning]"
 | `CBiRRT(description, *, kinematics=None, config=None, backend="auto")` | A `Planner`: sscbirrt's constrained bidirectional RRT, timed by sscbirrt |
 | `SsikKinematics.from_package(package, manipulator)` | Analytic IK for one manipulator from the package's canonical MJCF |
 | `CBiRRT.validator(request, scene)` | The `MotionValidator` the planner applies to `request`: an `SscbirrtValidator` over sscbirrt's public `Validator` |
-| `prepare(result, scene, *, validator, description, contract, processor=None, tolerance=1e-3)` | The runtime command for a plan, its motions validated by `validator` and its readiness checked: a `PreparedTrajectory` |
 | `RestToRestProcessor()` | A path-preserving `TrajectoryProcessor` for a plan that has only a path |
 
-The adapter depends only on the neutral `PlanningScene`, never on `MujocoRuntime` or a
-live context. Without the extra, `import ssrobot.planning` fails with an `ImportError`
+Executing a plan is core: `ctx.execute(plan, planner=planner)` compiles it with
+`ssrobot.prepare` for the runtime's declared contract, asking `planner.validator`, and
+submits it (see *Executing a plan*). The adapter depends only on the neutral
+`PlanningScene`, never on `MujocoRuntime` or a live context. Without the extra, `import ssrobot.planning` fails with an `ImportError`
 naming the missing package; core never imports it, and the dependency gate checks both.
 
 ## Who owns what
 
 Motion validity has one answer, from sscbirrt's validator, behind ssrobot's neutral
 `MotionValidator` contract ([contracts.md](contracts.md), *Motion validation*). The
-planner, its final checks, and `prepare` all ask the same validator, so the same motion
+planner, its final checks, and compilation all ask the same validator, so the same motion
 gets the same answer everywhere. That answer is only as strong as the validator's
 policy. `CBiRRTConfig.edge_resolution` is the user's one validation-resolution choice;
 its default is 0.05 in the Euclidean norm of raw joint coordinates. Every raw-linear
@@ -137,10 +138,30 @@ or constraint check of its own.
   interval count, duration, and witness. Anything that disagrees is refused
   (`planner_contract`), never relabelled.
 
-## Preparing a command
+## Executing a plan
 
-A plan carries its request and its evidence. `prepare(plan, scene, validator=...)`
-works as follows:
+`ctx.execute(plan, *, planner, processor=None, source="planner", timeout_ns=None)` is
+the normal way to run a plan. It is nonblocking and returns the ordinary `Execution`.
+It:
+1. requires the plan's snapshot to be one this context captured at the scene's current
+   revision; otherwise it fails with `stale_snapshot`;
+2. takes the runtime's `ctx.trajectory_contract`, failing with
+   `trajectory_contract_undeclared` if there is none;
+3. builds that snapshot's planning scene and `planner.validator(plan.request, scene)`;
+4. compiles with `prepare`, below;
+5. submits the command with the snapshot. The trace records the `PreparedTrajectory`
+   (`compiled`) just before the `submitted` record, whose `Submission.prepared` is its
+   fingerprint.
+
+Any refusal comes before anything reaches the runtime. Nothing is replanned, retimed,
+or retried.
+
+## Compiling a plan
+
+`ssrobot.prepare(result, scene, *, validator, description, contract, processor=None,
+tolerance=1e-3)` is the compilation `ctx.execute` uses, available offline with
+explicit inputs; it gives the same `PreparedTrajectory` for the same inputs. It is core
+and depends only on the neutral contracts. It works as follows:
 - **Source evidence.** It checks that the plan's reports come from `validator`, about
   exactly the plan's path and trajectory. A path-only result needs `processor`, and
   fails with `untimed_result` without one. The processed trajectory is then validated by
@@ -165,12 +186,12 @@ The checks:
 | `description_limits` | `check_command` accepts the command: joint order, position limits, and the description's velocity and acceleration limits |
 | `effective_rates` | every step and waypoint is within the request's effective limits |
 | `start` | the first waypoint is the request's start, within 1e-9 |
-| `goal` | the last waypoint is within `tolerance` of a goal configuration (continuous joints modulo a turn), or of a goal TSR |
+| `goal` | the validator's `goal_distance` of the last waypoint is within `tolerance`: from a goal configuration (continuous joints modulo a turn), or a goal TSR, as planning lowered the goal |
 
 Every failed check is named in one `execution_unready` error. A successful
 `PreparedTrajectory` records the request, the source trajectory's identity and law, the
-period, the runtime's linear interpolation, the command, every check, both reports,
-and `geometry_preserved`. Submit its command with the snapshot it was planned in.
+`TrajectoryContract` it was compiled for, the command, every check, both reports, and
+`geometry_preserved`. Offline, submit its command with the snapshot it was planned in.
 
 ## Evidence
 

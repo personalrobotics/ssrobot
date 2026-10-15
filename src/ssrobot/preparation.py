@@ -1,25 +1,25 @@
-"""Compiling a plan into a runtime command, and checking it is ready to execute."""
+"""Compiling a plan into a runtime command, and checking it is ready to execute.
+
+The one compilation operation: ``RobotContext.execute`` calls it with the live runtime's
+contract, and an offline caller with explicit ones. It depends only on the neutral
+planning contracts; every motion-validity answer, and the distance from the goal, comes
+from the ``MotionValidator`` it is given.
+"""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
 
-import numpy as np
-
 from ssrobot.commands import TrajectoryContract
-from ssrobot.description import JointKind, RobotDescription
+from ssrobot.description import RobotDescription
 from ssrobot.errors import CapabilityError, SsrobotError, ValidationError
-from ssrobot.planning._cbirrt import lower_goal
-from ssrobot.planning._frames import matrix
 from ssrobot.planning_contracts import (
     COMMAND_PATHS,
-    ConfigurationGoal,
     ExecutionCheck,
     GeometricPath,
     MotionValidation,
     MotionValidator,
-    PlanningRequest,
     PlanResult,
     PreparedTrajectory,
     TimedTrajectory,
@@ -34,7 +34,8 @@ from ssrobot.validation import check_command, check_trajectory_rates
 
 GOAL_TOLERANCE = 1e-3
 """How far the command's last waypoint may be from the goal: joint units for a
-configuration goal, TSR distance for a region. sscbirrt's default membership tolerance."""
+configuration goal, TSR distance for a region, as ``MotionValidator.goal_distance``
+answers it. sscbirrt's default membership tolerance."""
 
 
 def _witness(report: MotionValidation) -> str:
@@ -72,10 +73,13 @@ def prepare(
     an offline caller may pass a hypothetical one. A result with only a path
     is timed by ``processor`` first, and its trajectory validated by the same
     validator; without one it is refused (``untimed_result``). Besides that, this checks
-    only readiness: the description's and the request's limits, the start, and the goal.
-    Any failure raises ``execution_unready`` naming every one.
+    only readiness: the description's and the request's limits, the start, and the goal,
+    whose distance the validator answers (``MotionValidator.goal_distance``). Any
+    failure raises ``execution_unready`` naming every one.
     """
     request = result.request
+    if not isinstance(result, PlanResult):
+        raise ValidationError("wrong_type", "the plan must be a PlanResult", path="plan")
     if not result.succeeded:
         raise ValidationError("execution_unready", f"the plan did not succeed: {result.status}")
     if (scene.group, scene.joints, scene.snapshot.fingerprint()) != (
@@ -114,7 +118,7 @@ def prepare(
         interpolation=COMMAND_PATHS[contract.interpolation],
     )
     compiled = validator.validate_path(compiled_path)
-    rows = np.array(command.positions)
+    rows = command.positions
     checks: list[ExecutionCheck] = []
 
     def record(name: str, passed: bool, detail: str) -> None:
@@ -142,9 +146,13 @@ def prepare(
         ),
         "velocity and acceleration within the request's effective limits",
     )
-    start_gap = float(np.abs(rows[0] - np.array(request.start)).max())
+    start_gap = max(abs(a - b) for a, b in zip(rows[0], request.start, strict=True))
     record("start", start_gap <= 1e-9, f"first waypoint {start_gap:.3g} from the request's start")
-    goal_gap = _goal_gap(request, scene, rows[-1], description)
+    goal_gap = validator.goal_distance(rows[-1])
+    if not isinstance(goal_gap, float) or not math.isfinite(goal_gap) or goal_gap < 0.0:
+        raise ValidationError(
+            "planner_contract", f"the validator answered a goal distance of {goal_gap!r}"
+        )
     record(
         "goal",
         goal_gap <= tolerance,
@@ -211,22 +219,3 @@ def traces(command: GeometricPath, source: GeometricPath) -> bool:
                 continue
             return False
     return segment == len(corners) - 2 and gap(rows[-1], corners[-1]) <= TRACE_TOLERANCE
-
-
-def _goal_gap(
-    request: PlanningRequest, scene: PlanningScene, q: np.ndarray, description: RobotDescription
-) -> float:
-    goal = request.goal
-    if isinstance(goal, ConfigurationGoal):
-        continuous = np.array(
-            [description.joint(j).kind is JointKind.CONTINUOUS for j in request.joints]
-        )
-        gaps = []
-        for target in goal.configurations:
-            d = q - np.array(target)
-            d[continuous] = (d[continuous] + math.pi) % (2 * math.pi) - math.pi
-            gaps.append(float(np.abs(d).max()))
-        return min(gaps)
-    assert request.frame is not None
-    pose = matrix(scene.forward_kinematics(tuple(q), request.frame))
-    return min(float(t.distance(pose)[0]) for t in lower_goal(request, scene)["goal_tsrs"])
