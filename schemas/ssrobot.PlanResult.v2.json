@@ -1198,6 +1198,10 @@
         "constraints": {
           "type": "string",
           "description": "Fingerprint of the constraints it applies; see constraints_identity."
+        },
+        "goal": {
+          "type": "string",
+          "description": "Fingerprint of the goal its goal_distance measures; see goal_identity."
         }
       },
       "required": [
@@ -1206,7 +1210,8 @@
         "snapshot",
         "group",
         "joints",
-        "constraints"
+        "constraints",
+        "goal"
       ],
       "additionalProperties": false
     }

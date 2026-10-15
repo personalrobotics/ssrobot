@@ -24,6 +24,8 @@ from ssrobot.planning_contracts import (
     PreparedTrajectory,
     TimedTrajectory,
     TrajectoryProcessor,
+    check_bound,
+    check_planned_in,
     check_validation,
     path_subject,
     trajectory_identity,
@@ -69,7 +71,9 @@ def prepare(
     motion-validity answer comes from it: the plan's own reports must be its, and the
     command, compiled for ``contract`` (waypoints every ``contract.period_ns``, which the
     runtime moves between by ``contract.interpolation``), is a new motion that it
-    validates again. ``RobotContext.trajectory_contract`` is the live runtime's contract;
+    validates again. The request must be one built from ``description`` and the scene's
+    snapshot, and the validator bound to it, goal included (``request_mismatch``,
+    ``validation_mismatch``). ``RobotContext.trajectory_contract`` is the live runtime's contract;
     an offline caller may pass a hypothetical one. A result with only a path
     is timed by ``processor`` first, and its trajectory validated by the same
     validator; without one it is refused (``untimed_result``). Besides that, this checks
@@ -77,9 +81,9 @@ def prepare(
     whose distance the validator answers (``MotionValidator.goal_distance``). Any
     failure raises ``execution_unready`` naming every one.
     """
-    request = result.request
     if not isinstance(result, PlanResult):
         raise ValidationError("wrong_type", "the plan must be a PlanResult", path="plan")
+    request = result.request
     if not result.succeeded:
         raise ValidationError("execution_unready", f"the plan did not succeed: {result.status}")
     if (scene.group, scene.joints, scene.snapshot.fingerprint()) != (
@@ -90,7 +94,9 @@ def prepare(
         raise ValidationError(
             "snapshot_mismatch", "the scene is not the request's group and snapshot"
         )
+    check_planned_in(request, description, scene.snapshot)
     identity = validator.identity
+    check_bound(identity, request, path="validator")
     path = result.path
     reports = iter(result.validation)
     if path is not None:

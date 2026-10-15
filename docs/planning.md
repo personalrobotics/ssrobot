@@ -144,7 +144,10 @@ or constraint check of its own.
 the normal way to run a plan. It is nonblocking and returns the ordinary `Execution`.
 It:
 1. requires the plan's snapshot to be one this context captured at the scene's current
-   revision; otherwise it fails with `stale_snapshot`;
+   revision, failing with `stale_snapshot` otherwise, and the plan's request to be the
+   one `build_request` gives from this description and that snapshot: robot,
+   description, snapshot and revision, the group's joints, and the start
+   (`check_planned_in`, `request_mismatch`);
 2. takes the runtime's `ctx.trajectory_contract`, failing with
    `trajectory_contract_undeclared` if there is none;
 3. builds that snapshot's planning scene and `planner.validator(plan.request, scene)`;
@@ -161,7 +164,10 @@ or retried.
 `ssrobot.prepare(result, scene, *, validator, description, contract, processor=None,
 tolerance=1e-3)` is the compilation `ctx.execute` uses, available offline with
 explicit inputs; it gives the same `PreparedTrajectory` for the same inputs. It is core
-and depends only on the neutral contracts. It works as follows:
+and depends only on the neutral contracts. It refuses anything but a `PlanResult`
+(`wrong_type`), a request not built from `description` and the scene's snapshot
+(`request_mismatch`), and a validator bound to another snapshot, group, constraints, or
+goal than the request (`validation_mismatch`). Then it works as follows:
 - **Source evidence.** It checks that the plan's reports come from `validator`, about
   exactly the plan's path and trajectory. A path-only result needs `processor`, and
   fails with `untimed_result` without one. The processed trajectory is then validated by
@@ -197,7 +203,8 @@ Every failed check is named in one `execution_unready` error. A successful
 
 | Artifact | Shows |
 | --- | --- |
-| `artifacts/test_sscbirrt_plans_a_carry_that_executes/` | The example arm holds the box from `pedestal.xml`. A lift and a carry are each planned natively by `plan_to_configuration` at half speed and half acceleration, and go straight to `prepare`. Their results, which carry their requests and the planner's own path and trajectory reports, and their prepared commands are written. The validator's public calls give the same reports, and the prepared command carries the source report and a compiled report from that validator, with `geometry_preserved` false. The command is exactly the sampled planner trajectory, so there is no second timing pass, and every check passes. Both execute, the box stays held with no violation, and a second run is byte-identical. |
+| `artifacts/test_sscbirrt_plans_a_carry_that_executes/` | The example arm holds the box from `pedestal.xml`. A lift and a carry are each planned natively by `plan_to_configuration` at half speed and half acceleration, and run with `ctx.execute`. Their results, which carry their requests and the planner's own path and trajectory reports, and their compiled commands (the trace's `compiled` records) are written. Each compiled artifact equals offline `prepare` of the same inputs; the submission names its fingerprint and the snapshot; its contract is the runtime's. The validator's public calls give the same reports, and the command is exactly the sampled planner trajectory, with `geometry_preserved` false and every check passing. Both execute, the box stays held with no violation; after a detach, the carry is refused with `stale_snapshot` and nothing submitted. A second run is byte-identical. |
+| `artifacts/test_execute_refuses_requests_this_context_did_not_build/forgeries.json` | Plans whose embedded request was altered after planning (another robot, description, revision, start, or goal), executed against this context's own snapshot, and `prepare` given a non-plan, another goal's validator, or another robot's request: each refusal code, that nothing was submitted, and that the genuine plan still succeeds. A second run is byte-identical. |
 | `artifacts/test_neutral_providers_and_geometric_paths/` | The same query through a scene with no native checker plans on sscbirrt's Python backend and passes every check. Its path without the trajectory is refused without a processor (`untimed_result`); with `RestToRestProcessor` it is prepared and executed. A second run is byte-identical. |
 | `artifacts/test_one_validator_answers_everywhere/evidence.json` | The example arm in the pedestal scene swings its shoulder from -0.5 to 0.5 rad with the elbow lowered. Both waypoints are valid states, but the planner's validator refuses the motion between them: a collision witness at segment 0, fraction 0.3, naming `left_finger` and `pedestal`, under the recorded 0.05 joint-space resolution, on sscbirrt's native backend. `prepare` has no check of its own to disagree with it, and repeated or reordered queries give equal reports. A path constraint the planner cannot plan with, on this three-joint arm with no kinematics, has no validator either (`unsupported_constraint`). |
 | `artifacts/test_adapter_refusals/refusals.json` | ssik cannot solve the three-joint arm (`kinematics_unavailable`). A pose goal without kinematics (`unsupported_goal`) and effort limits (`unsupported_constraint`) are refused at negotiation. A goal in collision is `infeasible`, and an abort is `cancelled`. The validator refuses a path into the pedestal with a collision witness naming the pedestal, and a success claiming that report is refused (`invalid_motion`). |

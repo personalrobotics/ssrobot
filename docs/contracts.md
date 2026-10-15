@@ -123,7 +123,7 @@ trace. It validates everything going into the runtime and everything coming out.
 | `trajectory_contract` | The `TrajectoryContract` the runtime declared in `RuntimeInfo.trajectory`. Fails with `trajectory_contract_undeclared` (a `CapabilityError`) when it declared none. |
 | `observe(request)` | Checks the request against declared and available channels, then checks that the observation answers it on the runtime clock. |
 | `submit(command, *, source="client", timeout_ns=None, snapshot=None)` | Validates, takes ownership, and returns a passive `Execution`. Does not advance time. With `snapshot`, the snapshot the command was planned on, it is refused (`stale_snapshot`) if the scene has moved past it. |
-| `execute(plan, *, planner, processor=None, source="planner", timeout_ns=None)` | Compiles a successful plan for `trajectory_contract` with `ssrobot.prepare` and `planner`'s validator, then submits it with its snapshot; returns the `Execution`. The plan's snapshot must have been captured by this context at the current scene revision (`stale_snapshot`). Every refusal precedes submission. The trace's `compiled` record holds the `PreparedTrajectory`, and the `Submission` names its fingerprint (`prepared`). See planning.md. |
+| `execute(plan, *, planner, processor=None, source="planner", timeout_ns=None)` | Compiles a successful plan for `trajectory_contract` with `ssrobot.prepare` and `planner`'s validator, then submits it with its snapshot; returns the `Execution`. The plan's snapshot must have been captured by this context at the current scene revision (`stale_snapshot`), and its request must be one built from this description and that snapshot (`check_planned_in`, `request_mismatch`). Every refusal precedes submission. The trace's `compiled` record holds the `PreparedTrajectory`, and the `Submission` names its fingerprint (`prepared`). See planning.md. |
 | `cancel(execution)` | Cancels one unfinished execution (`canceled`). |
 | `stop(components=None)` | Cancels every unfinished execution touching the components, or all of them (`stopped`). |
 | `step()` | Manual clocks only: advances one control tick, then applies the runtime's update. |
@@ -423,8 +423,8 @@ trajectory is validated with that path as evidence, which its report cites (`evi
 without making it part of the trajectory's identity. Decoding refuses a success unless:
 - there is one report per returned motion (`missing_validation`);
 - every report is valid (`invalid_motion`);
-- the reports share one validator, bound to the request's snapshot, group, and
-  `constraints_identity` (`validation_mismatch`);
+- the reports share one validator, bound to the request's snapshot, group,
+  `constraints_identity`, and `goal_identity` (`check_bound`, `validation_mismatch`);
 - each report is about exactly its motion (`check_subject`), and the trajectory's report
   cites the result's path as its evidence.
 
@@ -482,8 +482,8 @@ command, ready to execute. It holds:
 Decoding refuses it unless:
 - every check passed;
 - both reports are valid and come from one validator;
-- that validator is bound to the request's snapshot, group, joints, and
-  `constraints_identity`;
+- that validator is bound to the request's snapshot, group, joints,
+  `constraints_identity`, and `goal_identity`;
 - the source report is about `source`;
 - the compiled report is about exactly the command, which moves the request's joints.
 
@@ -539,7 +539,7 @@ subject:
 | `subject`, `motion` | What was validated, and its identity (the fingerprint of its subject descriptor): `state_identity`, `motion_identity`, or `path_identity` for the geometry, or `trajectory_identity` for the exact timed trajectory, which covers its law, every ramp (so q(t) over the whole time domain), and its effective limits. Validation evidence is not part of an identity: a trajectory's piece validation tags, validated classes, producer, provenance, or the source path given as evidence (see `evidence`). |
 | `evidence` | For a trajectory validated along its source path, that path's identity. Evidence, not subject: a trajectory has one identity whether or not a path is given, and the policy states how the path is used. |
 | `interpolation` or `law`, `intervals`, `duration_s` | How the subject moves, and its extent |
-| `validator` | `ValidatorIdentity`: the implementation, its `ValidationPolicy`, the snapshot and group it is bound to, and `constraints_identity` (the description, which fixes limits and collision allowances, plus the path constraints) |
+| `validator` | `ValidatorIdentity`: the implementation, its `ValidationPolicy`, the snapshot and group it is bound to, `constraints_identity` (the description, which fixes limits and collision allowances, plus the path constraints), and `goal_identity` (the goal its `goal_distance` measures, with the description, component, and frame that fix how it is lowered). A validator's answers are about exactly the problem these name. |
 | `valid`, `witness` | The verdict, and for an invalid subject the first invalid state: `failure`, its location (`segment` and `fraction` for a motion or path, `time_s` for a trajectory), configuration, contacts, and violated constraint |
 | `checks` | How many state or interval checks were made |
 

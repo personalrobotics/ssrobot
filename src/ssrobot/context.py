@@ -53,6 +53,7 @@ from ssrobot.planning_contracts import (
     Tsr,
     TsrGoal,
     build_request,
+    check_planned_in,
     check_result,
     negotiate,
 )
@@ -524,6 +525,7 @@ class RobotContext:
             raise ValidationError(
                 "snapshot_mismatch", "the request was built in another snapshot", path="snapshot"
             )
+        check_planned_in(request, self._description, snapshot)
         negotiate(request, planner.capabilities(request), processor)
         scene = self.planning_scene(snapshot, request.group)
         result = planner.plan(request, scene, abort=abort)
@@ -587,6 +589,7 @@ class RobotContext:
                 path="plan",
             )
         self._check_current(snapshot)
+        check_planned_in(plan.request, self._description, snapshot)
         scene = self.planning_scene(snapshot, plan.request.group)
         prepared = prepare(
             plan,

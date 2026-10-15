@@ -72,6 +72,7 @@ from ssrobot.planning_contracts import (
     ValidationSubject,
     ValidatorIdentity,
     constraints_identity,
+    goal_identity,
     motion_subject,
     negotiate,
     path_identity,
@@ -155,6 +156,7 @@ class ScriptedValidator:
             group=request.group,
             joints=request.joints,
             constraints=constraints_identity(request),
+            goal=goal_identity(request),
         )
 
     def _states(self, waypoints: tuple[tuple[float, ...], ...]) -> tuple[int, int | None]:

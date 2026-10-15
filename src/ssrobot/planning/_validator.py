@@ -29,6 +29,7 @@ from ssrobot.planning_contracts import (
     ValidatorIdentity,
     check_validation,
     constraints_identity,
+    goal_identity,
     motion_subject,
     path_identity,
     path_subject,
@@ -100,6 +101,7 @@ class SscbirrtValidator:
             group=request.group,
             joints=request.joints,
             constraints=constraints_identity(request),
+            goal=goal_identity(request),
         )
 
     @property
