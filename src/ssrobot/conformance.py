@@ -1,11 +1,11 @@
 """The runtime conformance scenario.
 
-``run_conformance`` drives one ``RobotContext`` through lifecycle, observation,
-submission, ownership, cancellation, timeout, rejection, staleness, fault, recovery,
-and close, using only the public API. It needs a manually clocked runtime offering
-joint position and trajectory commands, and joint position channels, on two joint
-groups. Checks that need something a runtime does not offer are reported as
-``not_applicable`` with the reason, never skipped silently.
+``run_conformance`` drives one ``RobotContext`` through lifecycle, the declared
+trajectory contract, observation, submission, ownership, cancellation, timeout,
+rejection, staleness, fault, recovery, and close, using only the public API. It needs
+a manually clocked runtime offering joint position and trajectory commands, and joint
+position channels, on two joint groups. Checks that need something a runtime does not
+offer are reported as ``not_applicable`` with the reason, never skipped silently.
 
 Run against ``ReplayRuntime`` from an installed package::
 
@@ -227,6 +227,14 @@ def run_conformance(
         info = context.info
         arms = _select_arms(context)
         record("open", lambda: _check_open(context))
+        if info.trajectory is None:
+            skip("trajectory_contract", "the runtime declares no trajectory contract")
+        elif info.clock_mode is not ClockMode.MANUAL:
+            skip("trajectory_contract", "an external clock's period is nominal")
+        elif not info.trajectory.fixed_period:
+            skip("trajectory_contract", "the declared period is not fixed")
+        else:
+            record("trajectory_contract", lambda: _check_trajectory_contract(context))
         applicable = info.clock_mode is ClockMode.MANUAL and len(arms) == 2
         why = (
             "needs a manual clock and two joint groups offering position and trajectory "
@@ -316,6 +324,22 @@ def _check_open(context: RobotContext) -> str:
     _expect(context.info.description == context.description.fingerprint(), "fingerprint differs")
     return (
         f"opened {context.info.runtime} on clock {context.info.clock} at {context.now.time_ns} ns"
+    )
+
+
+def _check_trajectory_contract(context: RobotContext) -> str:
+    contract = context.trajectory_contract
+    ticks = []
+    for _ in range(3):
+        before = context.now
+        context.step()
+        ticks.append(context.now.ns_since(before))
+    _expect(
+        all(t == contract.period_ns for t in ticks),
+        f"steps advanced {ticks} ns, not the declared {contract.period_ns} ns",
+    )
+    return (
+        f"3 steps of the declared {contract.period_ns} ns, {contract.interpolation} interpolation"
     )
 
 

@@ -18,6 +18,8 @@ from ssrobot.commands import (
     JointCommand,
     JointMode,
     JointTrajectory,
+    TrajectoryContract,
+    TrajectoryInterpolation,
 )
 from ssrobot.context import (
     BaseView,
@@ -242,6 +244,8 @@ __all__ = [
     "TraceKind",
     "TraceRecord",
     "TrackedAttachment",
+    "TrajectoryContract",
+    "TrajectoryInterpolation",
     "TrajectoryProcessor",
     "Tsr",
     "TsrGoal",

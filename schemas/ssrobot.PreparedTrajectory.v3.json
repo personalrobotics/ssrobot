@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.PreparedTrajectory v2",
+  "title": "ssrobot.PreparedTrajectory v3",
   "$ref": "#/$defs/PreparedTrajectory",
   "$defs": {
     "BasePoseGoal": {
@@ -738,7 +738,7 @@
           "const": "ssrobot.PreparedTrajectory"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "request": {
           "$ref": "#/$defs/PlanningRequest",
@@ -755,17 +755,9 @@
           ],
           "description": "The source trajectory's law."
         },
-        "period_ns": {
-          "type": "integer",
-          "description": "The sampling period.",
-          "x-unit": "ns"
-        },
-        "runtime_interpolation": {
-          "type": "string",
-          "enum": [
-            "linear"
-          ],
-          "description": "How the runtime moves between the command's waypoints."
+        "contract": {
+          "$ref": "#/$defs/TrajectoryContract",
+          "description": "The trajectory-execution contract it was compiled for."
         },
         "command": {
           "$ref": "#/$defs/JointTrajectory",
@@ -797,13 +789,40 @@
         "request",
         "source",
         "source_law",
-        "period_ns",
-        "runtime_interpolation",
+        "contract",
         "command",
         "checks",
         "source_validation",
         "compiled_validation",
         "geometry_preserved"
+      ],
+      "additionalProperties": false
+    },
+    "TrajectoryContract": {
+      "type": "object",
+      "description": "How a runtime executes a ``JointTrajectory``: the trajectory-execution contract a",
+      "properties": {
+        "period_ns": {
+          "type": "integer",
+          "description": "Time between waypoints.",
+          "x-unit": "ns"
+        },
+        "interpolation": {
+          "type": "string",
+          "enum": [
+            "linear"
+          ],
+          "description": "How the runtime moves between waypoints."
+        },
+        "fixed_period": {
+          "type": "boolean",
+          "description": "Whether the period holds for the lifetime of the context."
+        }
+      },
+      "required": [
+        "period_ns",
+        "interpolation",
+        "fixed_period"
       ],
       "additionalProperties": false
     },

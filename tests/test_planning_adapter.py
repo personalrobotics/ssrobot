@@ -40,6 +40,8 @@ from ssrobot import (
     SsrobotError,
     TimedTrajectory,
     TraceKind,
+    TrajectoryContract,
+    TrajectoryInterpolation,
     Tsr,
     dumps,
     load_package,
@@ -59,6 +61,9 @@ from tests.test_mujoco_planning import FLOOR, INTO_PEDESTAL, _hold
 from tests.test_mujoco_scene import ABOVE, ASIDE, OPTIONS, PACKAGE, SCENE, _arm
 
 PERIOD_NS = 2_000_000  # the example arm's control tick
+CONTRACT = TrajectoryContract(
+    period_ns=PERIOD_NS, interpolation=TrajectoryInterpolation.LINEAR, fixed_period=True
+)
 
 
 class _Neutral:
@@ -114,9 +119,15 @@ def _carry(out: Path) -> dict[str, Any]:
             )
             scene = ctx.planning_scene(snapshot, arm.group)
             validator = planner.validator(result.request, scene)
+            # Compiled for the contract this runtime declared, not one the caller chose.
             ready = prepare(
-                result, scene, validator=validator, description=description, period_ns=PERIOD_NS
+                result,
+                scene,
+                validator=validator,
+                description=description,
+                contract=ctx.trajectory_contract,
             )
+            assert ready.contract == ctx.info.trajectory
             assert result.path is not None and result.trajectory is not None
             # The same validator answers the same way through the public call.
             assert validator.validate_path(result.path) == result.validation[0]
@@ -164,7 +175,7 @@ def test_sscbirrt_plans_a_carry_that_executes(artifacts: Path, tmp_path: Path) -
         # The command samples the planner's own trajectory: no second timing pass.
         assert result.trajectory is not None and result.path is not None
         assert prepared.source == trajectory_identity(result.trajectory)
-        assert prepared.command == result.trajectory.sample(PERIOD_NS)
+        assert prepared.command == result.trajectory.sample(prepared.contract.period_ns)
         # One validator answered for the source and for the command as executed.
         assert prepared.source_validation == result.validation[1]
         assert prepared.compiled_validation.validator == prepared.source_validation.validator
@@ -190,7 +201,7 @@ def _paths(out: Path) -> dict[str, Any]:
         neutral = planner.plan(request, neutral_scene)
         validator = planner.validator(request, neutral_scene)
         ready = prepare(
-            neutral, scene, validator=validator, description=description, period_ns=PERIOD_NS
+            neutral, scene, validator=validator, description=description, contract=CONTRACT
         )
         report["neutral"] = _case(out, "neutral", neutral, ready)
 
@@ -202,7 +213,7 @@ def _paths(out: Path) -> dict[str, Any]:
                 scene,
                 validator=validator,
                 description=description,
-                period_ns=PERIOD_NS,
+                contract=CONTRACT,
             )
         except SsrobotError as e:
             report["geometric_without_processor"] = e.code
@@ -211,7 +222,7 @@ def _paths(out: Path) -> dict[str, Any]:
             scene,
             validator=validator,
             description=description,
-            period_ns=PERIOD_NS,
+            contract=CONTRACT,
             processor=RestToRestProcessor(),
         )
         report["geometric"] = _case(out, "geometric", geometric, timed)
@@ -532,11 +543,11 @@ def test_evidence_is_bound_not_relabelled(artifacts: Path) -> None:
             scene,
             validator=line_validator,
             description=description,
-            period_ns=PERIOD_NS,
+            contract=CONTRACT,
             processor=RestToRestProcessor(),
         )
         changed = prepare(
-            shortcut, scene, validator=validator, description=description, period_ns=PERIOD_NS
+            shortcut, scene, validator=validator, description=description, contract=CONTRACT
         )
     report = {
         "identity_with_and_without_path": [with_path.motion, without_path.motion],

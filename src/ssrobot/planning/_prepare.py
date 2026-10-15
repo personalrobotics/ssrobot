@@ -7,17 +7,18 @@ from collections.abc import Callable, Sequence
 
 import numpy as np
 
+from ssrobot.commands import TrajectoryContract
 from ssrobot.description import JointKind, RobotDescription
 from ssrobot.errors import CapabilityError, SsrobotError, ValidationError
 from ssrobot.planning._cbirrt import lower_goal
 from ssrobot.planning._frames import matrix
 from ssrobot.planning_contracts import (
+    COMMAND_PATHS,
     ConfigurationGoal,
     ExecutionCheck,
     GeometricPath,
     MotionValidation,
     MotionValidator,
-    PathInterpolation,
     PlanningRequest,
     PlanResult,
     PreparedTrajectory,
@@ -57,7 +58,7 @@ def prepare(
     *,
     validator: MotionValidator,
     description: RobotDescription,
-    period_ns: int,
+    contract: TrajectoryContract,
     processor: TrajectoryProcessor | None = None,
     tolerance: float = GOAL_TOLERANCE,
 ) -> PreparedTrajectory:
@@ -65,8 +66,10 @@ def prepare(
 
     ``validator`` is the one the plan was validated by (``Planner.validator``). Every
     motion-validity answer comes from it: the plan's own reports must be its, and the
-    command, which the runtime executes as straight lines between waypoints every
-    ``period_ns``, is a new motion that it validates again. A result with only a path
+    command, compiled for ``contract`` (waypoints every ``contract.period_ns``, which the
+    runtime moves between by ``contract.interpolation``), is a new motion that it
+    validates again. ``RobotContext.trajectory_contract`` is the live runtime's contract;
+    an offline caller may pass a hypothetical one. A result with only a path
     is timed by ``processor`` first, and its trajectory validated by the same
     validator; without one it is refused (``untimed_result``). Besides that, this checks
     only readiness: the description's and the request's limits, the start, and the goal.
@@ -103,11 +106,12 @@ def prepare(
             "untimed_result",
             "the plan has no timing; select a path-preserving trajectory processor",
         )
-    command = timed.sample(period_ns)
+    command = timed.sample(contract.period_ns)
     compiled_path = GeometricPath(
         group=command.group,
         joints=command.joints,
         waypoints=command.positions,
+        interpolation=COMMAND_PATHS[contract.interpolation],
     )
     compiled = validator.validate_path(compiled_path)
     rows = np.array(command.positions)
@@ -155,8 +159,7 @@ def prepare(
         request=request,
         source=trajectory_identity(timed),
         source_law=timed.law,
-        period_ns=period_ns,
-        runtime_interpolation=PathInterpolation.LINEAR,
+        contract=contract,
         command=command,
         checks=tuple(checks),
         source_validation=source,

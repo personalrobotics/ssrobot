@@ -26,6 +26,8 @@ from ssrobot.commands import (
     JointCommand,
     JointMode,
     JointTrajectory,
+    TrajectoryContract,
+    TrajectoryInterpolation,
 )
 from ssrobot.conventions import ClockMode, Pose, Timestamp
 from ssrobot.description import CommandCapability, RobotDescription
@@ -673,6 +675,12 @@ class MujocoRuntime:
             channels=tuple(b.name for b in channels if b.unavailable is None),
             objects=tuple(sorted(self._objects)),
             fixtures=fixtures,
+            # One waypoint per control tick, interpolated linearly (see _interpolate).
+            trajectory=TrajectoryContract(
+                period_ns=self._substeps * timestep_ns,
+                interpolation=TrajectoryInterpolation.LINEAR,
+                fixed_period=True,
+            ),
         )
 
     def _bind_grippers(

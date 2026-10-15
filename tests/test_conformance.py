@@ -67,6 +67,7 @@ def test_replay_runtime_passes_the_conformance_scenario(artifacts: Path) -> None
         name: CheckOutcome.PASSED
         for name in (
             "open",
+            "trajectory_contract",
             "observe",
             "no_progress_before_step",
             "independent_components",

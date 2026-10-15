@@ -275,9 +275,6 @@ def drive(ctx: Any) -> dict[str, dict[str, Any]]:
     return results
 
 
-PLAN_PERIOD_NS = 2_000_000  # the control period plans are sampled for
-
-
 ACHIEVED_JOINT_ERROR = 0.01
 """How far, per joint, the robot may end from a configuration goal: MujocoRuntime's
 trajectory goal tolerance."""
@@ -445,7 +442,7 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
                         scene,
                         validator=validator,
                         description=description,
-                        period_ns=PLAN_PERIOD_NS,
+                        contract=ctx.trajectory_contract,
                     )
                     record["refusals"]["path_only_result"] = "accepted"
                 except SsrobotError as error:
@@ -456,14 +453,16 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
                     scene,
                     validator=validator,
                     description=description,
-                    period_ns=PLAN_PERIOD_NS,
+                    contract=ctx.trajectory_contract,
                 )
             except SsrobotError as error:
                 entry["prepared"] = f"{error.code}: {error.message}"
                 continue
             (out / f"{name}.prepared.json").write_text(dumps(ready) + "\n")
             entry["prepared"] = {c.name: c.detail for c in ready.checks}
-            entry["sampled_source"] = ready.command == result.trajectory.sample(PLAN_PERIOD_NS)
+            entry["sampled_source"] = ready.command == result.trajectory.sample(
+                ctx.trajectory_contract.period_ns
+            )
             # One validator answered for the path, the trajectory, and the command.
             entry["validation"] = {
                 "implementation": ready.compiled_validation.validator.implementation,

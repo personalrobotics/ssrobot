@@ -84,7 +84,7 @@ with ssrobot.RobotContext(package.description, runtime) as ctx:
     scene = ctx.planning_scene(snapshot, arm.group)
     validator = planner.validator(plan.request, scene)       # the one the plan was checked by
     ready = prepare(plan, scene, validator=validator, description=package.description,
-                    period_ns=2_000_000)
+                    contract=ctx.trajectory_contract)        # what this runtime executes
     status = ctx.run_until(ctx.submit(ready.command, snapshot=snapshot), max_ticks=5_000)
     print(status.state.value, plan.backend, round(plan.trajectory.duration, 2), "s")
 ```

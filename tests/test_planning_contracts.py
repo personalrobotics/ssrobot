@@ -45,6 +45,8 @@ from ssrobot import (
     SceneSnapshot,
     SsrobotError,
     TimedTrajectory,
+    TrajectoryContract,
+    TrajectoryInterpolation,
     Tsr,
     TsrGoal,
     dumps,
@@ -616,8 +618,9 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
         request=request,
         source=trajectory_identity(good),
         source_law=good.law,
-        period_ns=PERIOD_NS,
-        runtime_interpolation=PathInterpolation.LINEAR,
+        contract=TrajectoryContract(
+            period_ns=PERIOD_NS, interpolation=TrajectoryInterpolation.LINEAR, fixed_period=True
+        ),
         command=command,
         checks=(ExecutionCheck(name="start", passed=True, detail="at the start"),),
         source_validation=free.validate_trajectory(good),

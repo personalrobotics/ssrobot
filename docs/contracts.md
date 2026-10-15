@@ -120,6 +120,7 @@ trace. It validates everything going into the runtime and everything coming out.
 | `with ctx:` / `__enter__` | Opens the runtime once, checks its `RuntimeInfo`, and polls it for the current time. If anything fails, it closes the runtime and re-raises. |
 | `__exit__`, `close()` | Detaches every attachment, cancels unfinished executions (`context_closed`), and closes the runtime. Idempotent. Runs on normal exit and on exceptions. |
 | `state`, `info`, `now`, `fault` | Lifecycle state, the opened runtime's `RuntimeInfo`, the latest runtime time, and the fault that put the context in `faulted`, if any. |
+| `trajectory_contract` | The `TrajectoryContract` the runtime declared in `RuntimeInfo.trajectory`. Fails with `trajectory_contract_undeclared` (a `CapabilityError`) when it declared none. |
 | `observe(request)` | Checks the request against declared and available channels, then checks that the observation answers it on the runtime clock. |
 | `submit(command, *, source="client", timeout_ns=None, snapshot=None)` | Validates, takes ownership, and returns a passive `Execution`. Does not advance time. With `snapshot`, the snapshot the command was planned on, it is refused (`stale_snapshot`) if the scene has moved past it. |
 | `cancel(execution)` | Cancels one unfinished execution (`canceled`). |
@@ -151,7 +152,9 @@ or task logic.
   mode, clock identity, the fingerprint of the description it bound, and the command
   capabilities and channels it confirms are available now. The context rejects a
   different fingerprint (`stale_description`) and any capability or channel the
-  description does not declare (`undeclared_capability`).
+  description does not declare (`undeclared_capability`). Its `trajectory` (version 2)
+  is the runtime's trajectory-execution contract, or None when it cannot declare one
+  (see *Runtime commands*).
 - `submit(execution, command)` returns `pending` or `rejected` for that execution. The
   context assigns the execution identifier.
 - `cancel(execution)` means stop applying it at once and report nothing further about
@@ -448,15 +451,27 @@ live in integrations; `ssrobot.planning` provides one.
 positions every `period_ns` from 0 to the duration rounded up to a whole nanosecond,
 with a last interval shorter than half a period merged into the one before. Runtimes
 interpolate it linearly, so it is a different artifact from the source law.
+
+**Trajectory contract.** A runtime states how it executes a `JointTrajectory` as a
+`TrajectoryContract` (`ssrobot.TrajectoryContract`) in `RuntimeInfo.trajectory`:
+- `period_ns`: the time between waypoints of a command compiled for it, positive;
+- `interpolation`: how it moves between consecutive waypoints. `linear` is the only
+  value: straight lines in raw joint values, with continuous joints not wrapped;
+- `fixed_period`: whether that period holds for as long as the context is open.
+
+It declares what the runtime accepts, not its internal servo rate. A runtime that
+cannot state one declares None, and nothing guesses one for it. The `opened` trace
+record carries `RuntimeInfo`, so every trace names the contract in force.
 `ssrobot.validation.check_trajectory_rates(command, velocity, acceleration)` checks a
 command's chords against any per-joint limits, such as the effective ones, exactly as
-`submit` checks the description's. A `PreparedTrajectory` (version 2) is a sampled
+`submit` checks the description's. A `PreparedTrajectory` (version 3) is a sampled
 command, ready to execute. It holds:
 - the whole `PlanningRequest` it was prepared for;
+- the `TrajectoryContract` it was compiled for;
 - the readiness checks it passed;
 - `source_validation`, the validator's report on the source trajectory;
-- `compiled_validation`, the same validator's report on the command as a linear path,
-  which is how the runtime executes it;
+- `compiled_validation`, the same validator's report on the command as a path with the
+  contract's interpolation, which is how the runtime executes it;
 - `geometry_preserved`, which is true only when the command traces exactly the curve
   of the validated source path. That means:
   - the same start and end;
@@ -779,7 +794,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`KinematicModel`](../schemas/ssrobot.KinematicModel.v1.json) | A robot's frames and joints, as a model loader produces them. |
 | [`ssrobot.package`](../schemas/ssrobot.package.v1.json) | A package manifest, `ssrobot.toml`. See [packages.md](packages.md). |
 | [`PackageReport`](../schemas/ssrobot.PackageReport.v1.json) | What loading a package resolved. |
-| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v1.json) | What an opened runtime binds and confirms. |
+| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v2.json) | What an opened runtime binds and confirms. |
 | [`JointCommand`](../schemas/ssrobot.JointCommand.v1.json) | Instantaneous position, velocity, or effort targets for a group. |
 | [`GripperCommand`](../schemas/ssrobot.GripperCommand.v1.json) | Target opening. |
 | [`BaseTwistCommand`](../schemas/ssrobot.BaseTwistCommand.v1.json) | Planar base velocity. |
@@ -902,6 +917,8 @@ reference implementation of the runtime contract.
 
 - **Script.** A `ReplayScript` (`ssrobot.ReplayScript` on the wire) lists ticks of
   recorded readings. `ReplayScript.hold(...)` builds a still robot.
+- **Trajectory contract.** A script with evenly spaced ticks declares that spacing as a
+  fixed `linear` period. A script with uneven ticks declares None.
 - **Instantaneous commands** are applied and succeed on the next tick.
 - **Trajectories** start on the next tick, are sampled by linear interpolation, and
   succeed when their last waypoint is applied. A trajectory whose first waypoint is
@@ -921,6 +938,9 @@ channels. It produces a `ConformanceReport` (`ssrobot.ConformanceReport`) with c
 in this order:
 
 - `open`
+- `trajectory_contract`: three steps each advance time by exactly the declared period.
+  It is `not_applicable` when the runtime declares no contract, its clock is external,
+  or its period is not fixed.
 - `observe`
 - `no_progress_before_step`
 - `independent_components`
@@ -989,6 +1009,7 @@ on sscbirrt's native backend.
 | `artifacts/test_joint_command_schema_fixes_the_unit_of_values_by_mode/joint-command-units.json` | For position, velocity, and effort commands: the mode, the single unit the schema resolves for `values`, and the unit after decoding. |
 | `artifacts/test_conventions_accept_valid_and_reject_ambiguous_input/conventions-report.json` | Every valid and invalid convention case with its expected and actual diagnostic code and path. Covers the MuJoCo, URDF, and ROS timestamp conversions, chunk clocks against manual and external runtimes, and execution-record identifiers. |
 | `artifacts/test_replay_runtime_passes_the_conformance_scenario/run/` | The ReplayRuntime conformance `trace.jsonl` and `conformance-report.json`. The test re-reads them and checks every line against the schema, contiguous sequence numbers, time that never decreases, legal transitions, all five terminal states, and that each applied command is attributed to its submitter. A second run in `rerun/` is byte-identical. |
+| `artifacts/test_runtimes_declare_the_trajectory_contract_they_execute/contracts.json` | For MuJoCo, an evenly and an unevenly ticked replay, and an externally clocked runtime: the contract declared in the `opened` trace record, what `ctx.trajectory_contract` answered, how far three steps advanced the clock, and conformance's `trajectory_contract` outcome. A second run is byte-identical. |
 | `artifacts/test_scene_runtimes_that_break_their_contract/scene-breach-report.json`, `external-attach-trace.jsonl` | An external runtime that measures the object at 100 ns advances the context to 100 ns, and the `scene` record is stamped then. An attach answer stamped before the context's time, or at a later tick of a manual clock, is a contract breach. So is a scene runtime that changes the transform or allow set it was given, or reports a violation for an object that is not attached. Nothing is committed and the runtime is told to detach. A runtime that lists objects without implementing `SceneRuntime` is refused at open. |
 | `artifacts/test_snapshot_runtimes_that_break_their_contract/snapshot-breach-report.json` | A snapshot with the wrong revision, a missing object, or a stamp before the context's time is a contract breach. So is a planning scene coarser than the requested edge resolution. A contact naming unknown entities is `runtime_contract`, while a contact naming a frame and an object passes. A runtime without snapshots fails with `snapshots_unavailable`. |
 | `artifacts/test_replay_faults_on_divergence_and_exhaustion/trace.jsonl` | A replay that diverges from its recording, recovers, then runs out of ticks. |
