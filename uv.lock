@@ -1111,6 +1111,7 @@ mujoco = [
 ]
 planning = [
     { name = "sscbirrt", extra = ["ssik"] },
+    { name = "sstsr" },
 ]
 
 [package.dev-dependencies]
@@ -1121,6 +1122,7 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
     { name = "sscbirrt", extra = ["mujoco", "ssik"] },
+    { name = "sstsr" },
 ]
 
 [package.metadata]
@@ -1128,6 +1130,7 @@ requires-dist = [
     { name = "mujoco", marker = "extra == 'mujoco'", specifier = "==3.14.0" },
     { name = "sscbirrt", extras = ["mujoco"], marker = "extra == 'mujoco'", specifier = ">=3.9,<3.10" },
     { name = "sscbirrt", extras = ["ssik"], marker = "extra == 'planning'", specifier = ">=3.9,<3.10" },
+    { name = "sstsr", marker = "extra == 'planning'", specifier = ">=3.5,<4" },
 ]
 provides-extras = ["mujoco", "planning"]
 
@@ -1139,11 +1142,12 @@ dev = [
     { name = "pytest", specifier = ">=8.3" },
     { name = "ruff", specifier = ">=0.8" },
     { name = "sscbirrt", extras = ["mujoco", "ssik"], specifier = ">=3.9,<3.10" },
+    { name = "sstsr", specifier = ">=3.5,<4" },
 ]
 
 [[package]]
 name = "sstsr"
-version = "3.4.1"
+version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -1152,9 +1156,9 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/71/68/7bf835736203ba38ff2909871ef8fa459195f44213945438905d42b162bd/sstsr-3.4.1.tar.gz", hash = "sha256:837168c266b94ff0e429b68a59a9bf157491aefafd06309128dad8b6728a83e0", size = 1826847, upload-time = "2026-10-03T12:38:02.096Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/88/3e/5fd06137a23a4370c6a0034d76781680836ec0da7246b4a95f9f8b470b7c/sstsr-3.5.0.tar.gz", hash = "sha256:4557a8be60e3d51f8186134e47133dcd78a5450acde0c7b7492fc1124c4972a4", size = 1831367, upload-time = "2026-10-15T06:30:05.223Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/14/a1/d6f6804c3d7ed13be77d4a950725848bdcb78dc9e6eed993be5e8ed09e8c/sstsr-3.4.1-py3-none-any.whl", hash = "sha256:e08e8708f2c3da53c1a4bbbae197c55d32a1c3bf91d18ce058902c0cb8ca5fde", size = 133499, upload-time = "2026-10-03T12:38:00.19Z" },
+    { url = "https://files.pythonhosted.org/packages/25/90/24ed5dea66332d218c12a192bc76f9f1096d731d9a3566234f5275cd201b/sstsr-3.5.0-py3-none-any.whl", hash = "sha256:2274582315fa1963a9c7520dd7981841495021e5a71a2d5a08c5e48afae864cf", size = 134193, upload-time = "2026-10-15T06:30:03.229Z" },
 ]
 
 [[package]]
