@@ -11,9 +11,9 @@ algorithms on either side of it.
 This document is normative for scope, ownership, and the architecture decisions listed
 below. It describes both what exists and what v0.1 targets, and marks each with its
 status. Implemented behavior, with exact types and schemas, is specified only in
-[contracts.md](contracts.md), [packages.md](packages.md), and
-[authoring.md](authoring.md). The target examples here are illustrative and do not run
-yet.
+[contracts.md](contracts.md), [packages.md](packages.md), [authoring.md](authoring.md),
+[mujoco.md](mujoco.md), and [planning.md](planning.md). The target examples here are
+illustrative; only the planning journey's calls exist yet.
 
 ## Core concepts
 
@@ -22,12 +22,14 @@ yet.
 | `RobotDescription` | Immutable, validated semantic model of a robot: joints, links, frames, groups, manipulators, bases, end effectors, sensors, declared capabilities. Safe to share across contexts. | Implemented. Opendubs, a mobile manipulator with a mecanum base, is the first external consumer of `MobileBase` and `BaseTwistCommand`, in M2 (#85) |
 | Robot package | A model plus its `ssrobot.toml` manifest, loaded from a directory or an installed Python package into a `RobotDescription`. | Implemented |
 | `RobotContext` | The public session. Context-managed; the only path through which users observe, submit commands, step, snapshot, and close. | Implemented, with the planning views `ctx.manipulator` and `ctx.base` (#21) |
-| `Runtime` | Injected backend mechanics (replay, MuJoCo, ROS 2). Owns I/O, lifecycle, status, and capability reporting. Contains no planning or task logic. | Implemented: the protocol, `ReplayRuntime`, and `MujocoRuntime` with joint, trajectory, gripper, and chunk commands and robot observations: joint state, effort, poses, wrenches, and camera images (#14–#16), scenes with declared attachments (#17), and snapshots with planning scenes (#18; see [mujoco.md](mujoco.md)). Object state channels are the rest of M2; `Ros2Runtime` is M6 |
+| `Runtime` | Injected backend mechanics (replay, MuJoCo, ROS 2). Owns I/O, lifecycle, status, and capability reporting, including the trajectory-execution contract it accepts (command period, interpolation, whether the period is fixed). Contains no planning or task logic. | Implemented: the protocol, the declared trajectory contract (#128), `ReplayRuntime`, and `MujocoRuntime` with joint, trajectory, gripper, and chunk commands and robot observations: joint state, effort, poses, wrenches, and camera images (#14–#16), scenes with declared attachments (#17), and snapshots with planning scenes (#18; see [mujoco.md](mujoco.md)). Object state channels are the rest of M2; `Ros2Runtime` is M6 |
 | `Execution` | Passive handle returned by `submit`. Owns no thread, loop, or clock. | Implemented |
 | `SceneState` | A context's scene: objects, fixtures, and attachments (object, end effector, transform, allowed contacts), with a revision. Declared state for planners and traces; it never changes physics. | Implemented (#17) |
 | `SceneSnapshot` | Immutable, serializable scene state. | Implemented (#18) |
 | `PlanningScene` | Neutral capability a runtime materializes from a snapshot: forward kinematics, state and edge validity, optional collision detail. Isolated and timeless. | Implemented (#18); the MuJoCo provider is built on sscbirrt's native scene |
 | Planning contracts | Neutral requests, goals, effective limits, results, geometric paths, timed trajectories, capability negotiation, and execution readiness. A planner that returns only geometry runs after an explicitly selected path-preserving processor. | Implemented (#20), with the sscbirrt, ssik, and sstsr adapter `ssrobot.planning` (#22; see [planning.md](planning.md)) |
+| `MotionValidator` | The one answer to whether a motion is valid, and how far a configuration is from the goal, for one scene, group, constraint set, goal, and policy. Planning, its final checks, and compilation all ask the same one; integrations construct it. | Implemented (#132); sscbirrt's validator behind it |
+| Plan execution | `ctx.execute(plan, planner=)` compiles a plan with `ssrobot.prepare` for the runtime's declared contract, validates it, and submits it; the trace links the compiled evidence to the submission. `prepare` is core and also runs offline. | Implemented (#133) |
 | Trace | Versioned JSONL record of everything a context did, with content-addressed external assets. | Implemented |
 | `PolicyRunner` | Drives policy inference timing over a context: observe, infer, validate, submit, step. | M4 |
 
@@ -73,13 +75,14 @@ from ssrobot.mujoco import MujocoRuntime            # `mujoco` extra
 from ssrobot.planning import CBiRRT, SsikKinematics  # `planning` extra
 
 package = ssrobot.load_installed_package("geodude_assets")
-planner = CBiRRT(kinematics=SsikKinematics.from_package(package, "right_arm"))
+planner = CBiRRT(package.description, kinematics=SsikKinematics.from_package(package, "right_arm"))
 with ssrobot.RobotContext(package.description, MujocoRuntime(package, scene="tabletop.xml")) as ctx:
     arm = ctx.manipulator("right_arm")              # explicit; there is no active arm
     snapshot = ctx.snapshot()                       # the world the plan is made in
+    goal = ssrobot.Pose(position=(0.6, -0.2, 1.0), quat_wxyz=(0.0, 1.0, 0.0, 0.0))
     plan = arm.plan_to_end_effector_pose(goal, snapshot=snapshot, planner=planner)
     execution = ctx.execute(plan, planner=planner)  # compiled for this runtime, then submitted
-    result = ctx.run_until(execution)               # steps the manual clock to a terminal state
+    result = ctx.run_until(execution, max_ticks=20_000)  # steps the manual clock to the end
 ```
 
 No learning dependency is installed or imported.
@@ -106,7 +109,7 @@ with ssrobot.RobotContext(robot, MujocoRuntime(scene="tabletop.xml")) as ctx:
     arm = ctx.manipulator("right_arm")
     snapshot = ctx.snapshot()
     approach = arm.plan_to_tsr(pregrasp, snapshot=snapshot, planner=planner)
-    ctx.run_until(ctx.execute(approach, planner=planner))  # planner owns the arm…
+    ctx.run_until(ctx.execute(approach, planner=planner), max_ticks=20_000)  # planner owns the arm…
     PolicyRunner(ctx, grasp_policy).run_episode()   # …then ownership passes to the policy
 ```
 
@@ -164,8 +167,9 @@ TSR sampler is out of scope (1).
 
 ## Dependency direction
 
-This is the target v0.1 structure. Today the distribution is core only, with no
-runtime dependencies; the integrations arrive with M2–M4, and ROS 2 with M6.
+This is the target v0.1 structure. Today core has no runtime dependencies, and the
+`mujoco` and `planning` integrations ship as extras; `lerobot` arrives with M4, and ROS 2
+with M6.
 
 ```mermaid
 flowchart TD
@@ -192,7 +196,7 @@ flowchart TD
     pl --> planners["sscbirrt, ssik, sstsr"]
     lr --> learning["lerobot, torch"]
     ros --> rclpy["ROS 2"]
-    core --> numpy["numpy"]
+    core -. "only if a milestone needs it" .-> numpy["numpy"]
 ```
 
 Rules:
