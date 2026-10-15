@@ -146,7 +146,6 @@ class ScriptedValidator:
                 mechanism="joint_subdivision",
                 guarantee=ValidationGuarantee.DISCRETE,
                 resolution=self.STEP,
-                ambiguity_band_m=0.0,
                 parameters=(("trajectory", "20_times_per_piece"),),
                 summary="Valid at states at most 0.05 rad apart in every joint; nothing between.",
             ),

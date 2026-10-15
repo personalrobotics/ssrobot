@@ -126,16 +126,13 @@ def _first_outside(
 
 
 class IntervalWorld:
-    """An exact validator for the toy world, bound to one policy. ``band`` inflates the
-    box: a motion entering the band but never the box is refused as ambiguous."""
+    """An exact validator for the toy world, bound to one continuous policy."""
 
-    def __init__(self, band: float = 0.0) -> None:
-        self._band = band
+    def __init__(self) -> None:
         policy = ValidationPolicy(
             name="exact_box",
             mechanism="exact",
             guarantee=ValidationGuarantee.CONTINUOUS,
-            ambiguity_band_m=band,
             summary="Every state along the motion is checked against the box exactly.",
         )
         self._identity = ValidatorIdentity(
@@ -150,10 +147,6 @@ class IntervalWorld:
     @property
     def identity(self) -> ValidatorIdentity:
         return self._identity
-
-    def _boxes(self) -> tuple[Sequence[tuple[float, float]], Sequence[tuple[float, float]]]:
-        grown = tuple((low - self._band, high + self._band) for low, high in BOX)
-        return BOX, grown
 
     def _report(self, subject: ValidationSubject, **fields: Any) -> MotionValidation:
         witness = fields.pop("witness", None)
@@ -177,14 +170,10 @@ class IntervalWorld:
     def _first(
         self, axes: Sequence[tuple[float, float, float]], duration: float
     ) -> tuple[float, ValidationFailure] | None:
-        box, grown = self._boxes()
         found: list[tuple[float, ValidationFailure]] = []
-        hit = _first_inside(axes, duration, grown)
+        hit = _first_inside(axes, duration, BOX)
         if hit is not None:
-            collides = _first_inside(axes, duration, box) is not None
-            found.append(
-                (hit, ValidationFailure.COLLISION if collides else ValidationFailure.AMBIGUOUS)
-            )
+            found.append((hit, ValidationFailure.COLLISION))
         exit_time = _first_outside(axes[1], duration, *LIFT_LIMITS)
         if exit_time is not None:
             found.append((exit_time, ValidationFailure.POSITION_LIMITS))
@@ -360,7 +349,6 @@ def _path(*waypoints: tuple[float, float]) -> GeometricPath:
 
 def _scenario(out: Path) -> dict[str, Any]:
     world = IntervalWorld()
-    banded = IntervalWorld(band=0.05)
     clear = _path((0.0, 0.0), (1.0, 0.0), (1.0, 1.0))  # around the box
     clipping = _path((0.0, 0.0), (1.0, 1.0))  # both knots clear, the line crosses the box
     timed = _triangles(GROUP, clear.waypoints, _limits())  # the same path, timed exactly
@@ -373,7 +361,6 @@ def _scenario(out: Path) -> dict[str, Any]:
         "state_beyond_limit": world.validate_state((0.0, 2.5)),
         "motion_clear": world.validate_motion((0.0, 0.0), (1.0, 0.0)),
         "motion_half_turn": world.validate_motion((0.0, 0.0), (math.pi, 0.0)),
-        "motion_grazing_band": banded.validate_motion((0.0, 0.63), (1.0, 0.63)),
         "path_clear": world.validate_path(clear),
         "path_clipping_between_knots": world.validate_path(clipping),
         "trajectory_exact_reparameterization": world.validate_trajectory(timed),
@@ -404,7 +391,6 @@ def test_motion_validator_contract_is_planner_neutral(artifacts: Path, tmp_path:
         "state_beyond_limit": False,
         "motion_clear": True,
         "motion_half_turn": False,
-        "motion_grazing_band": False,
         "path_clear": True,
         "path_clipping_between_knots": False,
         "trajectory_exact_reparameterization": True,
@@ -416,7 +402,6 @@ def test_motion_validator_contract_is_planner_neutral(artifacts: Path, tmp_path:
         "state_in_box": ValidationFailure.COLLISION,
         "state_beyond_limit": ValidationFailure.POSITION_LIMITS,
         "motion_half_turn": ValidationFailure.UNSUPPORTED_MOTION,
-        "motion_grazing_band": ValidationFailure.AMBIGUOUS,
         "path_clipping_between_knots": ValidationFailure.COLLISION,
         "path_same_endpoints_straight": ValidationFailure.COLLISION,
     }
@@ -524,7 +509,7 @@ def test_reports_are_bound_to_their_exact_subject_and_validator() -> None:
     # The same q(t), timed under other limits, is another trajectory.
     assert trajectory_identity(replace(timed, limits=looser)) != trajectory_identity(timed)
 
-    world, banded = IntervalWorld(), IntervalWorld(band=0.05)
+    world = IntervalWorld()
     path = _path((0.0, 0.0), (1.0, 1.0))
     report = world.validate_path(path)
     traj_report = world.validate_trajectory(timed)
@@ -537,7 +522,13 @@ def test_reports_are_bound_to_their_exact_subject_and_validator() -> None:
 
     codes = {
         "other_motion": _refusal(bound(report, path_subject(_path((0.0, 0.0), (1.0, 0.0))))),
-        "other_validator": _refusal(bound(report, path_subject(path), banded.identity)),
+        "other_validator": _refusal(
+            bound(
+                report,
+                path_subject(path),
+                replace(world.identity, implementation="interval-world-2"),
+            )
+        ),
         "other_subject_kind": _refusal(bound(report, trajectory_subject(timed))),
         # Right fingerprint, wrong derived fields: each is refused.
         "path_interval_count": _refusal(bound(replace(report, intervals=2), path_subject(path))),
@@ -578,13 +569,17 @@ def test_reports_are_bound_to_their_exact_subject_and_validator() -> None:
     }
     assert state_identity(GROUP, JOINTS, (1, 0)) == state_identity(GROUP, JOINTS, (1.0, 0.0))
 
-    # A continuous guarantee may itself subdivide under a covering bound.
-    ValidationPolicy(
-        name="adaptive",
-        mechanism="adaptive_bounded",
-        guarantee=ValidationGuarantee.CONTINUOUS,
-        resolution=0.05,
-        clearance_m=0.002,
-        ambiguity_band_m=0.0005,
-        summary="Subdivides until the workspace motion between states is within the clearance.",
+    # A continuous validator needs no sampling resolution; its mechanism establishes the
+    # guarantee. A discrete validator must declare one.
+    assert IntervalWorld().identity.policy.resolution is None
+    assert (
+        _refusal(
+            lambda: ValidationPolicy(
+                name="samples",
+                mechanism="joint_subdivision",
+                guarantee=ValidationGuarantee.DISCRETE,
+                summary="Valid only at the states checked.",
+            )
+        )
+        == "inconsistent_policy"
     )

@@ -952,8 +952,6 @@ class ValidationFailure(enum.StrEnum):
     POSITION_LIMITS = "position_limits"
     COLLISION = "collision"
     PATH_CONSTRAINT = "path_constraint"
-    AMBIGUOUS = "ambiguous"
-    """Within the policy's ambiguity band of a contact or bound: refused, never rounded."""
     UNSUPPORTED_MOTION = "unsupported_motion"
     """The validator cannot validate this motion as declared, such as a continuous joint
     moving half a turn or more in one linear interval, which a validator that
@@ -963,9 +961,9 @@ class ValidationFailure(enum.StrEnum):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ValidationPolicy(Value):
     """What a validator checks, how, and what its answer guarantees. The guarantee is
-    independent of the mechanism: a continuous certificate may itself subdivide, under a
-    bound that covers the gaps. Every setting the mechanism uses is recorded, so no
-    answer depends on a hidden one."""
+    independent of the mechanism. A discrete policy declares its joint-space resolution;
+    every other setting the mechanism uses is recorded in ``parameters``, so no answer
+    depends on a hidden one."""
 
     name: str = field(metadata=meta("Policy name, e.g. 'joint_l2_subdivision'."))
     mechanism: str = field(
@@ -973,16 +971,11 @@ class ValidationPolicy(Value):
     )
     guarantee: ValidationGuarantee = field(metadata=meta("What a valid answer guarantees."))
     resolution: float | None = field(
-        default=None, metadata=meta("Largest joint step between checked states.", unit="joint")
-    )
-    workspace_step_m: float | None = field(
-        default=None, metadata=meta("Largest workspace motion between checked states.", unit="m")
-    )
-    clearance_m: float | None = field(
-        default=None, metadata=meta("Clearance every checked state keeps.", unit="m")
-    )
-    ambiguity_band_m: float = field(
-        metadata=meta("Distances within this band of a contact are refused.", unit="m")
+        default=None,
+        metadata=meta(
+            "Largest joint-space step between checked states; required for a discrete policy.",
+            unit="joint",
+        ),
     )
     parameters: tuple[tuple[str, str], ...] = field(
         default=(), metadata=meta("Every other mechanism setting, as sorted (key, value) pairs.")
@@ -992,25 +985,14 @@ class ValidationPolicy(Value):
     def _validate(self) -> None:
         check_name(self.name, path="name")
         check_name(self.mechanism, path="mechanism")
-        if (
-            self.guarantee is ValidationGuarantee.DISCRETE
-            and self.resolution is None
-            and self.workspace_step_m is None
-        ):
+        if self.guarantee is ValidationGuarantee.DISCRETE and self.resolution is None:
             raise ValidationError(
                 "inconsistent_policy",
-                "a discrete guarantee states the spacing of the states it checks: "
-                "resolution or workspace_step_m",
+                "a discrete guarantee states its joint-space resolution",
                 path="guarantee",
             )
-        for name in ("resolution", "workspace_step_m", "clearance_m"):
-            value = getattr(self, name)
-            if value is not None and not value > 0:
-                raise ValidationError("out_of_limits", f"{name} must be positive", path=name)
-        if self.ambiguity_band_m < 0:
-            raise ValidationError(
-                "out_of_limits", "ambiguity_band_m must be >= 0", path="ambiguity_band_m"
-            )
+        if self.resolution is not None and not self.resolution > 0:
+            raise ValidationError("out_of_limits", "resolution must be positive", path="resolution")
         if list(self.parameters) != sorted(dict(self.parameters).items()):
             raise ValidationError(
                 "noncanonical_order", "parameter keys must be sorted and unique", path="parameters"

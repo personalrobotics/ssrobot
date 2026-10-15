@@ -16,8 +16,8 @@ ssrobot = "ssrobot.cli:main"
 # within one minor release because they construct its native attachment and snapshot
 # types directly.
 mujoco = ["mujoco==3.14.0", "sscbirrt[mujoco]>=3.9,<3.10"]
-# The sscbirrt, ssik, and sstsr adapter. 3.5 is the first sscbirrt to return a timed
-# trajectory under velocity and acceleration limits.
+# The sscbirrt, ssik, and sstsr adapter. 3.9 is the first sscbirrt release to expose
+# the same public validator that planning applies.
 planning = ["sscbirrt[ssik]>=3.9,<3.10"]
 
 [dependency-groups]
