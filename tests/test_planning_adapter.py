@@ -10,6 +10,7 @@ artifacts are byte-identical. Reproduce with
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 from collections.abc import Callable, Sequence
@@ -20,6 +21,7 @@ from typing import Any
 import mujoco
 import numpy as np
 import pytest
+import sscbirrt
 
 from ssrobot import (
     ConfigurationGoal,
@@ -45,7 +47,12 @@ from ssrobot import (
 )
 from ssrobot.mujoco import MujocoRuntime
 from ssrobot.planning import CBiRRT, RestToRestProcessor, SsikKinematics, prepare
-from ssrobot.planning_contracts import ValidationFailure, trajectory_identity
+from ssrobot.planning_contracts import (
+    ValidationFailure,
+    path_identity,
+    path_subject,
+    trajectory_identity,
+)
 from ssrobot.validation import check_trajectory_rates
 from tests.test_mujoco_planning import FLOOR, INTO_PEDESTAL, _hold
 from tests.test_mujoco_scene import ABOVE, ASIDE, OPTIONS, PACKAGE, SCENE, _arm
@@ -155,7 +162,7 @@ def test_sscbirrt_plans_a_carry_that_executes(artifacts: Path, tmp_path: Path) -
         prepared = loads((artifacts / f"{name}.prepared.json").read_text(), PreparedTrajectory)
         # The command samples the planner's own trajectory: no second timing pass.
         assert result.trajectory is not None and result.path is not None
-        assert prepared.source == trajectory_identity(result.trajectory, result.path)
+        assert prepared.source == trajectory_identity(result.trajectory)
         assert prepared.command == result.trajectory.sample(PERIOD_NS)
         # One validator answered for the source and for the command as executed.
         assert prepared.source_validation == result.validation[1]
@@ -263,7 +270,6 @@ def test_adapter_refusals(artifacts: Path) -> None:
             group="arm",
             joints=through.joints,
             waypoints=(through.start, INTO_PEDESTAL, through.start),
-            validation_resolution=0.05,
         )
         refused = planner.validator(through, scene).validate_path(into)
         codes = {
@@ -347,7 +353,6 @@ def test_rest_to_rest_timing_is_exact_and_within_limits() -> None:
             (0.2, 0.3, -0.5),
             (0.2, 0.3, 0.5),
         ),
-        validation_resolution=0.05,
     )
     timed = RestToRestProcessor().process(path, limits)
     distinct = [q for i, q in enumerate(path.waypoints) if i == 0 or q != path.waypoints[i - 1]]
@@ -412,7 +417,6 @@ def test_one_validator_answers_everywhere(artifacts: Path) -> None:
             group=arm.group,
             joints=request.joints,
             waypoints=(start, goal),
-            validation_resolution=0.05,
         )
         first = validator.validate_path(swing)
         knots = [validator.validate_state(start), validator.validate_state(goal)]
@@ -445,3 +449,98 @@ def test_one_validator_answers_everywhere(artifacts: Path) -> None:
     assert first.validator.policy.mechanism == "joint_subdivision"
     assert report["repeated_equal"]
     assert no_kinematics == "unsupported_constraint"
+
+
+def test_evidence_is_bound_not_relabelled(artifacts: Path) -> None:
+    """The adapter records sscbirrt's answers faithfully and binds them to their subject.
+
+    - A source path given as evidence does not change a trajectory's identity; the report
+      records it separately.
+    - sscbirrt reports relabelled as another subject, or under another policy, are refused
+      (``planner_contract``), not translated.
+    - Compiling preserves geometry only when the command traces the source path: true
+      for a one-segment path stopped at rest, false for sscbirrt's shortcut trajectory.
+    """
+    package = load_package(PACKAGE)
+    description = package.description
+    planner = CBiRRT(description)
+    with RobotContext(description, MujocoRuntime(package, scene=SCENE, **OPTIONS)) as ctx:
+        snapshot = ctx.snapshot()
+        arm = ctx.manipulator()
+        scene = ctx.planning_scene(snapshot, arm.group)
+        shortcut = arm.plan_to_configuration(ASIDE, snapshot=snapshot, planner=planner)
+        assert shortcut.path is not None and shortcut.trajectory is not None
+        validator = planner.validator(shortcut.request, scene)
+        with_path = validator.validate_trajectory(shortcut.trajectory, shortcut.path)
+        without_path = validator.validate_trajectory(shortcut.trajectory)
+
+        native = validator.native
+        straight = GeometricPath(
+            group=arm.group, joints=shortcut.request.joints, waypoints=shortcut.path.waypoints[:2]
+        )
+        upstream = native.validate_path([np.array(q) for q in straight.waypoints])
+        relabelled = {
+            "as_a_state": _code(
+                lambda: validator.record(
+                    dataclasses.replace(upstream, subject="state"), path_subject(straight)
+                )
+            ),
+            "under_another_policy": _code(
+                lambda: validator.record(
+                    dataclasses.replace(upstream, policy=sscbirrt.ValidationPolicy(resolution=0.9)),
+                    path_subject(straight),
+                )
+            ),
+            "with_another_interval_count": _code(
+                lambda: validator.record(
+                    dataclasses.replace(upstream, intervals=upstream.intervals + 1),
+                    path_subject(straight),
+                )
+            ),
+        }
+
+        # A one-segment plan, stopped at rest, compiled every 2 ms: the same line.
+        request = arm.request(
+            ConfigurationGoal(configurations=(straight.waypoints[-1],)), snapshot=snapshot
+        )
+        line_validator = planner.validator(request, scene)
+        line = PlanResult(
+            request=request,
+            planner="scripted",
+            backend="native",
+            status=PlanStatus.SUCCEEDED,
+            path=straight,
+            validation=(line_validator.validate_path(straight),),
+        )
+        preserved = prepare(
+            line,
+            scene,
+            validator=line_validator,
+            description=description,
+            period_ns=PERIOD_NS,
+            processor=RestToRestProcessor(),
+        )
+        changed = prepare(
+            shortcut, scene, validator=validator, description=description, period_ns=PERIOD_NS
+        )
+    report = {
+        "identity_with_and_without_path": [with_path.motion, without_path.motion],
+        "evidence_with_and_without_path": [with_path.evidence, without_path.evidence],
+        "relabelled": relabelled,
+        "geometry_preserved": {
+            "one_segment_rest_to_rest": preserved.geometry_preserved,
+            "sscbirrt_shortcut": changed.geometry_preserved,
+        },
+    }
+    (artifacts / "evidence.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert with_path.motion == without_path.motion  # one trajectory, one identity
+    assert with_path.evidence == path_identity(shortcut.path) and without_path.evidence is None
+    assert relabelled == {
+        "as_a_state": "planner_contract",
+        "under_another_policy": "planner_contract",
+        "with_another_interval_count": "planner_contract",
+    }
+    assert report["geometry_preserved"] == {
+        "one_segment_rest_to_rest": True,
+        "sscbirrt_shortcut": False,
+    }

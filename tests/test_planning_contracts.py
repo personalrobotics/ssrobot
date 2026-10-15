@@ -72,6 +72,7 @@ from ssrobot.planning_contracts import (
     constraints_identity,
     motion_subject,
     negotiate,
+    path_identity,
     path_subject,
     state_subject,
     trajectory_identity,
@@ -123,7 +124,6 @@ def _triangles(
         pieces=tuple(pieces),
         limits=limits,
         validated=tuple(sorted(BASE_CONSTRAINTS)),
-        validation_resolution=0.05,
         producer="triangles",
     )
 
@@ -235,7 +235,7 @@ class ScriptedValidator:
     def validate_trajectory(
         self, trajectory: TimedTrajectory, path: GeometricPath | None = None
     ) -> MotionValidation:
-        subject = trajectory_subject(trajectory, path)
+        subject = trajectory_subject(trajectory)
         times = [
             trajectory.duration * k / (20 * len(trajectory.pieces))
             for k in range(20 * len(trajectory.pieces) + 1)
@@ -257,6 +257,7 @@ class ScriptedValidator:
             duration_s=subject.duration,
             valid=witness is None,
             witness=witness,
+            evidence=None if path is None else path_identity(path),
         )
 
 
@@ -302,7 +303,6 @@ class StraightLine:
             group=request.group,
             joints=request.joints,
             waypoints=(request.start, goal),
-            validation_resolution=ScriptedValidator.STEP,
         )
         if not validator.validate_path(line).valid:
             return PlanResult(
@@ -318,7 +318,6 @@ class StraightLine:
             group=request.group,
             joints=request.joints,
             waypoints=waypoints,
-            validation_resolution=ScriptedValidator.STEP,
         )
         trajectory = _triangles(request.group, waypoints, request.limits) if self.timed else None
         reports = [validator.validate_path(path)]
@@ -613,10 +612,9 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
         group=command.group,
         joints=command.joints,
         waypoints=command.positions,
-        validation_resolution=ScriptedValidator.STEP,
     )
     ready = PreparedTrajectory(
-        request=request.fingerprint(),
+        request=request,
         source=trajectory_identity(good),
         source_law=good.law,
         period_ns=PERIOD_NS,
@@ -629,6 +627,11 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
     )
     failed = json.loads(dumps(ready))
     failed["checks"][0]["passed"] = False
+    # Both reports re-bound to an unrelated snapshot: they still agree with each other,
+    # but not with the request the command was prepared for.
+    elsewhere = json.loads(dumps(ready))
+    for name in ("source_validation", "compiled_validation"):
+        elsewhere[name]["validator"]["snapshot"] = "0" * 64
     refusals = {
         "ambiguous_manipulator": _refusal(lambda: context(bimanual).manipulator()),
         "ambiguous_base": _refusal(lambda: context(description).base()),
@@ -704,6 +707,9 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
             )
         ),
         "falsely_ready": _refusal(lambda: loads(json.dumps(failed), PreparedTrajectory)),
+        "prepared_for_another_snapshot": _refusal(
+            lambda: loads(json.dumps(elsewhere), PreparedTrajectory)
+        ),
         "base_goal_unsupported": _refusal(
             lambda: negotiate(base_request, StraightLine().capabilities(base_request))
         ),
@@ -726,6 +732,7 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
         "trajectory_from_elsewhere": "request_mismatch",
         "trajectory_under_other_limits": "request_mismatch",
         "falsely_ready": "execution_unready",
+        "prepared_for_another_snapshot": "validation_mismatch",
         "base_goal_unsupported": "unsupported_goal",
     }
     assert base_request.frame == "base" and base_request.component == "turntable"

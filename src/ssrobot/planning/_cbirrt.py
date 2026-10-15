@@ -244,12 +244,10 @@ class CBiRRT:
             elif not reason.startswith(("Timeout", "Max iterations")):
                 status = PlanStatus.BACKEND_FAILURE
             return self._failure(request, status, code, reason, backend)
-        resolution = float(validator.identity.policy.resolution or 0.0)
         path = GeometricPath(
             group=request.group,
             joints=request.joints,
             waypoints=tuple(tuple(float(v) for v in q) for q in native_result.path),
-            validation_resolution=resolution,
         )
         source = native_result.trajectory
         if (
@@ -262,7 +260,7 @@ class CBiRRT:
             raise ValidationError(
                 "planner_contract", "sscbirrt timed its trajectory along another path"
             )
-        trajectory = _timed(request, source, resolution)
+        trajectory = _timed(request, source)
         return PlanResult(
             request=request,
             planner=self.name,
@@ -275,7 +273,7 @@ class CBiRRT:
             trajectory=trajectory,
             validation=(
                 validator.record(native_result.validation, path_subject(path)),
-                validator.record(source.validation, trajectory_subject(trajectory, path)),
+                validator.record(source.validation, trajectory_subject(trajectory), evidence=path),
             ),
         )
 
@@ -349,7 +347,7 @@ def _offset(
     return [end], [along]
 
 
-def _timed(request: PlanningRequest, trajectory: object, resolution: float) -> TimedTrajectory:
+def _timed(request: PlanningRequest, trajectory: object) -> TimedTrajectory:
     """The neutral record of sscbirrt's trajectory, ramp for ramp."""
     pieces = tuple(
         TrajectoryPiece(
@@ -385,7 +383,6 @@ def _timed(request: PlanningRequest, trajectory: object, resolution: float) -> T
         pieces=pieces,
         limits=request.limits,
         validated=request.constraints,
-        validation_resolution=resolution,
         producer=f"sscbirrt-{version('sscbirrt')}",
         provenance=tuple(sorted(provenance.items())),
     )

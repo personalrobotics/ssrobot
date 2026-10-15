@@ -73,6 +73,5 @@ class RestToRestProcessor:
             pieces=tuple(pieces),
             limits=limits,
             validated=tuple(sorted(self.constraints)),
-            validation_resolution=path.validation_resolution,
             producer=self.name,
         )

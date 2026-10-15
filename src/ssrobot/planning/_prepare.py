@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import numpy as np
 
@@ -24,7 +24,6 @@ from ssrobot.planning_contracts import (
     TimedTrajectory,
     TrajectoryProcessor,
     check_validation,
-    path_identity,
     path_subject,
     trajectory_identity,
     trajectory_subject,
@@ -93,7 +92,9 @@ def prepare(
     if result.trajectory is not None:
         timed = result.trajectory
         source = next(reports)
-        check_validation(source, validator=identity, subject=trajectory_subject(timed, path))
+        check_validation(
+            source, validator=identity, subject=trajectory_subject(timed), evidence=path
+        )
     elif processor is not None and path is not None:
         timed = processor.process(path, request.limits)
         source = validator.validate_trajectory(timed, path)
@@ -107,7 +108,6 @@ def prepare(
         group=command.group,
         joints=command.joints,
         waypoints=command.positions,
-        validation_resolution=timed.validation_resolution,
     )
     compiled = validator.validate_path(compiled_path)
     rows = np.array(command.positions)
@@ -152,8 +152,8 @@ def prepare(
             "execution_unready", "; ".join(f"{c.name}: {c.detail}" for c in failed)
         )
     return PreparedTrajectory(
-        request=request.fingerprint(),
-        source=trajectory_identity(timed, path),
+        request=request,
+        source=trajectory_identity(timed),
         source_law=timed.law,
         period_ns=period_ns,
         runtime_interpolation=PathInterpolation.LINEAR,
@@ -161,8 +161,53 @@ def prepare(
         checks=tuple(checks),
         source_validation=source,
         compiled_validation=compiled,
-        geometry_preserved=path is not None and path_identity(compiled_path) == path_identity(path),
+        geometry_preserved=path is not None and traces(compiled_path, path),
     )
+
+
+TRACE_TOLERANCE = 1e-9
+"""How far, in joint units, a command waypoint may be from the source path's line, and
+the path's corners from the command's waypoints, for the two to trace the same curve."""
+
+
+def traces(command: GeometricPath, source: GeometricPath) -> bool:
+    """Whether ``command`` traces exactly the curve ``source`` traces, as straight
+    lines in raw joint values: the same start and end, every corner of ``source`` one of
+    ``command``'s waypoints, and every waypoint of ``command`` on ``source``, in order,
+    never going back. Within ``TRACE_TOLERANCE``.
+
+    Only then does compiling preserve the validated geometry. Sampling a trajectory that
+    stops at every corner of its path preserves it; sampling one whose pieces leave the
+    path (a shortcut, or a blend) does not."""
+
+    def gap(a: Sequence[float], b: Sequence[float]) -> float:
+        return max(abs(x - y) for x, y in zip(a, b, strict=True))
+
+    corners = [
+        q
+        for i, q in enumerate(source.waypoints)
+        if i == 0 or gap(q, source.waypoints[i - 1]) > TRACE_TOLERANCE
+    ]
+    rows = command.waypoints
+    if len(corners) < 2 or gap(rows[0], corners[0]) > TRACE_TOLERANCE:
+        return False
+    segment, along = 0, 0.0
+    for q in rows[1:]:
+        while True:
+            a, b = corners[segment], corners[segment + 1]
+            d = [y - x for x, y in zip(a, b, strict=True)]
+            s = sum((qi - ai) * di for qi, ai, di in zip(q, a, d, strict=True)) / sum(
+                di * di for di in d
+            )
+            off = gap(q, [ai + s * di for ai, di in zip(a, d, strict=True)])
+            if off <= TRACE_TOLERANCE and along - TRACE_TOLERANCE <= s <= 1 + TRACE_TOLERANCE:
+                along = s
+                break
+            if along >= 1 - TRACE_TOLERANCE and segment + 2 < len(corners):
+                segment, along = segment + 1, 0.0  # the last waypoint was this corner
+                continue
+            return False
+    return segment == len(corners) - 2 and gap(rows[-1], corners[-1]) <= TRACE_TOLERANCE
 
 
 def _goal_gap(

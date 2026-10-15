@@ -8,6 +8,7 @@ from importlib.metadata import version
 from typing import Any
 
 import numpy as np
+from sscbirrt import ValidationReport
 from sscbirrt.trajectory import Piece, Ramp, Trajectory
 
 from ssrobot._wire import fingerprint
@@ -29,6 +30,7 @@ from ssrobot.planning_contracts import (
     check_validation,
     constraints_identity,
     motion_subject,
+    path_identity,
     path_subject,
     state_subject,
     trajectory_subject,
@@ -41,6 +43,10 @@ _FAILURES = {
     "path_constraint": ValidationFailure.PATH_CONSTRAINT,
     "unsupported": ValidationFailure.UNSUPPORTED_MOTION,
 }
+
+_LAW = "piecewise_constant_acceleration"
+"""The law sscbirrt reports for a timed trajectory: ssrobot's
+``TimingLaw.PIECEWISE_CONSTANT_ACCELERATION``."""
 
 DURATION_AGREEMENT = 1e-9
 """How far, in seconds, sscbirrt's trajectory duration may differ from ssrobot's own sum
@@ -116,7 +122,7 @@ class SscbirrtValidator:
     def validate_trajectory(
         self, trajectory: TimedTrajectory, path: GeometricPath | None = None
     ) -> MotionValidation:
-        subject = trajectory_subject(trajectory, path)
+        subject = trajectory_subject(trajectory)
         native = Trajectory(
             pieces=[
                 Piece(
@@ -137,49 +143,86 @@ class SscbirrtValidator:
             joint_names=trajectory.joints,
             path=None if path is None else [np.array(q) for q in path.waypoints],
         )
-        return self.record(self._validator.validate_trajectory(native), subject)
+        return self.record(self._validator.validate_trajectory(native), subject, evidence=path)
 
-    def record(self, report: Any, subject: MotionSubject | TrajectorySubject) -> MotionValidation:
-        """ssrobot's record of an sscbirrt report about ``subject``, checked against it:
-        for the planner's own reports, ``PlanResult.validation`` and
-        ``Trajectory.validation``, as well as this validator's answers."""
+    def record(
+        self,
+        report: Any,
+        subject: MotionSubject | TrajectorySubject,
+        evidence: GeometricPath | None = None,
+    ) -> MotionValidation:
+        """ssrobot's record of an sscbirrt report about ``subject``, validated field by
+        field before it is translated: for the planner's own reports
+        (``PlanResult.validation``, ``Trajectory.validation``) as well as this
+        validator's answers. A report that disagrees with the subject, the policy, or its
+        own types is refused (``planner_contract``), never relabelled."""
+
+        def refuse(message: str) -> ValidationError:
+            return ValidationError("planner_contract", f"sscbirrt's report {message}")
+
+        if not isinstance(report, ValidationReport):
+            raise refuse(f"is a {type(report).__name__}, not a ValidationReport")
+        for name, kind_of in (("valid", bool), ("intervals", int), ("checks", int)):
+            value = getattr(report, name)
+            if not isinstance(value, kind_of) or (kind_of is int and isinstance(value, bool)):
+                raise refuse(f"has a malformed {name}: {value!r}")
         if f"{report.implementation} {report.backend}" != self._implementation:
-            raise ValidationError(
-                "planner_contract",
-                f"{report.implementation} on {report.backend} answered for {self._implementation}",
-            )
+            raise refuse(f"is from {report.implementation} on {report.backend}")
+        if policy(report.policy) != self._identity.policy:
+            raise refuse("applies another policy than this validator's")
         timed = isinstance(subject, TrajectorySubject)
+        kind = ValidationSubject.TRAJECTORY if timed else subject.kind  # type: ignore[union-attr]
+        if report.subject != kind.value:
+            raise refuse(f"is about a {report.subject}, not a {kind.value}")
+        linear = kind in (ValidationSubject.MOTION, ValidationSubject.PATH)
+        if report.interpolation != ("raw_linear" if linear else None):
+            raise refuse(f"interpolates {report.interpolation!r}")
+        if report.law != (_LAW if timed else None):
+            raise refuse(f"has the law {report.law!r}")
         if timed:
             assert isinstance(subject, TrajectorySubject)
+            expected_intervals = len(subject.pieces)
             duration: float | None = subject.duration
-            if report.duration_s is None or abs(report.duration_s - subject.duration) > (
-                DURATION_AGREEMENT
+            if (
+                not isinstance(report.duration_s, float)
+                or abs(report.duration_s - subject.duration) > DURATION_AGREEMENT
             ):
-                raise ValidationError(
-                    "planner_contract",
-                    f"sscbirrt timed the trajectory at {report.duration_s} s, "
-                    f"not {subject.duration} s",
-                )
-            kind = ValidationSubject.TRAJECTORY
+                raise refuse(f"times it at {report.duration_s} s, not {subject.duration} s")
         else:
             assert isinstance(subject, MotionSubject)
-            duration, kind = None, subject.kind
+            expected_intervals = len(subject.waypoints) - 1
+            duration = None
+            if report.duration_s is not None:
+                raise refuse("has a duration for an untimed subject")
+        if report.intervals != expected_intervals:
+            raise refuse(f"counts {report.intervals} intervals, not {expected_intervals}")
+        if report.valid != (report.witness is None):
+            raise refuse("has a witness exactly when it is valid")
+        if evidence is not None and not timed:
+            raise refuse("cannot cite a path as evidence for an untimed subject")
         record = MotionValidation(
             subject=kind,
             motion=fingerprint(subject),
-            interpolation=None if timed else getattr(subject, "interpolation", None),
+            interpolation=PathInterpolation.LINEAR if linear else None,
             law=subject.law if isinstance(subject, TrajectorySubject) else None,
-            intervals=int(report.intervals),
+            intervals=report.intervals,
             duration_s=duration,
             validator=self._identity,
-            valid=bool(report.valid),
+            valid=report.valid,
             witness=None if report.witness is None else self._witness(report.witness, kind),
-            checks=int(report.checks),
+            checks=report.checks,
+            evidence=None if evidence is None else path_identity(evidence),
         )
-        check_validation(record, validator=self._identity, subject=subject)
+        check_validation(record, validator=self._identity, subject=subject, evidence=evidence)
         return record
 
     def _witness(self, witness: Any, kind: ValidationSubject) -> InvalidWitness:
+        if witness.failure not in _FAILURES or len(witness.configuration) != len(self._joints):
+            raise ValidationError(
+                "planner_contract",
+                f"sscbirrt's witness is malformed: {witness.failure!r}, "
+                f"{len(witness.configuration)} values for {len(self._joints)} joints",
+            )
         configuration = tuple(float(v) for v in witness.configuration)
         failure = _FAILURES[witness.failure]
         linear = kind in (ValidationSubject.MOTION, ValidationSubject.PATH)
