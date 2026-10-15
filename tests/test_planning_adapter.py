@@ -40,16 +40,19 @@ from ssrobot import (
     SsrobotError,
     TimedTrajectory,
     TraceKind,
+    TraceRecord,
     TrajectoryContract,
     TrajectoryInterpolation,
     Tsr,
     dumps,
     load_package,
     loads,
+    prepare,
     read_trace,
 )
+from ssrobot._wire import fingerprint
 from ssrobot.mujoco import MujocoRuntime
-from ssrobot.planning import CBiRRT, RestToRestProcessor, SsikKinematics, prepare
+from ssrobot.planning import CBiRRT, RestToRestProcessor, SsikKinematics
 from ssrobot.planning_contracts import (
     ValidationFailure,
     path_identity,
@@ -99,17 +102,19 @@ def _carry(out: Path) -> dict[str, Any]:
     description = package.description
     planner = CBiRRT(description)
     report: dict[str, Any] = {}
+    records: list[TraceRecord] = []
     with (
         JsonlTrace(out / "trace.jsonl") as trace,
         RobotContext(
-            description, MujocoRuntime(package, scene=SCENE, **OPTIONS), sinks=[trace]
+            description,
+            MujocoRuntime(package, scene=SCENE, **OPTIONS),
+            sinks=[trace, records.append],
         ) as ctx,
     ):
         _hold(ctx)
         arm = ctx.manipulator()
         for name, goal in (("lift", ABOVE), ("carry", ASIDE)):
             snapshot = ctx.snapshot()
-            # The plan carries its request: it goes straight to preparation.
             result = arm.plan_to_configuration(
                 goal,
                 snapshot=snapshot,
@@ -117,17 +122,21 @@ def _carry(out: Path) -> dict[str, Any]:
                 velocity_scaling=0.5,
                 acceleration_scaling=0.5,
             )
+            # One call: compiled for this runtime's contract, validated, and submitted.
+            execution = ctx.execute(result, planner=planner)
+            status = ctx.run_until(execution, max_ticks=5_000)
+            ready = [r.payload for r in records if r.kind is TraceKind.COMPILED][-1]
+            assert isinstance(ready, PreparedTrajectory)
+            # Offline compilation of the same inputs gives the same artifact.
             scene = ctx.planning_scene(snapshot, arm.group)
             validator = planner.validator(result.request, scene)
-            # Compiled for the contract this runtime declared, not one the caller chose.
-            ready = prepare(
+            offline = prepare(
                 result,
                 scene,
                 validator=validator,
                 description=description,
                 contract=ctx.trajectory_contract,
             )
-            assert ready.contract == ctx.info.trajectory
             assert result.path is not None and result.trajectory is not None
             # The same validator answers the same way through the public call.
             assert validator.validate_path(result.path) == result.validation[0]
@@ -135,12 +144,30 @@ def _carry(out: Path) -> dict[str, Any]:
                 validator.validate_trajectory(result.trajectory, result.path)
                 == result.validation[1]
             )
-            execution = ctx.submit(ready.command, snapshot=snapshot, source="planner")
-            status = ctx.run_until(execution, max_ticks=5_000)
             report[name] = _case(out, name, result, ready)
+            report[name]["offline_identical"] = offline == ready
+            report[name]["linked"] = {
+                "contract": ready.contract == ctx.info.trajectory,
+                "snapshot": execution.submission.snapshot == snapshot.fingerprint(),
+                "prepared": execution.submission.prepared == fingerprint(ready),
+                "command": execution.command == ready.command,
+            }
             report[name]["execution"] = status.state.value
             report[name]["reached"] = [round(v, 2) for v in _arm(ctx)]
         report["held"] = [a.held for a in ctx.scene.attachments]
+
+        # Once the scene changes, the carry's snapshot is stale: refused before submitting.
+        def submitted() -> int:
+            return sum(r.kind is TraceKind.SUBMITTED for r in records)
+
+        before = submitted()
+        ctx.detach("box")
+        try:
+            ctx.execute(result, planner=planner)
+            report["after_scene_change"] = "accepted"
+        except SsrobotError as error:
+            report["after_scene_change"] = error.code
+        report["submitted_after_refusal"] = submitted() - before
     report["violations"] = sum(
         r.kind is TraceKind.VIOLATION for r in read_trace(out / "trace.jsonl")
     )
@@ -180,7 +207,108 @@ def test_sscbirrt_plans_a_carry_that_executes(artifacts: Path, tmp_path: Path) -
         assert prepared.source_validation == result.validation[1]
         assert prepared.compiled_validation.validator == prepared.source_validation.validator
         assert not prepared.geometry_preserved  # 2 ms chords are a new motion
+        assert case["offline_identical"] and all(case["linked"].values())
     assert report["held"] == [True] and report["violations"] == 0
+    assert report["after_scene_change"] == "stale_snapshot"
+    assert report["submitted_after_refusal"] == 0
+
+
+def _forgeries(out: Path) -> dict[str, Any]:
+    """Plans whose embedded request was altered after planning, executed and compiled
+    against this context's own captured snapshot. Each must be refused before anything
+    is submitted."""
+    package = load_package(PACKAGE)
+    description = package.description
+    planner = CBiRRT(description)
+    report: dict[str, Any] = {}
+    submitted: list[TraceRecord] = []
+
+    def keep(r: TraceRecord) -> None:
+        if r.kind is TraceKind.SUBMITTED:
+            submitted.append(r)
+
+    with RobotContext(
+        description, MujocoRuntime(package, scene=SCENE, **OPTIONS), sinks=[keep]
+    ) as ctx:
+        arm = ctx.manipulator()
+        snapshot = ctx.snapshot()
+        to_a, to_b = (
+            arm.plan_to_configuration(goal, snapshot=snapshot, planner=planner)
+            for goal in (ABOVE, ASIDE)
+        )
+        scene = ctx.planning_scene(snapshot, arm.group)
+        for_a = planner.validator(to_a.request, scene)
+        for_b = planner.validator(to_b.request, scene)
+
+        def forged(**fields: Any) -> PlanResult:
+            return dataclasses.replace(to_a, request=dataclasses.replace(to_a.request, **fields))
+
+        def compile_with(result: Any, validator: Any) -> Any:
+            return prepare(
+                result,
+                scene,
+                validator=validator,
+                description=description,
+                contract=ctx.trajectory_contract,
+            )
+
+        report["execute"] = {
+            "another_robot": _code(
+                lambda: ctx.execute(forged(robot="another_robot"), planner=planner)
+            ),
+            "another_description": _code(
+                lambda: ctx.execute(forged(description="0" * 64), planner=planner)
+            ),
+            "another_revision": _code(
+                lambda: ctx.execute(forged(revision=snapshot.revision + 1), planner=planner)
+            ),
+            "another_start": _code(
+                lambda: ctx.execute(
+                    forged(start=tuple(q + 0.1 for q in to_a.request.start)), planner=planner
+                )
+            ),
+            # B's plan relabelled with A's goal: its reports are bound to B's goal.
+            "another_goal": _code(
+                lambda: ctx.execute(
+                    dataclasses.replace(
+                        to_b, request=dataclasses.replace(to_b.request, goal=to_a.request.goal)
+                    ),
+                    planner=planner,
+                )
+            ),
+        }
+        report["prepare"] = {
+            "not_a_plan": _code(lambda: compile_with(object(), for_b)),
+            # A's plan with B's validator: same scene and constraints, another goal.
+            "validator_for_another_goal": _code(lambda: compile_with(to_a, for_b)),
+            "another_robot": _code(lambda: compile_with(forged(robot="another_robot"), for_a)),
+        }
+        report["submitted"] = len(submitted)
+        # The genuine plan still executes.
+        report["genuine"] = ctx.run_until(
+            ctx.execute(to_a, planner=planner), max_ticks=5_000
+        ).state.value
+    (out / "forgeries.json").write_text(json.dumps(report, indent=2) + "\n")
+    return report
+
+
+def test_execute_refuses_requests_this_context_did_not_build(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    """A plan's request comes from outside the context: execution and compilation hold
+    it to this description, this snapshot, and the validator's goal."""
+    report = _forgeries(artifacts)
+    _forgeries(tmp_path)
+    assert (artifacts / "forgeries.json").read_bytes() == (tmp_path / "forgeries.json").read_bytes()
+    assert set(report["execute"].values()) <= {"request_mismatch", "validation_mismatch"}
+    assert report["execute"]["another_robot"] == "request_mismatch"
+    assert report["execute"]["another_goal"] == "validation_mismatch"
+    assert report["prepare"] == {
+        "not_a_plan": "wrong_type",
+        "validator_for_another_goal": "validation_mismatch",
+        "another_robot": "request_mismatch",
+    }
+    assert report["submitted"] == 0 and report["genuine"] == "succeeded"
 
 
 def _paths(out: Path) -> dict[str, Any]:

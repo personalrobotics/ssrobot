@@ -114,6 +114,7 @@ from ssrobot.planning_contracts import (
     Tsr,
     TsrGoal,
 )
+from ssrobot.preparation import prepare
 from ssrobot.replay import ReplayRuntime, ReplayScript, ReplayTick
 from ssrobot.resources import ResolvedFile, SourceItem
 from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime, SnapshotRuntime
@@ -255,5 +256,6 @@ __all__ = [
     "load_installed_package",
     "load_package",
     "loads",
+    "prepare",
     "read_trace",
 ]

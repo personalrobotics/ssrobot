@@ -793,16 +793,7 @@ class PlanResult(Record):
                 raise ValidationError(
                     "validation_mismatch", "the reports come from different validators", path=path
                 )
-            if (
-                validator.snapshot != request.snapshot
-                or (validator.group, validator.joints) != (request.group, request.joints)
-                or validator.constraints != constraints_identity(request)
-            ):
-                raise ValidationError(
-                    "validation_mismatch",
-                    "the validator is bound to another snapshot, group, or constraints",
-                    path=f"{path}.validator",
-                )
+            check_bound(validator, request, path=f"{path}.validator")
             try:
                 check_subject(report, subject)
             except ValidationError as e:
@@ -1013,11 +1004,14 @@ class ValidatorIdentity(Value):
     constraints: str = field(
         metadata=meta("Fingerprint of the constraints it applies; see constraints_identity.")
     )
+    goal: str = field(
+        metadata=meta("Fingerprint of the goal its goal_distance measures; see goal_identity.")
+    )
 
     def _validate(self) -> None:
         check_name(self.implementation, path="implementation")
         check_name(self.group, path="group")
-        for name in ("snapshot", "constraints"):
+        for name in ("snapshot", "constraints", "goal"):
             if not _FINGERPRINT.fullmatch(getattr(self, name)):
                 raise ValidationError(
                     "invalid_fingerprint", f"{name} must be a SHA-256 hex digest", path=name
@@ -1267,6 +1261,14 @@ class MotionValidator(Protocol):
         states, recorded as the report's ``evidence``, never as part of the subject."""
         ...
 
+    def goal_distance(self, q: Sequence[float]) -> float:
+        """How far ``q`` is from the request's goal, with the goal as planning lowered
+        it: for a configuration goal, the largest joint gap to the nearest goal
+        configuration, continuous joints modulo a turn; for a region, the distance to the
+        nearest goal region. 0 inside the goal; never negative. The goal is the one
+        ``identity.goal`` names (``goal_identity``)."""
+        ...
+
 
 def _check_subject_joints(group: str, joints: tuple[str, ...]) -> None:
     check_name(group, path="group")
@@ -1453,6 +1455,77 @@ def trajectory_identity(trajectory: TimedTrajectory) -> str:
     return fingerprint(trajectory_subject(trajectory))
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GoalSet(Value):
+    """What a validator's ``goal_distance`` measures: the goal, and what fixes how it is
+    lowered (the description, the component whose tool frame is the default, and the
+    frame). Two requests with the same goal set have the same goal distances."""
+
+    description: str = field(metadata=meta("Fingerprint of the robot description."))
+    component: str = field(metadata=meta("The manipulator or mobile base that moves."))
+    frame: str | None = field(default=None, metadata=meta("The goal frame, if any."))
+    goal: Goal = field(metadata=meta("What to reach."))
+
+
+def goal_identity(request: PlanningRequest) -> str:
+    """The goal a validator for ``request`` measures distance from."""
+    return fingerprint(
+        GoalSet(
+            description=request.description,
+            component=request.component,
+            frame=request.frame,
+            goal=request.goal,
+        )
+    )
+
+
+def check_bound(validator: ValidatorIdentity, request: PlanningRequest, *, path: str) -> None:
+    """Refuse a validator bound to another snapshot, group, constraints, or goal than
+    ``request``: its answers would be about another problem (``validation_mismatch``)."""
+    if (
+        validator.snapshot != request.snapshot
+        or (validator.group, validator.joints) != (request.group, request.joints)
+        or validator.constraints != constraints_identity(request)
+        or validator.goal != goal_identity(request)
+    ):
+        raise ValidationError(
+            "validation_mismatch",
+            "the validator is bound to another snapshot, group, constraints, or goal than "
+            "the request",
+            path=path,
+        )
+
+
+def check_planned_in(
+    request: PlanningRequest, description: RobotDescription, snapshot: SceneSnapshot
+) -> None:
+    """Refuse a request that ``build_request`` would not have built from ``description``
+    and ``snapshot``: another robot or description, another snapshot or revision, a
+    group's joints other than the description's, or a start other than the snapshot's
+    positions (``request_mismatch``). A plan's request arrives from outside the context;
+    copying a snapshot's fingerprint into it proves nothing else."""
+
+    def refuse(what: str, path: str) -> ValidationError:
+        return ValidationError(
+            "request_mismatch", f"the request's {what} is not this robot's or snapshot's", path=path
+        )
+
+    if not isinstance(request, PlanningRequest):
+        raise ValidationError("wrong_type", "the request must be a PlanningRequest")
+    if request.robot != description.name:
+        raise refuse("robot", "request.robot")
+    if request.description != description.fingerprint() or (
+        snapshot.description != request.description
+    ):
+        raise refuse("description", "request.description")
+    if request.snapshot != snapshot.fingerprint() or request.revision != snapshot.revision:
+        raise refuse("snapshot", "request.snapshot")
+    if request.joints != description.component_joints(request.group):
+        raise refuse("joints", "request.joints")
+    if request.start != tuple(snapshot.position(j) for j in request.joints):
+        raise refuse("start", "request.start")
+
+
 def constraints_identity(request: PlanningRequest) -> str:
     """The constraints a validator for ``request`` enforces."""
     offset = request.goal if isinstance(request.goal, OffsetGoal) else None
@@ -1532,18 +1605,8 @@ class PreparedTrajectory(Record):
                 "both motions must be validated by one validator",
                 path="compiled_validation.validator",
             )
-        request, validator = self.request, source.validator
-        if (
-            validator.snapshot != request.snapshot
-            or (validator.group, validator.joints) != (request.group, request.joints)
-            or validator.constraints != constraints_identity(request)
-        ):
-            raise ValidationError(
-                "validation_mismatch",
-                "the validator is bound to another snapshot, group, or constraints than the "
-                "request",
-                path="source_validation.validator",
-            )
+        request = self.request
+        check_bound(source.validator, request, path="source_validation.validator")
         if (self.command.group, self.command.joints) != (request.group, request.joints):
             raise ValidationError(
                 "joint_mismatch", "the command moves other joints than the request", path="command"

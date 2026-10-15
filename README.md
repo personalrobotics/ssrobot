@@ -64,13 +64,14 @@ since changed. [docs/mujoco.md](docs/mujoco.md) describes what it binds and how 
 ### Planning
 
 With the `planning` extra as well, sscbirrt plans in a snapshot and times the motion
-under the arm's velocity and acceleration limits. `prepare` samples it for the control
-tick and has the planner's own validator check the command before it runs:
+under the arm's velocity and acceleration limits. `ctx.execute` compiles the plan for
+the runtime's declared trajectory contract, has the planner's own validator check the
+command, and submits it only if every check passes:
 
 ```python
 import ssrobot
 from ssrobot.mujoco import MujocoRuntime
-from ssrobot.planning import CBiRRT, prepare
+from ssrobot.planning import CBiRRT
 
 package = ssrobot.load_package("examples/packages/mujoco_arm")
 runtime = MujocoRuntime(package, scene="examples/scenes/pedestal.xml")
@@ -81,11 +82,8 @@ with ssrobot.RobotContext(package.description, runtime) as ctx:
     plan = arm.plan_to_configuration(
         (-0.6, -0.4, 0.0), snapshot=snapshot, planner=planner, velocity_scaling=0.5
     )                                                        # carries its request
-    scene = ctx.planning_scene(snapshot, arm.group)
-    validator = planner.validator(plan.request, scene)       # the one the plan was checked by
-    ready = prepare(plan, scene, validator=validator, description=package.description,
-                    contract=ctx.trajectory_contract)        # what this runtime executes
-    status = ctx.run_until(ctx.submit(ready.command, snapshot=snapshot), max_ticks=5_000)
+    execution = ctx.execute(plan, planner=planner)           # compile, validate, submit
+    status = ctx.run_until(execution, max_ticks=5_000)
     print(status.state.value, plan.backend, round(plan.trajectory.duration, 2), "s")
 ```
 

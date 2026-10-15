@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.Submission v1",
+  "title": "ssrobot.Submission v2",
   "$ref": "#/$defs/Submission",
   "$defs": {
     "ActionChunk": {
@@ -317,7 +317,7 @@
           "const": "ssrobot.Submission"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "execution": {
           "type": "string",
@@ -368,6 +368,17 @@
             }
           ],
           "description": "Fingerprint of the snapshot the command was planned on, if given."
+        },
+        "prepared": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the PreparedTrajectory the command was compiled as, when RobotContext.execute submitted it; the trace's preceding compiled record."
         }
       },
       "required": [

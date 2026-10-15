@@ -142,6 +142,7 @@ class IntervalWorld:
             group=GROUP,
             joints=JOINTS,
             constraints=_digest("interval-world constraints"),
+            goal=_digest("interval-world goal"),
         )
 
     @property
