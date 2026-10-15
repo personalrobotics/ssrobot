@@ -68,6 +68,19 @@ under the arm's velocity and acceleration limits. `ctx.execute` compiles the pla
 the runtime's declared trajectory contract, has the planner's own validator check the
 command, and submits it only if every check passes:
 
+| Goal | Public call |
+| --- | --- |
+| One joint configuration, or any of several alternatives | `plan_to_configuration`, `plan_to_configurations` |
+| A selected tool or other frame at a pose | `plan_to_end_effector_pose` |
+| A straight Cartesian approach or retreat inside a constrained corridor | `plan_to_end_effector_offset` |
+| Any pose in one or more task-space regions | `plan_to_tsr` |
+| Any of the above while a frame remains in task-space regions along the path | the call's `path_constraint` option |
+
+The request may select the controlled frame, scale velocity and acceleration, and set a
+timeout and random seed. Declared attachments move with the robot during collision
+checking, so the same calls plan while carrying an object and apply its contact
+allowances.
+
 ```python
 import ssrobot
 from ssrobot.mujoco import MujocoRuntime
@@ -90,8 +103,10 @@ with ssrobot.RobotContext(package.description, runtime) as ctx:
 `SsikKinematics.from_package(package, "right_arm")` adds pose, offset, and TSR goals for
 a 6- or 7-joint arm. A plan made before the scene changed (an object attached or
 detached) is refused with `stale_snapshot`, and the trace links each execution to the
-compiled command and validation evidence it ran. [docs/planning.md](docs/planning.md)
-describes the adapter and the checks.
+compiled command and validation evidence it ran. The validation guarantee is discrete:
+`CBiRRTConfig.edge_resolution` is the user-selected largest joint-space distance between
+checked states, and nothing is claimed between them. [docs/planning.md](docs/planning.md)
+describes the adapter, validation policy, and checks.
 
 The two reference robots, Geodude and ADA (Kinova JACO), run one planning scenario from
 their installed packages in CI: the same function plans to a task space region and to a
@@ -100,10 +115,13 @@ robot-specific code. See *Reference robots* in [docs/packages.md](docs/packages.
 
 ## Target v0.1
 
-Planning (M3) works in simulation, apart from isolated and parallel planner execution
-(#23). Object state channels (the rest of M2) and policies (M4) are not implemented
-yet. The policy-only and hybrid examples in [docs/architecture.md](docs/architecture.md)
-show the target v0.1 behavior.
+Core arm planning works in simulation. M3's remaining work is isolated and parallel
+planner execution (#23), jointed tools (#121), and force-guarded trajectory execution
+(#124). The neutral contracts include base-pose requests and allow other planner
+adapters, but end-to-end base planning, coupled bimanual planning, and an adapter other
+than CBiRRT are not implemented. Object state channels (the rest of M2) and policies
+(M4) are not implemented yet. The policy-only and hybrid examples in
+[docs/architecture.md](docs/architecture.md) show the target v0.1 behavior.
 
 ## Documentation
 
