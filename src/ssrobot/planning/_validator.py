@@ -55,6 +55,10 @@ of the same pieces before the report is refused."""
 
 def policy(source: Any) -> ValidationPolicy:
     """ssrobot's record of sscbirrt's user-selected joint-resolution policy."""
+    if getattr(source, "ambiguity_band_m", 0.0) != 0.0:
+        raise ValidationError(
+            "planner_contract", "sscbirrt's validation policy has a nonzero ambiguity band"
+        )
     return ValidationPolicy(
         name=source.name,
         mechanism=source.mechanism,

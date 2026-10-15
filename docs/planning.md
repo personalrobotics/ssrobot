@@ -123,7 +123,8 @@ so it validates only the velocity and acceleration limits.
 or constraint check of its own.
 - **Identity.** It records sscbirrt's version and backend as the implementation
   (`sscbirrt 3.9.0 native`), the user-selected resolution and mechanism parameters, and
-  the request's snapshot, group, and `constraints_identity`.
+  the request's snapshot, group, and `constraints_identity`. An upstream policy with a
+  nonzero ambiguity band is refused rather than silently reduced to this contract.
 - **Witnesses.** Contacts come from the planning scene's state query, so they carry
   ssrobot's names.
 - **The planner's own reports.** `PlanResult.validation` and `Trajectory.validation`

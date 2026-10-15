@@ -16,6 +16,7 @@ import math
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import mujoco
@@ -479,6 +480,15 @@ def test_evidence_is_bound_not_relabelled(artifacts: Path) -> None:
             group=arm.group, joints=shortcut.request.joints, waypoints=shortcut.path.waypoints[:2]
         )
         upstream = native.validate_path([np.array(q) for q in straight.waypoints])
+        future_policy = SimpleNamespace(
+            name=upstream.policy.name,
+            mechanism=upstream.policy.mechanism,
+            guarantee=upstream.policy.guarantee,
+            resolution=upstream.policy.resolution,
+            ambiguity_band_m=0.001,
+            parameters=upstream.policy.parameters,
+            summary=upstream.policy.summary,
+        )
         relabelled = {
             "as_a_state": _code(
                 lambda: validator.record(
@@ -489,6 +499,11 @@ def test_evidence_is_bound_not_relabelled(artifacts: Path) -> None:
                 lambda: validator.record(
                     dataclasses.replace(upstream, policy=sscbirrt.ValidationPolicy(resolution=0.9)),
                     path_subject(straight),
+                )
+            ),
+            "with_an_unsupported_ambiguity_band": _code(
+                lambda: validator.record(
+                    dataclasses.replace(upstream, policy=future_policy), path_subject(straight)
                 )
             ),
             "with_another_interval_count": _code(
@@ -538,6 +553,7 @@ def test_evidence_is_bound_not_relabelled(artifacts: Path) -> None:
     assert relabelled == {
         "as_a_state": "planner_contract",
         "under_another_policy": "planner_contract",
+        "with_an_unsupported_ambiguity_band": "planner_contract",
         "with_another_interval_count": "planner_contract",
     }
     assert report["geometry_preserved"] == {
