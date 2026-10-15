@@ -187,7 +187,6 @@
             "position_limits",
             "collision",
             "path_constraint",
-            "ambiguous",
             "unsupported_motion"
           ],
           "description": "What failed."
@@ -987,37 +986,8 @@
               "type": "null"
             }
           ],
-          "description": "Largest joint step between checked states.",
+          "description": "Largest joint-space step between checked states; required for a discrete policy.",
           "x-unit": "joint"
-        },
-        "workspace_step_m": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Largest workspace motion between checked states.",
-          "x-unit": "m"
-        },
-        "clearance_m": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Clearance every checked state keeps.",
-          "x-unit": "m"
-        },
-        "ambiguity_band_m": {
-          "type": "number",
-          "description": "Distances within this band of a contact are refused.",
-          "x-unit": "m"
         },
         "parameters": {
           "type": "array",
@@ -1046,7 +1016,6 @@
         "name",
         "mechanism",
         "guarantee",
-        "ambiguity_band_m",
         "summary"
       ],
       "additionalProperties": false

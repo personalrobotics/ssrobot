@@ -54,13 +54,12 @@ of the same pieces before the report is refused."""
 
 
 def policy(source: Any) -> ValidationPolicy:
-    """ssrobot's record of an sscbirrt ``ValidationPolicy``, every setting included."""
+    """ssrobot's record of sscbirrt's user-selected joint-resolution policy."""
     return ValidationPolicy(
         name=source.name,
         mechanism=source.mechanism,
         guarantee=ValidationGuarantee(source.guarantee),
         resolution=float(source.resolution),
-        ambiguity_band_m=float(source.ambiguity_band_m),
         parameters=tuple(sorted((str(k), str(v)) for k, v in source.parameters)),
         summary=source.summary,
     )
