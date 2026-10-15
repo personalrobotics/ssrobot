@@ -76,6 +76,11 @@ command, and submits it only if every check passes:
 | Any pose in one or more task-space regions | `plan_to_tsr` |
 | Any of the above while a frame remains in task-space regions along the path | the call's `path_constraint` option |
 
+Pose, offset, and TSR goals, and path constraints, need kinematics for the arm:
+`CBiRRT(description, kinematics=SsikKinematics.from_package(package, arm))`. Without
+it, `CBiRRT` offers configuration goals only, and any other goal is refused at
+negotiation (`unsupported_goal`).
+
 The request may select the controlled frame, scale velocity and acceleration, and set a
 timeout and random seed. Declared attachments move with the robot during collision
 checking, so the same calls plan while carrying an object and apply its contact
