@@ -58,8 +58,8 @@ It also observes joint state and effort, frame poses, wrenches, and camera image
 without changing physics: friction alone holds the object, and a slip is reported.
 `ctx.snapshot()` freezes the world, and `ctx.planning_scene(snapshot, "arm")` answers a
 planner's collision and kinematics queries on that copy, built on sscbirrt's native
-MuJoCo checker. `ctx.submit(plan, snapshot=snapshot)` refuses a plan whose scene has
-since changed. [docs/mujoco.md](docs/mujoco.md) describes what it binds and how commands run.
+MuJoCo checker. `ctx.submit(command, snapshot=snapshot)` refuses a command planned on a
+snapshot whose scene has since changed. [docs/mujoco.md](docs/mujoco.md) describes what it binds and how commands run.
 
 ### Planning
 
@@ -88,13 +88,22 @@ with ssrobot.RobotContext(package.description, runtime) as ctx:
 ```
 
 `SsikKinematics.from_package(package, "right_arm")` adds pose, offset, and TSR goals for
-a 6- or 7-joint arm. [docs/planning.md](docs/planning.md) describes the adapter and the
-checks.
+a 6- or 7-joint arm. A plan made before the scene changed (an object attached or
+detached) is refused with `stale_snapshot`, and the trace links each execution to the
+compiled command and validation evidence it ran. [docs/planning.md](docs/planning.md)
+describes the adapter and the checks.
+
+The two reference robots, Geodude and ADA (Kinova JACO), run one planning scenario from
+their installed packages in CI: the same function plans to a task space region and to a
+named configuration, executes both, and is byte-identical across two runs, with no
+robot-specific code. See *Reference robots* in [docs/packages.md](docs/packages.md).
 
 ## Target v0.1
 
-Object state channels (M2), planning (M3), and policies (M4) are not implemented yet. The planning-only, policy-only, and hybrid examples in
-[docs/architecture.md](docs/architecture.md) show the target v0.1 behavior.
+Planning (M3) works in simulation, apart from isolated and parallel planner execution
+(#23). Object state channels (the rest of M2) and policies (M4) are not implemented
+yet. The policy-only and hybrid examples in [docs/architecture.md](docs/architecture.md)
+show the target v0.1 behavior.
 
 ## Documentation
 
@@ -103,4 +112,5 @@ non-goals, status, and the architecture decisions that bind v0.1, and
 [docs/contracts.md](docs/contracts.md) for the implemented public types, conventions,
 and wire schemas. [docs/packages.md](docs/packages.md) describes portable robot
 packages, and [docs/authoring.md](docs/authoring.md) shows how to create one from a
-model file with `ssrobot init`.
+model file with `ssrobot init`. [docs/mujoco.md](docs/mujoco.md) covers `MujocoRuntime`,
+and [docs/planning.md](docs/planning.md) the planning adapter and executing plans.
