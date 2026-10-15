@@ -14,7 +14,7 @@ uv add "ssrobot[mujoco,planning]"
 | `CBiRRT(description, *, kinematics=None, config=None, backend="auto")` | A `Planner`: sscbirrt's constrained bidirectional RRT, timed by sscbirrt |
 | `SsikKinematics.from_package(package, manipulator)` | Analytic IK for one manipulator from the package's canonical MJCF |
 | `CBiRRT.validator(request, scene)` | The `MotionValidator` the planner applies to `request`: an `SscbirrtValidator` over sscbirrt's public `Validator` |
-| `prepare(result, scene, *, validator, description, period_ns, processor=None, tolerance=1e-3)` | The runtime command for a plan, its motions validated by `validator` and its readiness checked: a `PreparedTrajectory` |
+| `prepare(result, scene, *, validator, description, contract, processor=None, tolerance=1e-3)` | The runtime command for a plan, its motions validated by `validator` and its readiness checked: a `PreparedTrajectory` |
 | `RestToRestProcessor()` | A path-preserving `TrajectoryProcessor` for a plan that has only a path |
 
 The adapter depends only on the neutral `PlanningScene`, never on `MujocoRuntime` or a
@@ -145,8 +145,10 @@ works as follows:
   exactly the plan's path and trajectory. A path-only result needs `processor`, and
   fails with `untimed_result` without one. The processed trajectory is then validated by
   the same validator.
-- **Compiling.** It samples the trajectory every `period_ns` (`TimedTrajectory.sample`).
-  The runtime executes the command as straight lines between those samples, which is a
+- **Compiling.** It samples the trajectory every `contract.period_ns`
+  (`TimedTrajectory.sample`), where `contract` is the runtime's `TrajectoryContract`,
+  usually `ctx.trajectory_contract`. The runtime executes the command as straight lines
+  between those samples (the contract's `linear` interpolation), which is a
   new motion, so the same validator validates the command as a linear path
   (`compiled_validation`). `geometry_preserved` is true only if the command traces
   exactly the source path's curve (`traces`). That means the same endpoints, every

@@ -6,7 +6,7 @@ import enum
 import itertools
 from dataclasses import dataclass, field
 
-from ssrobot._wire import Record, meta
+from ssrobot._wire import Record, Value, meta
 from ssrobot.conventions import Timestamp, check_name
 from ssrobot.errors import ValidationError
 
@@ -160,6 +160,34 @@ class JointTrajectory(Record):
                 )
             for i, row in enumerate(table):
                 _check_row(row, self.joints, f"{name}[{i}]")
+
+
+class TrajectoryInterpolation(enum.StrEnum):
+    """How a runtime moves between a ``JointTrajectory``'s waypoints."""
+
+    LINEAR = "linear"
+    """Straight lines in raw joint values between consecutive waypoints; continuous
+    joints are not wrapped."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TrajectoryContract(Value):
+    """How a runtime executes a ``JointTrajectory``: the trajectory-execution contract a
+    timed plan is compiled for. Its waypoints are ``period_ns`` apart, and the runtime
+    moves between them by ``interpolation``. This is what the runtime accepts, not its
+    internal servo rate."""
+
+    period_ns: int = field(metadata=meta("Time between waypoints.", unit="ns"))
+    interpolation: TrajectoryInterpolation = field(
+        metadata=meta("How the runtime moves between waypoints.")
+    )
+    fixed_period: bool = field(
+        metadata=meta("Whether the period holds for the lifetime of the context.")
+    )
+
+    def _validate(self) -> None:
+        if self.period_ns <= 0:
+            raise ValidationError("out_of_limits", "period_ns must be positive", path="period_ns")
 
 
 InstantCommand = JointCommand | GripperCommand | BaseTwistCommand

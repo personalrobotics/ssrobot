@@ -10,6 +10,7 @@ executable reference for the lifecycle, execution, and trace contracts.
 from __future__ import annotations
 
 import bisect
+import itertools
 from dataclasses import dataclass, field
 
 from ssrobot._wire import Record, Value, dumps, meta
@@ -21,6 +22,8 @@ from ssrobot.commands import (
     JointCommand,
     JointMode,
     JointTrajectory,
+    TrajectoryContract,
+    TrajectoryInterpolation,
     command_components,
 )
 from ssrobot.conventions import ClockMode, Timestamp, check_name
@@ -129,6 +132,9 @@ class ReplayRuntime:
     succeeds once its final waypoint is applied. An action chunk applies its latest due
     step every tick and succeeds once its final step is applied. Stepping past the last
     tick faults the runtime with ``replay_exhausted``.
+
+    Its trajectory contract is one waypoint per tick, interpolated linearly, when the
+    recording's ticks are evenly spaced; with uneven ticks it declares none.
     """
 
     def __init__(
@@ -158,6 +164,20 @@ class ReplayRuntime:
             description=description.fingerprint(),
             commands=tuple(c for c in offered if c in description.commands),
             channels=tuple(r.channel for r in self.script.ticks[0].readings),
+            trajectory=self._contract(),
+        )
+
+    def _contract(self) -> TrajectoryContract | None:
+        """One waypoint per recorded tick, interpolated linearly, when the ticks are
+        evenly spaced. A recording with uneven ticks has no period to declare, so it
+        declares none rather than pick one."""
+        times = [tick.time_ns for tick in self.script.ticks]
+        spacings = {b - a for a, b in itertools.pairwise(times)}
+        if len(spacings) != 1:
+            return None
+        (period,) = spacings
+        return TrajectoryContract(
+            period_ns=period, interpolation=TrajectoryInterpolation.LINEAR, fixed_period=True
         )
 
     def close(self) -> None:

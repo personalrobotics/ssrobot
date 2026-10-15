@@ -80,7 +80,7 @@ with ssrobot.RobotContext(package.description, MujocoRuntime(package, scene="tab
     plan = arm.plan_to_end_effector_pose(goal, snapshot=snapshot, planner=planner)
     scene = ctx.planning_scene(snapshot, arm.group)
     ready = prepare(plan, scene, validator=planner.validator(plan.request, scene),
-                    description=package.description, period_ns=2_000_000)
+                    description=package.description, contract=ctx.trajectory_contract)
     execution = ctx.submit(ready.command, snapshot=snapshot, source="planner")
     result = ctx.run_until(execution)               # steps the manual clock to a terminal state
 ```
@@ -111,7 +111,7 @@ with ssrobot.RobotContext(robot, MujocoRuntime(scene="tabletop.xml")) as ctx:
     approach = arm.plan_to_tsr(pregrasp, snapshot=snapshot, planner=planner)
     scene = ctx.planning_scene(snapshot, arm.group)
     ready = prepare(approach, scene, validator=planner.validator(approach.request, scene),
-                    description=robot, period_ns=2_000_000)
+                    description=robot, contract=ctx.trajectory_contract)
     ctx.run_until(ctx.submit(ready.command, snapshot=snapshot, source="planner"))  # planner owns the arm…
     PolicyRunner(ctx, grasp_policy).run_episode()   # …then ownership passes to the policy
 ```

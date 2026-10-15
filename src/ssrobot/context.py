@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from types import TracebackType
 from typing import Any, cast
 
-from ssrobot.commands import ActionChunk, Command, command_components
+from ssrobot.commands import ActionChunk, Command, TrajectoryContract, command_components
 from ssrobot.conventions import ClockMode, Pose, Timestamp, check_name
 from ssrobot.description import EndEffector, Manipulator, MobileBase, RobotDescription
 from ssrobot.errors import (
@@ -227,6 +227,19 @@ class RobotContext:
         if self._now is None:
             raise LifecycleError("not_open", f"context is {self._state.value}")
         return self._now
+
+    @property
+    def trajectory_contract(self) -> TrajectoryContract:
+        """How the runtime executes a ``JointTrajectory``: the contract a timed plan is
+        compiled for. It is the runtime's declaration and cannot be overridden; a
+        runtime that declares none fails with ``trajectory_contract_undeclared``."""
+        contract = self.info.trajectory
+        if contract is None:
+            raise CapabilityError(
+                "trajectory_contract_undeclared",
+                f"runtime {self.info.runtime!r} declares no trajectory-execution contract",
+            )
+        return contract
 
     @property
     def fault(self) -> RuntimeHealth | None:

@@ -102,7 +102,9 @@ the position a control of 0 would give. A joint starting just past its stop, wit
 - clock mode `manual`, on clock `mujoco:<robot>`;
 - the description's fingerprint;
 - the declared commands and channels it confirms (see *Binding*);
-- the scene's objects and fixtures, if it has a scene.
+- the scene's objects and fixtures, if it has a scene;
+- the trajectory contract: a fixed period of `substeps × timestep`, one step, with
+  `linear` interpolation.
 
 ## Model
 

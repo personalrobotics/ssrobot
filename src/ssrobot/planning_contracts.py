@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from ssrobot._wire import Record, Value, fingerprint, meta
-from ssrobot.commands import JointTrajectory
+from ssrobot.commands import JointTrajectory, TrajectoryContract, TrajectoryInterpolation
 from ssrobot.conventions import Pose, check_name
 from ssrobot.description import RobotDescription
 from ssrobot.errors import CapabilityError, StaleRevisionError, ValidationError
@@ -1490,16 +1490,15 @@ class PreparedTrajectory(Record):
     is ready to execute."""
 
     SCHEMA = "ssrobot.PreparedTrajectory"
-    VERSION = 2
+    VERSION = 3
 
     request: PlanningRequest = field(metadata=meta("The request it was planned for."))
     source: str = field(
         metadata=meta("The source trajectory's identity (trajectory_identity), which it samples.")
     )
     source_law: TimingLaw = field(metadata=meta("The source trajectory's law."))
-    period_ns: int = field(metadata=meta("The sampling period.", unit="ns"))
-    runtime_interpolation: PathInterpolation = field(
-        metadata=meta("How the runtime moves between the command's waypoints.")
+    contract: TrajectoryContract = field(
+        metadata=meta("The trajectory-execution contract it was compiled for.")
     )
     command: JointTrajectory = field(metadata=meta("The command to submit."))
     checks: tuple[ExecutionCheck, ...] = field(metadata=meta("Every readiness check, all passed."))
@@ -1518,8 +1517,6 @@ class PreparedTrajectory(Record):
             raise ValidationError(
                 "invalid_fingerprint", "source must be a SHA-256 hex digest", path="source"
             )
-        if self.period_ns <= 0:
-            raise ValidationError("out_of_limits", "period_ns must be positive", path="period_ns")
         if not self.checks:
             raise ValidationError("execution_unready", "no checks were run", path="checks")
         failed = [c.name for c in self.checks if not c.passed]
@@ -1566,11 +1563,16 @@ class PreparedTrajectory(Record):
                     group=command.group,
                     joints=command.joints,
                     waypoints=command.positions,
-                    interpolation=self.runtime_interpolation,
+                    interpolation=COMMAND_PATHS[self.contract.interpolation],
                 ),
             )
         except ValidationError as e:
             raise ValidationError(e.code, e.message, path=f"compiled_validation.{e.path}") from None
+
+
+COMMAND_PATHS = {TrajectoryInterpolation.LINEAR: PathInterpolation.LINEAR}
+"""The path a runtime executes between a command's waypoints, for each interpolation it
+may declare: what compilation asks the validator about."""
 
 
 # -- Request construction --------------------------------------------------------------
