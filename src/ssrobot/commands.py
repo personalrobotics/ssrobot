@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import itertools
+import math
 from dataclasses import dataclass, field
 
 from ssrobot._wire import Record, Value, meta
@@ -190,12 +191,112 @@ class TrajectoryContract(Value):
             raise ValidationError("out_of_limits", "period_ns must be positive", path="period_ns")
 
 
+class WrenchPart(enum.StrEnum):
+    """Which half of a wrench a guard measures."""
+
+    FORCE = "force"
+    """The first three values, N."""
+    TORQUE = "torque"
+    """The last three values, N*m."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WrenchGuard(Value):
+    """A force-torque condition a runtime evaluates at every control tick.
+
+    The measure is ``part`` of the channel's wrench, in the sensor's frame and with the
+    contract's sign (the force and torque the sensor's parent side exerts on its child
+    side), minus the reading when the motion started if ``tare``. It is the magnitude
+    of that vector, or, with ``axis``, its signed projection onto that unit axis. The
+    guard triggers once the measure is at least ``threshold`` for ``samples``
+    consecutive ticks."""
+
+    channel: str = field(metadata=meta("The wrench channel it reads."))
+    part: WrenchPart = field(metadata=meta("Force or torque."))
+    axis: tuple[float, float, float] | None = field(
+        default=None,
+        metadata=meta(
+            "Unit axis in the sensor frame to project onto; None for the magnitude.", unit="1"
+        ),
+    )
+    threshold: float = field(
+        metadata=meta(
+            "Trigger when the measure reaches this.",
+            unit_by=("part", {"force": "N", "torque": "N*m"}),
+        )
+    )
+    tare: bool = field(
+        default=False, metadata=meta("Measure from the reading when the motion started.")
+    )
+    samples: int = field(
+        default=1, metadata=meta("Consecutive ticks at or over the threshold.", unit="count")
+    )
+
+    def _validate(self) -> None:
+        check_name(self.channel, path="channel")
+        if not math.isfinite(self.threshold) or self.threshold <= 0.0:
+            raise ValidationError(
+                "out_of_limits", "threshold must be positive and finite", path="threshold"
+            )
+        if self.samples < 1:
+            raise ValidationError("out_of_limits", "samples must be at least 1", path="samples")
+        if self.axis is not None and (
+            not all(math.isfinite(v) for v in self.axis) or abs(math.hypot(*self.axis) - 1.0) > 1e-9
+        ):
+            raise ValidationError("out_of_limits", "axis must be a unit vector", path="axis")
+
+    def measure(self, wrench: tuple[float, ...], baseline: tuple[float, ...] | None) -> float:
+        """The guarded measure of ``wrench`` (6 values), given the tare ``baseline``."""
+        start = 0 if self.part is WrenchPart.FORCE else 3
+        v = [
+            wrench[start + i] - (0.0 if baseline is None else baseline[start + i]) for i in range(3)
+        ]
+        if self.axis is None:
+            return math.hypot(*v)
+        return sum(a * b for a, b in zip(self.axis, v, strict=True))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GuardSupport(Value):
+    """Which guards a runtime evaluates at its own control rate. Any component it
+    confirms for joint trajectories may be guarded, on these channels."""
+
+    channels: tuple[str, ...] = field(metadata=meta("Wrench channels a guard may read, sorted."))
+    tare: bool = field(metadata=meta("Whether it measures from the reading at the start."))
+
+    def _validate(self) -> None:
+        for i, name in enumerate(self.channels):
+            check_name(name, path=f"channels[{i}]")
+        if list(self.channels) != sorted(set(self.channels)):
+            raise ValidationError(
+                "noncanonical_order", "channels must be sorted and unique", path="channels"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GuardedJointTrajectory(Record):
+    """A ``JointTrajectory`` executed as usual until its guard triggers. The runtime then
+    holds the joints where they are, within one control tick. It ends ``succeeded``
+    either way; the status's ``guard`` says which (``GuardOutcome``), and the caller
+    decides whether that is success."""
+
+    SCHEMA = "ssrobot.GuardedJointTrajectory"
+    VERSION = 1
+
+    trajectory: JointTrajectory = field(metadata=meta("The motion to execute."))
+    guard: WrenchGuard = field(metadata=meta("When to stop it."))
+
+
 InstantCommand = JointCommand | GripperCommand | BaseTwistCommand
 """Commands that take effect at a single instant."""
 
 
-def command_component(command: InstantCommand | JointTrajectory) -> str:
+def command_component(
+    command: InstantCommand | JointTrajectory | GuardedJointTrajectory,
+) -> str:
     """The component a command addresses."""
+    if isinstance(command, GuardedJointTrajectory):
+        return command.trajectory.group
     if isinstance(command, JointCommand | JointTrajectory):
         return command.group
     if isinstance(command, GripperCommand):
@@ -247,7 +348,14 @@ class ActionChunk(Record):
                 )
 
 
-Command = JointCommand | GripperCommand | BaseTwistCommand | JointTrajectory | ActionChunk
+Command = (
+    JointCommand
+    | GripperCommand
+    | BaseTwistCommand
+    | JointTrajectory
+    | GuardedJointTrajectory
+    | ActionChunk
+)
 """Anything a client may submit."""
 
 

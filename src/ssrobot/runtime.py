@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from ssrobot._wire import Record, Value, meta
-from ssrobot.commands import Command, TrajectoryContract
+from ssrobot.commands import Command, GuardSupport, TrajectoryContract
 from ssrobot.conventions import ClockMode, Timestamp, check_name
 from ssrobot.description import CommandCapability, RobotDescription
 from ssrobot.errors import ValidationError
@@ -35,7 +35,7 @@ class RuntimeInfo(Record):
     """What an opened runtime reports about itself."""
 
     SCHEMA = "ssrobot.RuntimeInfo"
-    VERSION = 2
+    VERSION = 3
 
     runtime: str = field(metadata=meta("Runtime implementation name."))
     runtime_version: str = field(metadata=meta("Runtime implementation and backend versions."))
@@ -59,6 +59,13 @@ class RuntimeInfo(Record):
         metadata=meta(
             "How it executes a JointTrajectory; None if it declares no contract, so timed "
             "plans cannot be compiled for it."
+        ),
+    )
+    guards: GuardSupport | None = field(
+        default=None,
+        metadata=meta(
+            "Which force-torque guards it evaluates at control rate; None if it cannot "
+            "execute a GuardedJointTrajectory."
         ),
     )
 

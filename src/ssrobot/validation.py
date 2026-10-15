@@ -19,10 +19,12 @@ from ssrobot.commands import (
     Command,
     CommandKind,
     GripperCommand,
+    GuardedJointTrajectory,
     InstantCommand,
     JointCommand,
     JointMode,
     JointTrajectory,
+    WrenchGuard,
     command_component,
 )
 from ssrobot.conventions import Pose
@@ -100,20 +102,65 @@ def check_command(
                     )
                 held[resource] = component
     elif isinstance(command, JointTrajectory):
-        _require(description, info, command.group, CommandKind.JOINT_TRAJECTORY, None)
-        group = _check_joint_order(description, command.group, command.joints)
-        for i, row in enumerate(command.positions):
-            slack = START_TOLERANCE if i == 0 else 0.0
-            _check_limits(description, group, JointMode.POSITION, row, f"positions[{i}]", slack)
-        for i, row in enumerate(command.velocities or ()):
-            _check_limits(description, group, JointMode.VELOCITY, row, f"velocities[{i}]")
-        check_trajectory_rates(
-            command,
-            [description.joint(j).limits.velocity for j in command.joints],
-            [description.joint(j).limits.acceleration for j in command.joints],
-        )
+        _check_trajectory(description, info, command, "")
+    elif isinstance(command, GuardedJointTrajectory):
+        _check_guard(description, info, command.guard)
+        _check_trajectory(description, info, command.trajectory, "trajectory")
     else:
         _check_instant(description, command, info, "")
+
+
+def _check_trajectory(
+    description: RobotDescription, info: RuntimeInfo | None, command: JointTrajectory, path: str
+) -> None:
+    _require(description, info, command.group, CommandKind.JOINT_TRAJECTORY, None, path)
+    group = _check_joint_order(description, command.group, command.joints, path)
+    for i, row in enumerate(command.positions):
+        slack = START_TOLERANCE if i == 0 else 0.0
+        _check_limits(
+            description, group, JointMode.POSITION, row, _join(path, f"positions[{i}]"), slack
+        )
+    for i, row in enumerate(command.velocities or ()):
+        _check_limits(description, group, JointMode.VELOCITY, row, _join(path, f"velocities[{i}]"))
+    check_trajectory_rates(
+        command,
+        [description.joint(j).limits.velocity for j in command.joints],
+        [description.joint(j).limits.acceleration for j in command.joints],
+    )
+
+
+def _check_guard(
+    description: RobotDescription, info: RuntimeInfo | None, guard: WrenchGuard
+) -> None:
+    """A guard reads a declared wrench channel, and the runtime evaluates it there with
+    every feature it asks for."""
+    spec = next((c for c in description.channels if c.name == guard.channel), None)
+    if spec is None:
+        raise ValidationError(
+            "unknown_reference", f"no channel {guard.channel!r}", path="guard.channel"
+        )
+    if spec.quantity is not Quantity.WRENCH:
+        raise ValidationError(
+            "unsupported_quantity",
+            f"{guard.channel!r} measures {spec.quantity}, not a wrench",
+            path="guard.channel",
+        )
+    if info is None:
+        return
+    if info.guards is None:
+        raise CapabilityError(
+            "guards_unavailable", "the runtime does not evaluate guards", path="guard"
+        )
+    if guard.channel not in info.guards.channels:
+        raise CapabilityError(
+            "unavailable_guard_channel",
+            f"the runtime does not guard on {guard.channel!r}",
+            path="guard.channel",
+        )
+    if guard.tare and not info.guards.tare:
+        raise CapabilityError(
+            "unsupported_guard_feature", "the runtime cannot tare a guard", path="guard.tare"
+        )
 
 
 def _check_instant(
@@ -277,6 +324,8 @@ def _applied_key(command: InstantCommand) -> tuple[object, ...]:
 
 def _lowerings(command: Command) -> set[tuple[object, ...]]:
     """What a runtime may apply, instant by instant, for ``command``."""
+    if isinstance(command, GuardedJointTrajectory):
+        command = command.trajectory
     if isinstance(command, JointTrajectory):
         return {("joint", command.group, command.joints, JointMode.POSITION)}
     if isinstance(command, ActionChunk):

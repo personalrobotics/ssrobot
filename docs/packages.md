@@ -430,6 +430,26 @@ the uv version. The script then runs two public commands, and opens the runtime:
   `scenario.json` with every execution's outcome. They are under `scenario/run-1` and
   `run-2`. No full trace is kept: each `applied` record repeats the whole submitted
   trajectory (#130).
+- The **guarded-contact proof** (#124), when the scenario has a `guard` table. One
+  function, `guarded`, serves every robot. The table gives:
+  - the frame and its region relative to the object;
+  - the direction and distance of the move, and its duration;
+  - the wrench channel, and a force threshold.
+
+  It plans with sscbirrt to the region, executes, and settles. It then builds the
+  straight move of the frame from the planning scene's forward kinematics, one waypoint
+  per control tick on a cosine profile. It submits that as a `GuardedJointTrajectory`
+  with a tared force-magnitude guard. The move is meant to make contact, so it is not
+  geometrically validated (#143). The same command then runs in a runtime without the
+  scene, held at the same setpoint first.
+
+  It passes when contact ends with `guard_triggered` on the first tick the script's
+  own wrench reading crosses the threshold, and the free run ends with
+  `trajectory_completed`. Both runs must give the same `guarded.json` and
+  `guarded.command.json`, byte for byte.
+  - **Geodude:** the open hand moves along its approach axis from the side-grasp band
+    into the cylinder.
+  - **ADA:** the fork tip moves down onto the cylinder's top.
 
 It then checks that the report is a valid `ssrobot.PackageReport`, that its fingerprint
 matches its description, that nothing is ambiguous, and that the description

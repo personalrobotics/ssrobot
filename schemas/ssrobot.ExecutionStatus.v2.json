@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.ExecutionStatus v1",
+  "title": "ssrobot.ExecutionStatus v2",
   "$ref": "#/$defs/ExecutionStatus",
   "$defs": {
     "Diagnostic": {
@@ -41,7 +41,7 @@
           "const": "ssrobot.ExecutionStatus"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "execution": {
           "type": "string",
@@ -74,6 +74,17 @@
             }
           ],
           "description": "Required for rejected, timed-out, and failed states."
+        },
+        "guard": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GuardOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a guarded trajectory ended; on its succeeded status only."
         }
       },
       "required": [
@@ -84,6 +95,100 @@
         "stamp"
       ],
       "additionalProperties": false
+    },
+    "GuardOutcome": {
+      "type": "object",
+      "description": "How a ``GuardedJointTrajectory`` ended, with the evidence for it.",
+      "properties": {
+        "cause": {
+          "type": "string",
+          "enum": [
+            "guard_triggered",
+            "trajectory_completed"
+          ],
+          "description": "Why it ended."
+        },
+        "elapsed_ns": {
+          "type": "integer",
+          "description": "Time since the trajectory started when it ended.",
+          "x-unit": "ns"
+        },
+        "part": {
+          "type": "string",
+          "enum": [
+            "force",
+            "torque"
+          ],
+          "description": "Which half of the wrench was measured."
+        },
+        "measure": {
+          "type": "number",
+          "description": "The guarded measure at the deciding tick.",
+          "x-unit-by": {
+            "field": "part",
+            "units": {
+              "force": "N",
+              "torque": "N*m"
+            }
+          }
+        },
+        "wrench": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The wrench read at the deciding tick, untared.",
+          "x-unit": "channel"
+        }
+      },
+      "required": [
+        "cause",
+        "elapsed_ns",
+        "part",
+        "measure",
+        "wrench"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "part": {
+                "const": "force"
+              }
+            },
+            "required": [
+              "part"
+            ]
+          },
+          "then": {
+            "properties": {
+              "measure": {
+                "x-unit": "N"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "part": {
+                "const": "torque"
+              }
+            },
+            "required": [
+              "part"
+            ]
+          },
+          "then": {
+            "properties": {
+              "measure": {
+                "x-unit": "N*m"
+              }
+            }
+          }
+        }
+      ]
     },
     "Timestamp": {
       "type": "object",

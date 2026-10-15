@@ -17,7 +17,13 @@ from types import TracebackType
 from typing import Any, cast
 
 from ssrobot._wire import fingerprint
-from ssrobot.commands import ActionChunk, Command, TrajectoryContract, command_components
+from ssrobot.commands import (
+    ActionChunk,
+    Command,
+    GuardedJointTrajectory,
+    TrajectoryContract,
+    command_components,
+)
 from ssrobot.conventions import ClockMode, Pose, Timestamp, check_name
 from ssrobot.description import EndEffector, Manipulator, MobileBase, RobotDescription
 from ssrobot.errors import (
@@ -37,7 +43,7 @@ from ssrobot.execution import (
     RuntimeHealth,
     Submission,
 )
-from ssrobot.observations import Observation, ObservationRequest
+from ssrobot.observations import Observation, ObservationRequest, Quantity
 from ssrobot.planning_contracts import (
     BasePoseGoal,
     ConfigurationGoal,
@@ -937,6 +943,13 @@ class RobotContext:
                 raise CapabilityError(
                     "undeclared_capability", f"runtime offers undeclared channel {name!r}"
                 )
+        wrenches = {c.name for c in self._description.channels if c.quantity is Quantity.WRENCH}
+        for name in () if info.guards is None else info.guards.channels:
+            if name not in wrenches or name not in info.channels:
+                raise CapabilityError(
+                    "undeclared_capability",
+                    f"runtime guards on {name!r}, which is not a confirmed wrench channel",
+                )
         has_scene = callable(getattr(self._runtime, "attach", None)) and callable(
             getattr(self._runtime, "detach", None)
         )
@@ -1045,6 +1058,16 @@ class RobotContext:
             else:
                 if event.state not in RUNTIME_REPORTED or event.state not in NEXT_STATES[current]:
                     raise self._breach(f"{execution.id} cannot go from {current} to {event.state}")
+                command = execution.command
+                guarded = isinstance(command, GuardedJointTrajectory)
+                if (event.guard is not None) != (guarded and event.state is _E.SUCCEEDED):
+                    raise self._breach(
+                        f"{execution.id} ended {event.state} with guard outcome {event.guard!r}"
+                    )
+                if event.guard is not None:
+                    assert isinstance(command, GuardedJointTrajectory)
+                    if event.guard.part is not command.guard.part:
+                        raise self._breach(f"{execution.id}'s guard outcome measures another part")
                 self._record(event, self._runtime_source)
         self._now = update.stamp
         if stepped:

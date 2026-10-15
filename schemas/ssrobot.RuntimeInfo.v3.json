@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.RuntimeInfo v2",
+  "title": "ssrobot.RuntimeInfo v3",
   "$ref": "#/$defs/RuntimeInfo",
   "$defs": {
     "CommandCapability": {
@@ -44,6 +44,28 @@
       ],
       "additionalProperties": false
     },
+    "GuardSupport": {
+      "type": "object",
+      "description": "Which guards a runtime evaluates at its own control rate. Any component it",
+      "properties": {
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Wrench channels a guard may read, sorted."
+        },
+        "tare": {
+          "type": "boolean",
+          "description": "Whether it measures from the reading at the start."
+        }
+      },
+      "required": [
+        "channels",
+        "tare"
+      ],
+      "additionalProperties": false
+    },
     "RuntimeInfo": {
       "type": "object",
       "description": "What an opened runtime reports about itself.",
@@ -52,7 +74,7 @@
           "const": "ssrobot.RuntimeInfo"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "runtime": {
           "type": "string",
@@ -116,6 +138,17 @@
             }
           ],
           "description": "How it executes a JointTrajectory; None if it declares no contract, so timed plans cannot be compiled for it."
+        },
+        "guards": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GuardSupport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Which force-torque guards it evaluates at control rate; None if it cannot execute a GuardedJointTrajectory."
         }
       },
       "required": [

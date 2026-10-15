@@ -125,6 +125,33 @@
       ],
       "additionalProperties": false
     },
+    "GuardedJointTrajectory": {
+      "type": "object",
+      "description": "A ``JointTrajectory`` executed as usual until its guard triggers. The runtime then",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.GuardedJointTrajectory"
+        },
+        "version": {
+          "const": 1
+        },
+        "trajectory": {
+          "$ref": "#/$defs/JointTrajectory",
+          "description": "The motion to execute."
+        },
+        "guard": {
+          "$ref": "#/$defs/WrenchGuard",
+          "description": "When to stop it."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "trajectory",
+        "guard"
+      ],
+      "additionalProperties": false
+    },
     "JointCommand": {
       "type": "object",
       "description": "Instantaneous targets for every joint of a group, in the group's declared order.",
@@ -342,6 +369,9 @@
               "$ref": "#/$defs/JointTrajectory"
             },
             {
+              "$ref": "#/$defs/GuardedJointTrajectory"
+            },
+            {
               "$ref": "#/$defs/ActionChunk"
             }
           ],
@@ -409,6 +439,116 @@
         "time_ns"
       ],
       "additionalProperties": false
+    },
+    "WrenchGuard": {
+      "type": "object",
+      "description": "A force-torque condition a runtime evaluates at every control tick.",
+      "properties": {
+        "channel": {
+          "type": "string",
+          "description": "The wrench channel it reads."
+        },
+        "part": {
+          "type": "string",
+          "enum": [
+            "force",
+            "torque"
+          ],
+          "description": "Force or torque."
+        },
+        "axis": {
+          "anyOf": [
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 3,
+              "maxItems": 3
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Unit axis in the sensor frame to project onto; None for the magnitude.",
+          "x-unit": "1"
+        },
+        "threshold": {
+          "type": "number",
+          "description": "Trigger when the measure reaches this.",
+          "x-unit-by": {
+            "field": "part",
+            "units": {
+              "force": "N",
+              "torque": "N*m"
+            }
+          }
+        },
+        "tare": {
+          "type": "boolean",
+          "description": "Measure from the reading when the motion started."
+        },
+        "samples": {
+          "type": "integer",
+          "description": "Consecutive ticks at or over the threshold.",
+          "x-unit": "count"
+        }
+      },
+      "required": [
+        "channel",
+        "part",
+        "threshold"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "part": {
+                "const": "force"
+              }
+            },
+            "required": [
+              "part"
+            ]
+          },
+          "then": {
+            "properties": {
+              "threshold": {
+                "x-unit": "N"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "part": {
+                "const": "torque"
+              }
+            },
+            "required": [
+              "part"
+            ]
+          },
+          "then": {
+            "properties": {
+              "threshold": {
+                "x-unit": "N*m"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

@@ -44,6 +44,22 @@ offset_quat_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
 position_bounds = [[0.0, 0.0], [0.0, 0.0], [-0.02, 0.02]]
 rotation_bounds = [[0.0, 0.0], [0.0, 0.0], [-3.141592653589793, 3.141592653589793]]
 
+# The guarded-contact proof (#124): the open hand in the side-grasp band above, then a
+# straight 20 cm move of its TCP along its approach axis (z) into the cylinder, guarded
+# by the wrist's force-torque sensor. The move is built by IK and meant to make contact.
+[robots.scenario.guard]
+frame = "right_ur5e/gripper/grasp_site"
+channel = "right_wrist_wrench"
+part = "force"
+threshold = 10.0
+offset_position = [-0.10, 0.0, 0.0]
+offset_quat_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
+position_bounds = [[0.0, 0.0], [0.0, 0.0], [-0.005, 0.005]]
+rotation_bounds = [[0.0, 0.0], [0.0, 0.0], [-3.141592653589793, 3.141592653589793]]
+direction_in_frame = [0.0, 0.0, 1.0]
+distance = 0.20
+duration_ns = 4_000_000_000
+
 [[robots]]
 name = "ada"
 repository = "personalrobotics/ada_assets"
@@ -81,3 +97,19 @@ offset_position = [0.0, 0.0, 0.11]
 offset_quat_wxyz = [0.0, 1.0, 0.0, 0.0]
 position_bounds = [[-0.01, 0.01], [-0.01, 0.01], [-0.02, 0.02]]
 rotation_bounds = [[0.0, 0.0], [0.0, 0.0], [-3.141592653589793, 3.141592653589793]]
+
+# The guarded-contact proof (#124): the fork tip straight above the cylinder's top, as
+# for skewering, then a straight 10 cm descent onto it, guarded by the tool's
+# force-torque sensor. The descent is built by IK and is meant to make contact.
+[robots.scenario.guard]
+frame = "articutool/fork_tip"
+channel = "tool_wrench"
+part = "force"
+threshold = 10.0
+offset_position = [0.0, 0.0, 0.11]
+offset_quat_wxyz = [0.0, 1.0, 0.0, 0.0]
+position_bounds = [[-0.005, 0.005], [-0.005, 0.005], [-0.005, 0.005]]
+rotation_bounds = [[0.0, 0.0], [0.0, 0.0], [-3.141592653589793, 3.141592653589793]]
+direction_in_frame = [0.0, 0.0, 1.0]
+distance = 0.10
+duration_ns = 3_000_000_000
