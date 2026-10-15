@@ -189,7 +189,7 @@ SHA-256. A snapshot from a different model or scene therefore fails to materiali
 to be submitted with, with `incompatible_snapshot`. A name the planning model cannot
 resolve fails with `invalid_snapshot` rather than indexing another entity.
 
-`planning_scene(snapshot, group, edge_resolution)` is built on sscbirrt's native MuJoCo
+`planning_scene(snapshot, group)` is built on sscbirrt's native MuJoCo
 scene, which the `mujoco` extra installs. sscbirrt is imported only then, so opening a
 runtime never loads it.
 1. **The planning model.** The runtime's model is rebuilt from the same sources (the
@@ -216,9 +216,9 @@ runtime never loads it.
    validator and `MjData`. `native()` returns that checker, for a planner adapter.
 
 Forward kinematics uses the planning scene's own `MjData`. Contacts name the nearest
-description frame, object, or fixture of each body, and `world` for world geoms. Edge
-checks test configurations at most `edge_resolution` apart in every joint, including
-both ends.
+description frame, object, or fixture of each body, and `world` for world geoms. A
+planning scene answers state queries only: whether a motion is valid is the planner's
+validator's answer (see *Motion validation* in [contracts.md](contracts.md)).
 
 sscbirrt's native `Snapshot.capture` applies its own rule for which gripper bodies may
 touch a held object. The provider therefore constructs sscbirrt's native attachment

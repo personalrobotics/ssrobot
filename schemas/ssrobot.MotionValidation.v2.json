@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.MotionValidation v1",
+  "title": "ssrobot.MotionValidation v2",
   "$ref": "#/$defs/MotionValidation",
   "$defs": {
     "Contact": {
@@ -134,7 +134,7 @@
           "const": "ssrobot.MotionValidation"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "subject": {
           "type": "string",
@@ -218,6 +218,17 @@
           "type": "integer",
           "description": "State or interval checks performed.",
           "x-unit": "count"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a trajectory validated along its source path, that path's identity (path_identity). Evidence, not part of the subject: the policy says how it is used."
         }
       },
       "required": [

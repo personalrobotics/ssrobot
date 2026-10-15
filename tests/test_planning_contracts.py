@@ -51,15 +51,32 @@ from ssrobot import (
     load_package,
     loads,
 )
+from ssrobot._wire import fingerprint
 from ssrobot.mujoco import MujocoRuntime
 from ssrobot.planning_contracts import (
     BASE_CONSTRAINTS,
+    ExecutionCheck,
+    InvalidWitness,
+    MotionValidation,
+    PathInterpolation,
     PieceValidation,
     Ramp,
     RampInterval,
     TimingLaw,
     TrajectoryPiece,
+    ValidationFailure,
+    ValidationGuarantee,
+    ValidationPolicy,
+    ValidationSubject,
+    ValidatorIdentity,
+    constraints_identity,
+    motion_subject,
     negotiate,
+    path_identity,
+    path_subject,
+    state_subject,
+    trajectory_identity,
+    trajectory_subject,
 )
 from ssrobot.validation import check_command, check_trajectory_rates
 from tests.test_mujoco_scene import ABOVE, ASIDE, OPTIONS, PACKAGE, SCENE, _arm
@@ -107,9 +124,148 @@ def _triangles(
         pieces=tuple(pieces),
         limits=limits,
         validated=tuple(sorted(BASE_CONSTRAINTS)),
-        validation_resolution=0.05,
         producer="triangles",
     )
+
+
+class ScriptedValidator:
+    """A test-only MotionValidator for the scripted planner: valid where the planning
+    scene says every checked state is valid, checking states along each straight segment
+    at most 0.05 rad apart in every joint, and a trajectory at 20 evenly spaced times per
+    piece. It shows that a planner other than sscbirrt can satisfy the contract."""
+
+    STEP = 0.05
+
+    def __init__(self, request: PlanningRequest, scene: Any) -> None:
+        self._scene = scene
+        self._request = request
+        self.identity = ValidatorIdentity(
+            implementation="scripted-1",
+            policy=ValidationPolicy(
+                name="joint_max_subdivision",
+                mechanism="joint_subdivision",
+                guarantee=ValidationGuarantee.DISCRETE,
+                resolution=self.STEP,
+                ambiguity_band_m=0.0,
+                parameters=(("trajectory", "20_times_per_piece"),),
+                summary="Valid at states at most 0.05 rad apart in every joint; nothing between.",
+            ),
+            snapshot=request.snapshot,
+            group=request.group,
+            joints=request.joints,
+            constraints=constraints_identity(request),
+        )
+
+    def _states(self, waypoints: tuple[tuple[float, ...], ...]) -> tuple[int, int | None]:
+        checks = 0
+        for i, (a, b) in enumerate(itertools.pairwise(waypoints)):
+            span = max(abs(y - x) for x, y in zip(a, b, strict=True))
+            n = max(1, math.ceil(span / self.STEP))
+            for k in range(n + 1):
+                checks += 1
+                q = tuple(x + k / n * (y - x) for x, y in zip(a, b, strict=True))
+                if not self._scene.is_valid(q):
+                    return checks, i
+        return checks, None
+
+    def _report(self, subject: Any, kind: Any, checks: int, **fields: Any) -> MotionValidation:
+        return MotionValidation(
+            subject=kind,
+            motion=fingerprint(subject),
+            validator=self.identity,
+            checks=checks,
+            **fields,
+        )
+
+    def validate_state(self, q: Any) -> MotionValidation:
+        subject = state_subject(self._request.group, self._request.joints, q)
+        (state,) = subject.waypoints
+        valid = bool(self._scene.is_valid(state))
+        witness = (
+            None
+            if valid
+            else InvalidWitness(failure=ValidationFailure.COLLISION, configuration=state)
+        )
+        return self._report(
+            subject, ValidationSubject.STATE, 1, intervals=0, valid=valid, witness=witness
+        )
+
+    def validate_motion(self, q0: Any, q1: Any) -> MotionValidation:
+        subject = motion_subject(self._request.group, self._request.joints, q0, q1)
+        checks, bad = self._states(subject.waypoints)
+        witness = None
+        if bad is not None:
+            witness = InvalidWitness(
+                failure=ValidationFailure.COLLISION,
+                segment=0,
+                fraction=0.0,
+                configuration=subject.waypoints[0],
+            )
+        return self._report(
+            subject,
+            ValidationSubject.MOTION,
+            checks,
+            interpolation=PathInterpolation.LINEAR,
+            intervals=1,
+            valid=witness is None,
+            witness=witness,
+        )
+
+    def validate_path(self, path: GeometricPath) -> MotionValidation:
+        subject = path_subject(path)
+        checks, bad = self._states(path.waypoints)
+        witness = None
+        if bad is not None:
+            witness = InvalidWitness(
+                failure=ValidationFailure.COLLISION,
+                segment=bad,
+                fraction=0.0,
+                configuration=path.waypoints[bad],
+            )
+        return self._report(
+            subject,
+            ValidationSubject.PATH,
+            checks,
+            interpolation=path.interpolation,
+            intervals=len(path.waypoints) - 1,
+            valid=witness is None,
+            witness=witness,
+        )
+
+    def validate_trajectory(
+        self, trajectory: TimedTrajectory, path: GeometricPath | None = None
+    ) -> MotionValidation:
+        subject = trajectory_subject(trajectory)
+        times = [
+            trajectory.duration * k / (20 * len(trajectory.pieces))
+            for k in range(20 * len(trajectory.pieces) + 1)
+        ]
+        bad = next((t for t in times if not self._scene.is_valid(trajectory.evaluate(t)[0])), None)
+        witness = None
+        if bad is not None:
+            witness = InvalidWitness(
+                failure=ValidationFailure.COLLISION,
+                time_s=bad,
+                configuration=trajectory.evaluate(bad)[0],
+            )
+        return self._report(
+            subject,
+            ValidationSubject.TRAJECTORY,
+            len(times),
+            law=trajectory.law,
+            intervals=len(trajectory.pieces),
+            duration_s=subject.duration,
+            valid=witness is None,
+            witness=witness,
+            evidence=None if path is None else path_identity(path),
+        )
+
+
+class _Free:
+    """A planning scene in which every state is valid."""
+
+    def is_valid(self, q: Any) -> bool:
+        return True
 
 
 class StraightLine:
@@ -130,6 +286,9 @@ class StraightLine:
             results=(ResultForm.GEOMETRIC_PATH, *timed),
         )
 
+    def validator(self, request: PlanningRequest, scene: PlanningScene) -> ScriptedValidator:
+        return ScriptedValidator(request, scene)
+
     def plan(
         self,
         request: PlanningRequest,
@@ -139,7 +298,13 @@ class StraightLine:
     ) -> PlanResult:
         assert isinstance(request.goal, ConfigurationGoal)
         goal = request.goal.configurations[0]
-        if not scene.is_edge_valid(request.start, goal):
+        validator = self.validator(request, scene)
+        line = GeometricPath(
+            group=request.group,
+            joints=request.joints,
+            waypoints=(request.start, goal),
+        )
+        if not validator.validate_path(line).valid:
             return PlanResult(
                 request=request,
                 planner=self.name,
@@ -149,18 +314,23 @@ class StraightLine:
             )
         midpoint = tuple((a + b) / 2 for a, b in zip(request.start, goal, strict=True))
         waypoints = (request.start, midpoint, goal)
+        path = GeometricPath(
+            group=request.group,
+            joints=request.joints,
+            waypoints=waypoints,
+        )
+        trajectory = _triangles(request.group, waypoints, request.limits) if self.timed else None
+        reports = [validator.validate_path(path)]
+        if trajectory is not None:
+            reports.append(validator.validate_trajectory(trajectory, path))
         return PlanResult(
             request=request,
             planner=self.name,
             backend="python",
             status=PlanStatus.SUCCEEDED,
-            path=GeometricPath(
-                group=request.group,
-                joints=request.joints,
-                waypoints=waypoints,
-                validation_resolution=scene.edge_resolution,
-            ),
-            trajectory=_triangles(request.group, waypoints, request.limits) if self.timed else None,
+            path=path,
+            trajectory=trajectory,
+            validation=tuple(reports),
         )
 
 
@@ -435,21 +605,33 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
             Pose(position=(1.0, 0.0, 0.0), quat_wxyz=IDENTITY), snapshot=snapshot_of(with_base)
         )
     )
-    failed = json.loads(
-        json.dumps(
-            {
-                "schema": PreparedTrajectory.SCHEMA,
-                "version": PreparedTrajectory.VERSION,
-                "request": request.fingerprint(),
-                "source": good.fingerprint(),
-                "source_law": good.law.value,
-                "period_ns": PERIOD_NS,
-                "runtime_interpolation": "linear",
-                "command": json.loads(dumps(good.sample(PERIOD_NS))),
-                "checks": [{"name": "collision", "passed": False, "detail": "chord 3 collides"}],
-            }
-        )
+    # A complete, valid prepared record, then one check marked failed.
+    free = ScriptedValidator(request, _Free())
+    command = good.sample(PERIOD_NS)
+    compiled = GeometricPath(
+        group=command.group,
+        joints=command.joints,
+        waypoints=command.positions,
     )
+    ready = PreparedTrajectory(
+        request=request,
+        source=trajectory_identity(good),
+        source_law=good.law,
+        period_ns=PERIOD_NS,
+        runtime_interpolation=PathInterpolation.LINEAR,
+        command=command,
+        checks=(ExecutionCheck(name="start", passed=True, detail="at the start"),),
+        source_validation=free.validate_trajectory(good),
+        compiled_validation=free.validate_path(compiled),
+        geometry_preserved=False,
+    )
+    failed = json.loads(dumps(ready))
+    failed["checks"][0]["passed"] = False
+    # Both reports re-bound to an unrelated snapshot: they still agree with each other,
+    # but not with the request the command was prepared for.
+    elsewhere = json.loads(dumps(ready))
+    for name in ("source_validation", "compiled_validation"):
+        elsewhere[name]["validator"]["snapshot"] = "0" * 64
     refusals = {
         "ambiguous_manipulator": _refusal(lambda: context(bimanual).manipulator()),
         "ambiguous_base": _refusal(lambda: context(description).base()),
@@ -525,6 +707,9 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
             )
         ),
         "falsely_ready": _refusal(lambda: loads(json.dumps(failed), PreparedTrajectory)),
+        "prepared_for_another_snapshot": _refusal(
+            lambda: loads(json.dumps(elsewhere), PreparedTrajectory)
+        ),
         "base_goal_unsupported": _refusal(
             lambda: negotiate(base_request, StraightLine().capabilities(base_request))
         ),
@@ -547,6 +732,7 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
         "trajectory_from_elsewhere": "request_mismatch",
         "trajectory_under_other_limits": "request_mismatch",
         "falsely_ready": "execution_unready",
+        "prepared_for_another_snapshot": "validation_mismatch",
         "base_goal_unsupported": "unsupported_goal",
     }
     assert base_request.frame == "base" and base_request.component == "turntable"

@@ -97,8 +97,8 @@ class PieceValidation(enum.StrEnum):
     PLANNED = "planned"
     """It follows a path edge the planner validated."""
     SHORTCUT = "shortcut"
-    """It replaces part of the path, checked at samples at most ``validation_resolution``
-    apart against every required constraint."""
+    """It replaces part of the path, checked against every required constraint by the
+    producer's validator, under its policy."""
 
 
 class PlanStatus(enum.StrEnum):
@@ -453,9 +453,6 @@ class GeometricPath(Value):
     interpolation: PathInterpolation = field(
         default=PathInterpolation.LINEAR, metadata=meta("How consecutive waypoints are joined.")
     )
-    validation_resolution: float = field(
-        metadata=meta("Largest joint step at which edges were checked.", unit="joint")
-    )
 
     def _validate(self) -> None:
         check_name(self.group, path="group")
@@ -468,12 +465,6 @@ class GeometricPath(Value):
                 raise ValidationError(
                     "shape_mismatch", "one value per joint", path=f"waypoints[{i}]"
                 )
-        if not self.validation_resolution > 0:
-            raise ValidationError(
-                "out_of_limits",
-                "validation_resolution must be positive",
-                path="validation_resolution",
-            )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -534,11 +525,12 @@ class TrajectoryPiece(Value):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TimedTrajectory(Record):
-    """An exact timed motion from rest to rest, as the component that produced it
-    validated it: the source law, not a runtime command. See ``sample``."""
+    """An exact timed motion from rest to rest: the source law, not a runtime command.
+    See ``sample``. How it was validated, and under which policy, is its validation
+    report's to say."""
 
     SCHEMA = "ssrobot.TimedTrajectory"
-    VERSION = 1
+    VERSION = 2
 
     group: str = field(metadata=meta("The joint group that moves."))
     joints: tuple[str, ...] = field(metadata=meta("Joint names, in group order."))
@@ -547,9 +539,6 @@ class TimedTrajectory(Record):
     limits: EffectiveLimits = field(metadata=meta("The limits it was timed and checked under."))
     validated: tuple[ConstraintClass, ...] = field(
         metadata=meta("Constraint classes its producer validated, sorted.")
-    )
-    validation_resolution: float = field(
-        metadata=meta("Largest joint step at which its geometry was checked.", unit="joint")
     )
     producer: str = field(metadata=meta("What produced it, e.g. 'sscbirrt 3.5.0'."))
     provenance: tuple[tuple[str, str], ...] = field(
@@ -570,12 +559,6 @@ class TimedTrajectory(Record):
         if list(self.provenance) != sorted(dict(self.provenance).items()):
             raise ValidationError(
                 "noncanonical_order", "provenance keys must be sorted and unique", path="provenance"
-            )
-        if not self.validation_resolution > 0:
-            raise ValidationError(
-                "out_of_limits",
-                "validation_resolution must be positive",
-                path="validation_resolution",
             )
         vmax, amax = self.limits.effective_velocity, self.limits.effective_acceleration
         previous: list[tuple[float, float]] | None = None
@@ -703,11 +686,14 @@ def _check_ramp_limits(ramp: Ramp, vmax: float, amax: float, joint: str, path: s
 class PlanResult(Record):
     """A planner's answer to one request, carrying the request itself, so a result is
     self-contained: it can be prepared, inspected, or decoded without anything else. A
-    success carries a path, a trajectory, or both; a failure carries neither, only
-    diagnostics. Decoding checks that the motion answers the request."""
+    success carries a path, a trajectory, or both, each with the planner's own
+    successful validation report; a failure carries neither, only diagnostics.
+    Decoding checks that the motion answers the request and that each report is about
+    exactly that motion, from one validator bound to the request's snapshot and
+    constraints."""
 
     SCHEMA = "ssrobot.PlanResult"
-    VERSION = 1
+    VERSION = 2
 
     request: PlanningRequest = field(metadata=meta("The request it answers."))
     planner: str = field(metadata=meta("Planner name and version."))
@@ -719,6 +705,10 @@ class PlanResult(Record):
     path: GeometricPath | None = field(default=None, metadata=meta("The planner's path."))
     trajectory: TimedTrajectory | None = field(
         default=None, metadata=meta("The planner's timed trajectory, if it times motion.")
+    )
+    validation: tuple[MotionValidation, ...] = field(
+        default=(),
+        metadata=meta("The planner's report for the path, then for the trajectory, if any."),
     )
 
     def _validate(self) -> None:
@@ -775,6 +765,58 @@ class PlanResult(Record):
                     "endpoint_mismatch",
                     "the trajectory's goal is not the path's",
                     path="trajectory",
+                )
+
+        self._check_evidence()
+
+    def _check_evidence(self) -> None:
+        subjects: list[MotionSubject | TrajectorySubject] = []
+        if self.path is not None:
+            subjects.append(path_subject(self.path))
+        if self.trajectory is not None:
+            subjects.append(trajectory_subject(self.trajectory))
+        if len(self.validation) != len(subjects):
+            raise ValidationError(
+                "missing_validation",
+                "every returned motion carries one validation report, path first",
+                path="validation",
+            )
+        request = self.request
+        for i, (report, subject) in enumerate(zip(self.validation, subjects, strict=True)):
+            path = f"validation[{i}]"
+            if not report.valid:
+                raise ValidationError(
+                    "invalid_motion", "a returned motion failed its validation", path=path
+                )
+            validator = report.validator
+            if validator != self.validation[0].validator:
+                raise ValidationError(
+                    "validation_mismatch", "the reports come from different validators", path=path
+                )
+            if (
+                validator.snapshot != request.snapshot
+                or (validator.group, validator.joints) != (request.group, request.joints)
+                or validator.constraints != constraints_identity(request)
+            ):
+                raise ValidationError(
+                    "validation_mismatch",
+                    "the validator is bound to another snapshot, group, or constraints",
+                    path=f"{path}.validator",
+                )
+            try:
+                check_subject(report, subject)
+            except ValidationError as e:
+                raise ValidationError(e.code, e.message, path=f"{path}.{e.path}") from None
+            expected = (
+                path_identity(self.path)
+                if isinstance(subject, TrajectorySubject) and self.path is not None
+                else None
+            )
+            if report.evidence != expected:
+                raise ValidationError(
+                    "validation_mismatch",
+                    "a trajectory's report cites the result's path as its evidence",
+                    path=f"{path}.evidence",
                 )
 
     def fingerprint(self) -> str:
@@ -842,6 +884,12 @@ class Planner(Protocol):
         abort: Callable[[], bool] | None = None,
     ) -> PlanResult:
         """Plan in ``scene``. ``abort`` is polled; returning True cancels."""
+        ...
+
+    def validator(self, request: PlanningRequest, scene: PlanningScene) -> MotionValidator:
+        """The validator ``plan`` applies to ``request`` in ``scene``: the one its result's
+        reports come from, and the one runtime compilation must ask about a changed
+        motion."""
         ...
 
 
@@ -1030,10 +1078,11 @@ class InvalidWitness(Value):
 class MotionValidation(Record):
     """One validator's answer for one exact subject: valid under the reported policy, or
     the first invalid state found. Its identities bind it to the scene, the motion, the
-    constraints, the policy, and the implementation, so equal inputs give equal reports."""
+    constraints, the policy, the implementation, and any evidence given with the
+    subject, so equal inputs give equal reports."""
 
     SCHEMA = "ssrobot.MotionValidation"
-    VERSION = 1
+    VERSION = 2
 
     subject: ValidationSubject = field(metadata=meta("What was validated."))
     motion: str = field(metadata=meta("Fingerprint of the exact subject; see *_identity."))
@@ -1051,12 +1100,31 @@ class MotionValidation(Record):
         default=None, metadata=meta("The first invalid state; present exactly when invalid.")
     )
     checks: int = field(metadata=meta("State or interval checks performed.", unit="count"))
+    evidence: str | None = field(
+        default=None,
+        metadata=meta(
+            "For a trajectory validated along its source path, that path's identity "
+            "(path_identity). Evidence, not part of the subject: the policy says how it "
+            "is used."
+        ),
+    )
 
     def _validate(self) -> None:
         if not _FINGERPRINT.fullmatch(self.motion):
             raise ValidationError(
                 "invalid_fingerprint", "motion must be a SHA-256 hex digest", path="motion"
             )
+        if self.evidence is not None:
+            if not _FINGERPRINT.fullmatch(self.evidence):
+                raise ValidationError(
+                    "invalid_fingerprint", "evidence must be a SHA-256 hex digest", path="evidence"
+                )
+            if self.subject is not ValidationSubject.TRAJECTORY:
+                raise ValidationError(
+                    "inconsistent_subject",
+                    "only a trajectory is validated with a source path as evidence",
+                    path="evidence",
+                )
         if self.checks < 1:
             raise ValidationError(
                 "out_of_limits", "a report rests on at least one check", path="checks"
@@ -1134,6 +1202,7 @@ def check_validation(
     *,
     validator: ValidatorIdentity,
     subject: MotionSubject | TrajectorySubject,
+    evidence: GeometricPath | None = None,
 ) -> None:
     """Raise unless ``report`` answers exactly this question, from this validator, policy,
     scene, and constraints, about this subject. Every field derived from the subject is
@@ -1157,6 +1226,15 @@ def check_validation(
         )
     if (subject.group, subject.joints) != (validator.group, validator.joints):
         raise mismatch("the subject moves another group than the validator's", "subject")
+    check_subject(report, subject)
+    if report.evidence != (None if evidence is None else path_identity(evidence)):
+        raise mismatch("the report cites other evidence than this", "evidence")
+
+
+def check_subject(report: MotionValidation, subject: MotionSubject | TrajectorySubject) -> None:
+    """Raise ``validation_mismatch`` unless every field of ``report`` derived from its
+    subject matches ``subject``: the kind, the identity, the interpolation or law, the
+    number of intervals, and a trajectory's duration."""
     if isinstance(subject, TrajectorySubject):
         expected: dict[str, object] = {
             "subject": ValidationSubject.TRAJECTORY,
@@ -1176,7 +1254,9 @@ def check_validation(
     expected["motion"] = fingerprint(subject)
     for name, value in expected.items():
         if getattr(report, name) != value:
-            raise mismatch(f"the report's {name} is not this subject's", name)
+            raise ValidationError(
+                "validation_mismatch", f"the report's {name} is not this subject's", path=name
+            )
 
 
 class MotionValidator(Protocol):
@@ -1197,7 +1277,13 @@ class MotionValidator(Protocol):
 
     def validate_path(self, path: GeometricPath) -> MotionValidation: ...
 
-    def validate_trajectory(self, trajectory: TimedTrajectory) -> MotionValidation: ...
+    def validate_trajectory(
+        self, trajectory: TimedTrajectory, path: GeometricPath | None = None
+    ) -> MotionValidation:
+        """The complete trajectory under its law. ``path``, when given, is the validated
+        source path it is timed along: evidence the validator may use, as its policy
+        states, recorded as the report's ``evidence``, never as part of the subject."""
+        ...
 
 
 def _check_subject_joints(group: str, joints: tuple[str, ...]) -> None:
@@ -1289,11 +1375,16 @@ class TrajectorySubject(Value):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConstraintSet(Value):
     """What a validator enforces beyond the scene: the description (which fixes joint
-    limits and collision allowances) and the path constraints."""
+    limits and collision allowances), the path constraints, and an offset goal's line,
+    which constrains the frame throughout as well. Together with the snapshot, these fix
+    every constraint the validator applies."""
 
     description: str = field(metadata=meta("Fingerprint of the robot description."))
     path_constraint: tuple[Tsr, ...] = field(
         default=(), metadata=meta("Regions the constrained frame stays inside throughout.")
+    )
+    offset: OffsetGoal | None = field(
+        default=None, metadata=meta("An offset goal, whose straight line the frame keeps to.")
     )
     frame: str | None = field(default=None, metadata=meta("The constrained frame, if any."))
 
@@ -1346,11 +1437,13 @@ def path_subject(path: GeometricPath) -> MotionSubject:
 
 
 def trajectory_subject(trajectory: TimedTrajectory) -> TrajectorySubject:
-    """The exact timed trajectory. Each piece's validation tag, the validated classes,
-    the validation resolution, the producer, and the provenance are validation evidence,
-    not the trajectory, so two trajectories differing only there are one subject. Equal
-    motions represented with different pieces or ramps are different subjects; that
-    never lets one reuse the other's evidence wrongly."""
+    """The exact timed trajectory: its law, every ramp, and its effective limits. Each
+    piece's validation tag, the validated classes, the producer, and the provenance are
+    validation evidence, not the trajectory, so two trajectories differing only there
+    are one subject. So is a source path given as evidence: a report records it
+    separately (``MotionValidation.evidence``). Equal motions represented with different
+    pieces or ramps are different subjects; that never lets one reuse the other's
+    evidence wrongly."""
     return TrajectorySubject(
         group=trajectory.group,
         joints=trajectory.joints,
@@ -1380,11 +1473,13 @@ def trajectory_identity(trajectory: TimedTrajectory) -> str:
 
 def constraints_identity(request: PlanningRequest) -> str:
     """The constraints a validator for ``request`` enforces."""
+    offset = request.goal if isinstance(request.goal, OffsetGoal) else None
     return fingerprint(
         ConstraintSet(
             description=request.description,
             path_constraint=request.path_constraint,
-            frame=request.frame if request.path_constraint else None,
+            offset=offset,
+            frame=request.frame if request.path_constraint or offset is not None else None,
         )
     )
 
@@ -1406,29 +1501,41 @@ class ExecutionCheck(Value):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PreparedTrajectory(Record):
-    """A runtime command sampled from a timed trajectory, with the independent checks it
-    passed under the runtime's own interpolation. Only a command whose every check
-    passed can exist, so one that decodes is ready to execute."""
+    """A runtime command compiled from a timed trajectory: the readiness checks it
+    passed, and the validation evidence for both motions, the source trajectory and the
+    command as the runtime will execute it, from one validator. Only a command whose
+    every check passed and whose motions are both valid can exist, so one that decodes
+    is ready to execute."""
 
     SCHEMA = "ssrobot.PreparedTrajectory"
-    VERSION = 1
+    VERSION = 2
 
-    request: str = field(metadata=meta("Fingerprint of the request it was planned for."))
-    source: str = field(metadata=meta("Fingerprint of the timed trajectory it samples."))
+    request: PlanningRequest = field(metadata=meta("The request it was planned for."))
+    source: str = field(
+        metadata=meta("The source trajectory's identity (trajectory_identity), which it samples.")
+    )
     source_law: TimingLaw = field(metadata=meta("The source trajectory's law."))
     period_ns: int = field(metadata=meta("The sampling period.", unit="ns"))
     runtime_interpolation: PathInterpolation = field(
         metadata=meta("How the runtime moves between the command's waypoints.")
     )
     command: JointTrajectory = field(metadata=meta("The command to submit."))
-    checks: tuple[ExecutionCheck, ...] = field(metadata=meta("Every check, all passed."))
+    checks: tuple[ExecutionCheck, ...] = field(metadata=meta("Every readiness check, all passed."))
+    source_validation: MotionValidation = field(
+        metadata=meta("The validator's report for the source trajectory.")
+    )
+    compiled_validation: MotionValidation = field(
+        metadata=meta("The same validator's report for the command, as a linear path.")
+    )
+    geometry_preserved: bool = field(
+        metadata=meta("Whether the command traces exactly the validated source path.")
+    )
 
     def _validate(self) -> None:
-        for name in ("request", "source"):
-            if not _FINGERPRINT.fullmatch(getattr(self, name)):
-                raise ValidationError(
-                    "invalid_fingerprint", f"{name} must be a SHA-256 hex digest", path=name
-                )
+        if not _FINGERPRINT.fullmatch(self.source):
+            raise ValidationError(
+                "invalid_fingerprint", "source must be a SHA-256 hex digest", path="source"
+            )
         if self.period_ns <= 0:
             raise ValidationError("out_of_limits", "period_ns must be positive", path="period_ns")
         if not self.checks:
@@ -1436,6 +1543,52 @@ class PreparedTrajectory(Record):
         failed = [c.name for c in self.checks if not c.passed]
         if failed:
             raise ValidationError("execution_unready", f"failed checks {failed}", path="checks")
+        source, compiled = self.source_validation, self.compiled_validation
+        for name, report in (("source_validation", source), ("compiled_validation", compiled)):
+            if not report.valid:
+                raise ValidationError("execution_unready", f"{name} is invalid", path=name)
+        if source.validator != compiled.validator:
+            raise ValidationError(
+                "validation_mismatch",
+                "both motions must be validated by one validator",
+                path="compiled_validation.validator",
+            )
+        request, validator = self.request, source.validator
+        if (
+            validator.snapshot != request.snapshot
+            or (validator.group, validator.joints) != (request.group, request.joints)
+            or validator.constraints != constraints_identity(request)
+        ):
+            raise ValidationError(
+                "validation_mismatch",
+                "the validator is bound to another snapshot, group, or constraints than the "
+                "request",
+                path="source_validation.validator",
+            )
+        if (self.command.group, self.command.joints) != (request.group, request.joints):
+            raise ValidationError(
+                "joint_mismatch", "the command moves other joints than the request", path="command"
+            )
+        if source.subject is not ValidationSubject.TRAJECTORY or source.motion != self.source:
+            raise ValidationError(
+                "validation_mismatch",
+                "source_validation is not about the source trajectory",
+                path="source_validation",
+            )
+        command = self.command
+        try:
+            check_subject(
+                compiled,
+                MotionSubject(
+                    kind=ValidationSubject.PATH,
+                    group=command.group,
+                    joints=command.joints,
+                    waypoints=command.positions,
+                    interpolation=self.runtime_interpolation,
+                ),
+            )
+        except ValidationError as e:
+            raise ValidationError(e.code, e.message, path=f"compiled_validation.{e.path}") from None
 
 
 # -- Request construction --------------------------------------------------------------

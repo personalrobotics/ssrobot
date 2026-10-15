@@ -10,6 +10,7 @@ artifacts are byte-identical. Reproduce with
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 from collections.abc import Callable, Sequence
@@ -20,6 +21,7 @@ from typing import Any
 import mujoco
 import numpy as np
 import pytest
+import sscbirrt
 
 from ssrobot import (
     ConfigurationGoal,
@@ -44,7 +46,13 @@ from ssrobot import (
     read_trace,
 )
 from ssrobot.mujoco import MujocoRuntime
-from ssrobot.planning import CBiRRT, RestToRestProcessor, SsikKinematics, _frames, prepare
+from ssrobot.planning import CBiRRT, RestToRestProcessor, SsikKinematics, prepare
+from ssrobot.planning_contracts import (
+    ValidationFailure,
+    path_identity,
+    path_subject,
+    trajectory_identity,
+)
 from ssrobot.validation import check_trajectory_rates
 from tests.test_mujoco_planning import FLOOR, INTO_PEDESTAL, _hold
 from tests.test_mujoco_scene import ABOVE, ASIDE, OPTIONS, PACKAGE, SCENE, _arm
@@ -104,7 +112,17 @@ def _carry(out: Path) -> dict[str, Any]:
                 acceleration_scaling=0.5,
             )
             scene = ctx.planning_scene(snapshot, arm.group)
-            ready = prepare(result, scene, description=description, period_ns=PERIOD_NS)
+            validator = planner.validator(result.request, scene)
+            ready = prepare(
+                result, scene, validator=validator, description=description, period_ns=PERIOD_NS
+            )
+            assert result.path is not None and result.trajectory is not None
+            # The same validator answers the same way through the public call.
+            assert validator.validate_path(result.path) == result.validation[0]
+            assert (
+                validator.validate_trajectory(result.trajectory, result.path)
+                == result.validation[1]
+            )
             execution = ctx.submit(ready.command, snapshot=snapshot, source="planner")
             status = ctx.run_until(execution, max_ticks=5_000)
             report[name] = _case(out, name, result, ready)
@@ -131,13 +149,12 @@ def test_sscbirrt_plans_a_carry_that_executes(artifacts: Path, tmp_path: Path) -
         assert case["backend"] == "native"
         assert case["path_waypoints"] >= 2 and case["trajectory_pieces"] >= 1
         assert all(case["checks"].values()) and set(case["checks"]) == {
+            "source_motion",
+            "compiled_motion",
             "description_limits",
             "effective_rates",
             "start",
             "goal",
-            "continuous_joints",
-            "chord_resolution",
-            "collision",
         }
         assert case["execution"] == "succeeded"
         assert all(abs(a - b) <= 0.03 for a, b in zip(case["reached"], goal, strict=True))
@@ -145,8 +162,12 @@ def test_sscbirrt_plans_a_carry_that_executes(artifacts: Path, tmp_path: Path) -
         prepared = loads((artifacts / f"{name}.prepared.json").read_text(), PreparedTrajectory)
         # The command samples the planner's own trajectory: no second timing pass.
         assert result.trajectory is not None and result.path is not None
-        assert prepared.source == result.trajectory.fingerprint()
+        assert prepared.source == trajectory_identity(result.trajectory)
         assert prepared.command == result.trajectory.sample(PERIOD_NS)
+        # One validator answered for the source and for the command as executed.
+        assert prepared.source_validation == result.validation[1]
+        assert prepared.compiled_validation.validator == prepared.source_validation.validator
+        assert not prepared.geometry_preserved  # 2 ms chords are a new motion
     assert report["held"] == [True] and report["violations"] == 0
 
 
@@ -163,18 +184,31 @@ def _paths(out: Path) -> dict[str, Any]:
         request = arm.request(ConfigurationGoal(configurations=(ABOVE,)), snapshot=snapshot)
         scene = ctx.planning_scene(snapshot, arm.group)
 
-        neutral = CBiRRT(description).plan(request, _Neutral(scene))
-        ready = prepare(neutral, scene, description=description, period_ns=PERIOD_NS)
+        planner = CBiRRT(description)
+        neutral_scene = _Neutral(scene)
+        neutral = planner.plan(request, neutral_scene)
+        validator = planner.validator(request, neutral_scene)
+        ready = prepare(
+            neutral, scene, validator=validator, description=description, period_ns=PERIOD_NS
+        )
         report["neutral"] = _case(out, "neutral", neutral, ready)
 
-        geometric = replace(neutral, trajectory=None)  # what a geometry-only planner returns
+        # What a geometry-only planner returns: the path and its report.
+        geometric = replace(neutral, trajectory=None, validation=neutral.validation[:1])
         try:
-            prepare(geometric, scene, description=description, period_ns=PERIOD_NS)
+            prepare(
+                geometric,
+                scene,
+                validator=validator,
+                description=description,
+                period_ns=PERIOD_NS,
+            )
         except SsrobotError as e:
             report["geometric_without_processor"] = e.code
         timed = prepare(
             geometric,
             scene,
+            validator=validator,
             description=description,
             period_ns=PERIOD_NS,
             processor=RestToRestProcessor(),
@@ -232,18 +266,12 @@ def test_adapter_refusals(artifacts: Path) -> None:
             return ConfigurationGoal(configurations=(tuple(q),))
 
         through = arm.request(configuration(q0), snapshot=snapshot)
-        colliding = PlanResult(
-            request=through,
-            planner="scripted",
-            backend="python",
-            status=PlanStatus.SUCCEEDED,
-            path=GeometricPath(
-                group="arm",
-                joints=through.joints,
-                waypoints=(through.start, INTO_PEDESTAL, through.start),
-                validation_resolution=0.05,
-            ),
+        into = GeometricPath(
+            group="arm",
+            joints=through.joints,
+            waypoints=(through.start, INTO_PEDESTAL, through.start),
         )
+        refused = planner.validator(through, scene).validate_path(into)
         codes = {
             "no_kinematics_for_three_joints": _code(
                 lambda: SsikKinematics.from_package(package, "arm")
@@ -256,24 +284,29 @@ def test_adapter_refusals(artifacts: Path) -> None:
             ),
             "goal_in_collision": plan(configuration(FLOOR)).status.value,
             "cancelled": plan(configuration(ASIDE), abort=lambda: True).status.value,
-            "colliding_command": _code(
-                lambda: prepare(
-                    colliding,
-                    scene,
-                    description=description,
-                    period_ns=PERIOD_NS,
-                    processor=RestToRestProcessor(),
+            "success_claiming_a_colliding_path": _code(
+                lambda: PlanResult(
+                    request=through,
+                    planner="scripted",
+                    backend="python",
+                    status=PlanStatus.SUCCEEDED,
+                    path=into,
+                    validation=(refused,),
                 )
             ),
         }
     (artifacts / "refusals.json").write_text(json.dumps(codes, indent=2) + "\n")
+    witness = refused.witness
+    assert not refused.valid and witness is not None
+    assert witness.failure is ValidationFailure.COLLISION and witness.segment == 0
+    assert "pedestal" in {name for c in witness.contacts for name in (c.first, c.second)}
     assert codes == {
         "no_kinematics_for_three_joints": "kinematics_unavailable",
         "pose_goal_without_kinematics": "unsupported_goal",
         "effort_limits": "unsupported_constraint",
         "goal_in_collision": "infeasible",
         "cancelled": "cancelled",
-        "colliding_command": "execution_unready",
+        "success_claiming_a_colliding_path": "invalid_motion",
     }
 
 
@@ -320,7 +353,6 @@ def test_rest_to_rest_timing_is_exact_and_within_limits() -> None:
             (0.2, 0.3, -0.5),
             (0.2, 0.3, 0.5),
         ),
-        validation_resolution=0.05,
     )
     timed = RestToRestProcessor().process(path, limits)
     distinct = [q for i, q in enumerate(path.waypoints) if i == 0 or q != path.waypoints[i - 1]]
@@ -360,87 +392,155 @@ def _line(start: Pose, goal: Pose) -> Tsr:
     )
 
 
-def test_preparation_never_claims_more_than_it_rechecks(artifacts: Path) -> None:
-    """The bare example arm swings its elbow 0.5 rad, timed by ``RestToRestProcessor``.
+def test_one_validator_answers_everywhere(artifacts: Path) -> None:
+    """Every motion-validity answer comes from the planner's validator, and nothing else.
 
-    - Resolution: a path validated at 0.01 is refused when its runtime steps, at a 20 ms
-      period, reach 0.03, though the scene's own resolution is 0.05; at 2 ms they are
-      0.003 and it is accepted.
-    - Path constraints between waypoints: the tcp must stay on the straight line between
-      its start and goal. Sampled at a 10 s period the command is just those two
-      waypoints, which both lie on the line, but the executed step between them arcs
-      off it, and is refused.
+    On the example arm in the pedestal scene, the shoulder swings from -0.5 to 0.5 rad
+    with the elbow lowered: both waypoints are valid states, but the motion between them
+    sweeps the fingers through the pedestal. The planner's validator subdivides the
+    motion and refuses it, naming the interior state and the contact. ``prepare`` has no
+    check of its own to disagree with it. Repeated and reordered queries give equal
+    reports. A path constraint the planner cannot plan with (no kinematics for this
+    three-joint arm) has no validator either.
     """
     package = load_package(PACKAGE)
     description = package.description
-    with RobotContext(description, MujocoRuntime(package)) as ctx:
+    planner = CBiRRT(description)
+    start, goal = (-0.5, 0.3, 0.0), (0.5, 0.3, 0.0)
+    with RobotContext(description, MujocoRuntime(package, scene=SCENE, **OPTIONS)) as ctx:
         snapshot = ctx.snapshot()
         arm = ctx.manipulator()
-        start = tuple(snapshot.position(j) for j in description.group(arm.group).joints)
-        goal = (start[0], start[1] + 0.5, start[2])
-        fine = ctx.planning_scene(snapshot, arm.group)
-        coarse = ctx.planning_scene(snapshot, arm.group, edge_resolution=1.0)
-
-        def plan(resolution: float, constraint: tuple[Tsr, ...] = ()) -> PlanResult:
-            request = arm.request(
-                ConfigurationGoal(configurations=(goal,)),
-                snapshot=snapshot,
-                path_constraint=constraint,
-                frame="tcp" if constraint else None,
-            )
-            path = GeometricPath(
-                group=arm.group,
-                joints=request.joints,
-                waypoints=(start, goal),
-                validation_resolution=resolution,
-            )
-            return PlanResult(
-                request=request,
-                planner="scripted",
-                backend="python",
-                status=PlanStatus.SUCCEEDED,
-                path=path,
-            )
-
-        def attempt(result: PlanResult, scene: PlanningScene, period_ns: int) -> dict[str, Any]:
-            try:
-                ready = prepare(
-                    result,
-                    scene,
-                    description=description,
-                    period_ns=period_ns,
-                    processor=RestToRestProcessor(),
-                )
-            except SsrobotError as e:
-                return {"code": e.code, "message": e.message}
-            return {"checks": {c.name: c.detail for c in ready.checks}}
-
-        line = _line(fine.forward_kinematics(start, "tcp"), fine.forward_kinematics(goal, "tcp"))
-        knots = [
-            float(
-                _frames.region(line).distance(_frames.matrix(fine.forward_kinematics(q, "tcp")))[0]
-            )
-            for q in (start, goal)
-        ]
-        middle = tuple((a + b) / 2 for a, b in zip(start, goal, strict=True))
-        report: dict[str, Any] = {
-            "resolution_20ms": attempt(plan(0.01), fine, 20_000_000),
-            "resolution_2ms": attempt(plan(0.01), fine, PERIOD_NS),
-            "line_knot_distances": knots,
-            "line_midpoint_distance": float(
-                _frames.region(line).distance(
-                    _frames.matrix(fine.forward_kinematics(middle, "tcp"))
-                )[0]
-            ),
-            "line_10s": attempt(plan(1.0, (line,)), coarse, 10_000_000_000),
-        }
+        scene = ctx.planning_scene(snapshot, arm.group)
+        request = arm.request(ConfigurationGoal(configurations=(goal,)), snapshot=snapshot)
+        validator = planner.validator(request, scene)
+        swing = GeometricPath(
+            group=arm.group,
+            joints=request.joints,
+            waypoints=(start, goal),
+        )
+        first = validator.validate_path(swing)
+        knots = [validator.validate_state(start), validator.validate_state(goal)]
+        validator.validate_motion(goal, start)  # other queries in between change nothing
+        again = validator.validate_path(swing)
+        line = _line(scene.forward_kinematics(start, "tcp"), scene.forward_kinematics(goal, "tcp"))
+        constrained = arm.request(
+            ConfigurationGoal(configurations=(goal,)),
+            snapshot=snapshot,
+            path_constraint=(line,),
+            frame="tcp",
+        )
+        no_kinematics = _code(lambda: planner.validator(constrained, scene))
+    report = {
+        "policy": json.loads(dumps(first))["validator"]["policy"],
+        "knots_valid": [k.valid for k in knots],
+        "swing": json.loads(dumps(first)),
+        "repeated_equal": again == first,
+        "path_constraint_without_kinematics": no_kinematics,
+    }
     (artifacts / "evidence.json").write_text(json.dumps(report, indent=2) + "\n")
 
-    assert report["resolution_20ms"]["code"] == "execution_unready"
-    assert report["resolution_20ms"]["message"].startswith("chord_resolution:")
-    assert "bound 0.01" in report["resolution_20ms"]["message"]
-    assert "chord_resolution" in report["resolution_2ms"]["checks"]
-    assert max(report["line_knot_distances"]) < 1e-9  # both waypoints are on the line
-    assert report["line_midpoint_distance"] > 1e-3  # the executed step is not
-    assert report["line_10s"]["code"] == "execution_unready"
-    assert report["line_10s"]["message"].startswith("tsr_path:")
+    assert report["knots_valid"] == [True, True]
+    witness = first.witness
+    assert not first.valid and witness is not None
+    assert witness.failure is ValidationFailure.COLLISION
+    assert witness.segment == 0 and witness.fraction is not None and 0 < witness.fraction < 1
+    assert ("left_finger", "pedestal") in {(c.first, c.second) for c in witness.contacts}
+    assert first.validator.implementation.endswith(" native")
+    assert first.validator.policy.mechanism == "joint_subdivision"
+    assert report["repeated_equal"]
+    assert no_kinematics == "unsupported_constraint"
+
+
+def test_evidence_is_bound_not_relabelled(artifacts: Path) -> None:
+    """The adapter records sscbirrt's answers faithfully and binds them to their subject.
+
+    - A source path given as evidence does not change a trajectory's identity; the report
+      records it separately.
+    - sscbirrt reports relabelled as another subject, or under another policy, are refused
+      (``planner_contract``), not translated.
+    - Compiling preserves geometry only when the command traces the source path: true
+      for a one-segment path stopped at rest, false for sscbirrt's shortcut trajectory.
+    """
+    package = load_package(PACKAGE)
+    description = package.description
+    planner = CBiRRT(description)
+    with RobotContext(description, MujocoRuntime(package, scene=SCENE, **OPTIONS)) as ctx:
+        snapshot = ctx.snapshot()
+        arm = ctx.manipulator()
+        scene = ctx.planning_scene(snapshot, arm.group)
+        shortcut = arm.plan_to_configuration(ASIDE, snapshot=snapshot, planner=planner)
+        assert shortcut.path is not None and shortcut.trajectory is not None
+        validator = planner.validator(shortcut.request, scene)
+        with_path = validator.validate_trajectory(shortcut.trajectory, shortcut.path)
+        without_path = validator.validate_trajectory(shortcut.trajectory)
+
+        native = validator.native
+        straight = GeometricPath(
+            group=arm.group, joints=shortcut.request.joints, waypoints=shortcut.path.waypoints[:2]
+        )
+        upstream = native.validate_path([np.array(q) for q in straight.waypoints])
+        relabelled = {
+            "as_a_state": _code(
+                lambda: validator.record(
+                    dataclasses.replace(upstream, subject="state"), path_subject(straight)
+                )
+            ),
+            "under_another_policy": _code(
+                lambda: validator.record(
+                    dataclasses.replace(upstream, policy=sscbirrt.ValidationPolicy(resolution=0.9)),
+                    path_subject(straight),
+                )
+            ),
+            "with_another_interval_count": _code(
+                lambda: validator.record(
+                    dataclasses.replace(upstream, intervals=upstream.intervals + 1),
+                    path_subject(straight),
+                )
+            ),
+        }
+
+        # A one-segment plan, stopped at rest, compiled every 2 ms: the same line.
+        request = arm.request(
+            ConfigurationGoal(configurations=(straight.waypoints[-1],)), snapshot=snapshot
+        )
+        line_validator = planner.validator(request, scene)
+        line = PlanResult(
+            request=request,
+            planner="scripted",
+            backend="native",
+            status=PlanStatus.SUCCEEDED,
+            path=straight,
+            validation=(line_validator.validate_path(straight),),
+        )
+        preserved = prepare(
+            line,
+            scene,
+            validator=line_validator,
+            description=description,
+            period_ns=PERIOD_NS,
+            processor=RestToRestProcessor(),
+        )
+        changed = prepare(
+            shortcut, scene, validator=validator, description=description, period_ns=PERIOD_NS
+        )
+    report = {
+        "identity_with_and_without_path": [with_path.motion, without_path.motion],
+        "evidence_with_and_without_path": [with_path.evidence, without_path.evidence],
+        "relabelled": relabelled,
+        "geometry_preserved": {
+            "one_segment_rest_to_rest": preserved.geometry_preserved,
+            "sscbirrt_shortcut": changed.geometry_preserved,
+        },
+    }
+    (artifacts / "evidence.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert with_path.motion == without_path.motion  # one trajectory, one identity
+    assert with_path.evidence == path_identity(shortcut.path) and without_path.evidence is None
+    assert relabelled == {
+        "as_a_state": "planner_contract",
+        "under_another_policy": "planner_contract",
+        "with_another_interval_count": "planner_contract",
+    }
+    assert report["geometry_preserved"] == {
+        "one_segment_rest_to_rest": True,
+        "sscbirrt_shortcut": False,
+    }

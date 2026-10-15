@@ -1,0 +1,1097 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.PreparedTrajectory v2",
+  "$ref": "#/$defs/PreparedTrajectory",
+  "$defs": {
+    "BasePoseGoal": {
+      "type": "object",
+      "description": "Bring a mobile base's frame to a world pose.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.BasePoseGoal"
+        },
+        "version": {
+          "const": 1
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose",
+          "description": "The base frame's goal pose in the world."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "pose"
+      ],
+      "additionalProperties": false
+    },
+    "ConfigurationGoal": {
+      "type": "object",
+      "description": "Reach any one of these configurations of the request's joints.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.ConfigurationGoal"
+        },
+        "version": {
+          "const": 1
+        },
+        "configurations": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "description": "Goal configurations, one value per joint in group order.",
+          "x-unit": "joint"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "configurations"
+      ],
+      "additionalProperties": false
+    },
+    "Contact": {
+      "type": "object",
+      "description": "A contact that makes a planning-scene configuration invalid.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "self_collision",
+            "robot_environment"
+          ],
+          "description": "Which rule the contact breaks."
+        },
+        "first": {
+          "type": "string",
+          "description": "A description frame, scene object or fixture, or 'world'."
+        },
+        "second": {
+          "type": "string",
+          "description": "A description frame, scene object or fixture, or 'world'."
+        },
+        "distance": {
+          "type": "number",
+          "description": "Signed distance; negative is penetration.",
+          "x-unit": "m"
+        }
+      },
+      "required": [
+        "kind",
+        "first",
+        "second",
+        "distance"
+      ],
+      "additionalProperties": false
+    },
+    "EffectiveLimits": {
+      "type": "object",
+      "description": "The velocity and acceleration limits a motion must respect: the description's",
+      "properties": {
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joint names, in group order."
+        },
+        "velocity": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Hardware velocity limit per joint.",
+          "x-unit": "joint/s"
+        },
+        "acceleration": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Hardware acceleration limit per joint.",
+          "x-unit": "joint/s^2"
+        },
+        "velocity_scaling": {
+          "type": "number",
+          "description": "Factor in (0, 1] on velocity.",
+          "x-unit": "1"
+        },
+        "acceleration_scaling": {
+          "type": "number",
+          "description": "Factor in (0, 1] on acceleration.",
+          "x-unit": "1"
+        },
+        "effective_velocity": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "velocity times velocity_scaling.",
+          "x-unit": "joint/s"
+        },
+        "effective_acceleration": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "acceleration times acceleration_scaling.",
+          "x-unit": "joint/s^2"
+        }
+      },
+      "required": [
+        "joints",
+        "velocity",
+        "acceleration",
+        "velocity_scaling",
+        "acceleration_scaling",
+        "effective_velocity",
+        "effective_acceleration"
+      ],
+      "additionalProperties": false
+    },
+    "ExecutionCheck": {
+      "type": "object",
+      "description": "One independent check of a runtime command.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "What was checked."
+        },
+        "passed": {
+          "type": "boolean",
+          "description": "Whether the command satisfies it."
+        },
+        "detail": {
+          "type": "string",
+          "description": "The worst case found, with its bound."
+        }
+      },
+      "required": [
+        "name",
+        "passed",
+        "detail"
+      ],
+      "additionalProperties": false
+    },
+    "InvalidWitness": {
+      "type": "object",
+      "description": "The first invalid state found, where it is, and why.",
+      "properties": {
+        "failure": {
+          "type": "string",
+          "enum": [
+            "position_limits",
+            "collision",
+            "path_constraint",
+            "ambiguous",
+            "unsupported_motion"
+          ],
+          "description": "What failed."
+        },
+        "segment": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Interval index, for a motion or path.",
+          "x-unit": "count"
+        },
+        "fraction": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Position within the interval, 0 to 1.",
+          "x-unit": "1"
+        },
+        "time_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Time into the trajectory, for a trajectory.",
+          "x-unit": "s"
+        },
+        "configuration": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The first invalid configuration found.",
+          "x-unit": "joint"
+        },
+        "contacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Contact"
+          },
+          "description": "The disallowed contacts."
+        },
+        "constraint": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Index of the violated path constraint.",
+          "x-unit": "count"
+        },
+        "detail": {
+          "type": "string",
+          "description": "A human-readable explanation."
+        }
+      },
+      "required": [
+        "failure",
+        "configuration"
+      ],
+      "additionalProperties": false
+    },
+    "JointTrajectory": {
+      "type": "object",
+      "description": "Timed joint positions for a group, executed from the time it starts.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.JointTrajectory"
+        },
+        "version": {
+          "const": 1
+        },
+        "group": {
+          "type": "string",
+          "description": "Joint group name."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joint names; must equal the group's order."
+        },
+        "time_from_start_ns": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Waypoint times; start at 0 and strictly increase.",
+          "x-unit": "ns"
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "description": "One row of joint positions per waypoint.",
+          "x-unit": "joint"
+        },
+        "velocities": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional row of joint velocities per waypoint.",
+          "x-unit": "joint/s"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "group",
+        "joints",
+        "time_from_start_ns",
+        "positions"
+      ],
+      "additionalProperties": false
+    },
+    "MotionValidation": {
+      "type": "object",
+      "description": "One validator's answer for one exact subject: valid under the reported policy, or",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.MotionValidation"
+        },
+        "version": {
+          "const": 2
+        },
+        "subject": {
+          "type": "string",
+          "enum": [
+            "state",
+            "motion",
+            "path",
+            "trajectory"
+          ],
+          "description": "What was validated."
+        },
+        "motion": {
+          "type": "string",
+          "description": "Fingerprint of the exact subject; see *_identity."
+        },
+        "interpolation": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "linear"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a motion or path is interpolated."
+        },
+        "law": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "piecewise_constant_acceleration"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A trajectory's law."
+        },
+        "intervals": {
+          "type": "integer",
+          "description": "Intervals in the subject: 0 for a state.",
+          "x-unit": "count"
+        },
+        "duration_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A trajectory's duration.",
+          "x-unit": "s"
+        },
+        "validator": {
+          "$ref": "#/$defs/ValidatorIdentity",
+          "description": "Who answered, and under what policy."
+        },
+        "valid": {
+          "type": "boolean",
+          "description": "Whether the subject is valid under the policy."
+        },
+        "witness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InvalidWitness"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The first invalid state; present exactly when invalid."
+        },
+        "checks": {
+          "type": "integer",
+          "description": "State or interval checks performed.",
+          "x-unit": "count"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a trajectory validated along its source path, that path's identity (path_identity). Evidence, not part of the subject: the policy says how it is used."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "subject",
+        "motion",
+        "intervals",
+        "validator",
+        "valid",
+        "checks"
+      ],
+      "additionalProperties": false
+    },
+    "OffsetGoal": {
+      "type": "object",
+      "description": "Move the request's frame in a straight line: ``distance`` along ``direction`` in",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.OffsetGoal"
+        },
+        "version": {
+          "const": 1
+        },
+        "direction": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Unit direction of motion in the world.",
+          "x-unit": "1"
+        },
+        "distance": {
+          "type": "number",
+          "description": "How far to move.",
+          "x-unit": "m"
+        },
+        "position_tolerance": {
+          "type": "number",
+          "description": "Allowed distance from the line and the goal.",
+          "x-unit": "m"
+        },
+        "rotation_tolerance": {
+          "type": "number",
+          "description": "Allowed rotation from the start orientation, per axis.",
+          "x-unit": "rad"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "direction",
+        "distance",
+        "position_tolerance",
+        "rotation_tolerance"
+      ],
+      "additionalProperties": false
+    },
+    "PlanningRequest": {
+      "type": "object",
+      "description": "Everything a planner needs, fully resolved: who plans, from where, to what, under",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.PlanningRequest"
+        },
+        "version": {
+          "const": 1
+        },
+        "robot": {
+          "type": "string",
+          "description": "Robot name."
+        },
+        "description": {
+          "type": "string",
+          "description": "Fingerprint of the robot description."
+        },
+        "snapshot": {
+          "type": "string",
+          "description": "Fingerprint of the snapshot it plans in."
+        },
+        "revision": {
+          "type": "integer",
+          "description": "The snapshot's scene revision.",
+          "x-unit": "count"
+        },
+        "component": {
+          "type": "string",
+          "description": "The manipulator or mobile base that moves."
+        },
+        "group": {
+          "type": "string",
+          "description": "The joint group that moves."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The group's joints, in order."
+        },
+        "start": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The joints' positions in the snapshot.",
+          "x-unit": "joint"
+        },
+        "frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The frame pose goals and path constraints constrain, if any."
+        },
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConfigurationGoal"
+            },
+            {
+              "$ref": "#/$defs/PoseGoal"
+            },
+            {
+              "$ref": "#/$defs/OffsetGoal"
+            },
+            {
+              "$ref": "#/$defs/TsrGoal"
+            },
+            {
+              "$ref": "#/$defs/BasePoseGoal"
+            }
+          ],
+          "description": "What to reach."
+        },
+        "path_constraint": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Tsr"
+          },
+          "description": "Regions frame must stay inside throughout; all apply."
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "position_limits",
+              "collision",
+              "tsr_path",
+              "velocity_limits",
+              "acceleration_limits",
+              "effort_limits"
+            ]
+          },
+          "description": "Every constraint class the motion must satisfy, sorted."
+        },
+        "limits": {
+          "$ref": "#/$defs/EffectiveLimits",
+          "description": "The velocity and acceleration limits."
+        },
+        "timeout_s": {
+          "type": "number",
+          "description": "Planning time budget.",
+          "x-unit": "s"
+        },
+        "seed": {
+          "type": "integer",
+          "description": "Random seed; equal requests give equal results.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "robot",
+        "description",
+        "snapshot",
+        "revision",
+        "component",
+        "group",
+        "joints",
+        "start",
+        "frame",
+        "goal",
+        "constraints",
+        "limits",
+        "timeout_s",
+        "seed"
+      ],
+      "additionalProperties": false
+    },
+    "Pose": {
+      "type": "object",
+      "description": "A rigid transform: the pose of a child frame expressed in a parent frame.",
+      "properties": {
+        "position": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Child origin in parent coordinates.",
+          "x-unit": "m"
+        },
+        "quat_wxyz": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Unit quaternion (w, x, y, z) rotating child axes into parent.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "position",
+        "quat_wxyz"
+      ],
+      "additionalProperties": false
+    },
+    "PoseGoal": {
+      "type": "object",
+      "description": "Bring the request's frame to a world pose, within tolerances.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.PoseGoal"
+        },
+        "version": {
+          "const": 1
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose",
+          "description": "The frame's goal pose in the world."
+        },
+        "position_tolerance": {
+          "type": "number",
+          "description": "Allowed distance from the goal position.",
+          "x-unit": "m"
+        },
+        "rotation_tolerance": {
+          "type": "number",
+          "description": "Allowed rotation from the goal orientation, per axis.",
+          "x-unit": "rad"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "pose",
+        "position_tolerance",
+        "rotation_tolerance"
+      ],
+      "additionalProperties": false
+    },
+    "PreparedTrajectory": {
+      "type": "object",
+      "description": "A runtime command compiled from a timed trajectory: the readiness checks it",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.PreparedTrajectory"
+        },
+        "version": {
+          "const": 2
+        },
+        "request": {
+          "$ref": "#/$defs/PlanningRequest",
+          "description": "The request it was planned for."
+        },
+        "source": {
+          "type": "string",
+          "description": "The source trajectory's identity (trajectory_identity), which it samples."
+        },
+        "source_law": {
+          "type": "string",
+          "enum": [
+            "piecewise_constant_acceleration"
+          ],
+          "description": "The source trajectory's law."
+        },
+        "period_ns": {
+          "type": "integer",
+          "description": "The sampling period.",
+          "x-unit": "ns"
+        },
+        "runtime_interpolation": {
+          "type": "string",
+          "enum": [
+            "linear"
+          ],
+          "description": "How the runtime moves between the command's waypoints."
+        },
+        "command": {
+          "$ref": "#/$defs/JointTrajectory",
+          "description": "The command to submit."
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExecutionCheck"
+          },
+          "description": "Every readiness check, all passed."
+        },
+        "source_validation": {
+          "$ref": "#/$defs/MotionValidation",
+          "description": "The validator's report for the source trajectory."
+        },
+        "compiled_validation": {
+          "$ref": "#/$defs/MotionValidation",
+          "description": "The same validator's report for the command, as a linear path."
+        },
+        "geometry_preserved": {
+          "type": "boolean",
+          "description": "Whether the command traces exactly the validated source path."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "request",
+        "source",
+        "source_law",
+        "period_ns",
+        "runtime_interpolation",
+        "command",
+        "checks",
+        "source_validation",
+        "compiled_validation",
+        "geometry_preserved"
+      ],
+      "additionalProperties": false
+    },
+    "Tsr": {
+      "type": "object",
+      "description": "A task space region: the poses ``origin @ T_w @ offset`` with ``T_w`` within the",
+      "properties": {
+        "origin": {
+          "$ref": "#/$defs/Pose",
+          "description": "The region frame's pose in the world (T0_w)."
+        },
+        "offset": {
+          "$ref": "#/$defs/Pose",
+          "description": "The constrained frame in the region frame (Tw_e)."
+        },
+        "position_bounds": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            },
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            },
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Lower and upper x, y, z in the region frame.",
+          "x-unit": "m"
+        },
+        "rotation_bounds": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            },
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            },
+            {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Lower and upper roll, pitch, yaw.",
+          "x-unit": "rad"
+        }
+      },
+      "required": [
+        "origin",
+        "offset",
+        "position_bounds",
+        "rotation_bounds"
+      ],
+      "additionalProperties": false
+    },
+    "TsrGoal": {
+      "type": "object",
+      "description": "Bring the request's frame into any one of these regions.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.TsrGoal"
+        },
+        "version": {
+          "const": 1
+        },
+        "tsrs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Tsr"
+          },
+          "description": "Goal regions; any one suffices."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "tsrs"
+      ],
+      "additionalProperties": false
+    },
+    "ValidationPolicy": {
+      "type": "object",
+      "description": "What a validator checks, how, and what its answer guarantees. The guarantee is",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Policy name, e.g. 'joint_l2_subdivision'."
+        },
+        "mechanism": {
+          "type": "string",
+          "description": "How it validates, e.g. 'joint_subdivision', 'adaptive_bounded', 'exact'."
+        },
+        "guarantee": {
+          "type": "string",
+          "enum": [
+            "discrete",
+            "continuous"
+          ],
+          "description": "What a valid answer guarantees."
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Largest joint step between checked states.",
+          "x-unit": "joint"
+        },
+        "workspace_step_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Largest workspace motion between checked states.",
+          "x-unit": "m"
+        },
+        "clearance_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Clearance every checked state keeps.",
+          "x-unit": "m"
+        },
+        "ambiguity_band_m": {
+          "type": "number",
+          "description": "Distances within this band of a contact are refused.",
+          "x-unit": "m"
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Every other mechanism setting, as sorted (key, value) pairs."
+        },
+        "summary": {
+          "type": "string",
+          "description": "The guarantee in words."
+        }
+      },
+      "required": [
+        "name",
+        "mechanism",
+        "guarantee",
+        "ambiguity_band_m",
+        "summary"
+      ],
+      "additionalProperties": false
+    },
+    "ValidatorIdentity": {
+      "type": "object",
+      "description": "Which validator answered, under which policy, for which scene and constraints.",
+      "properties": {
+        "implementation": {
+          "type": "string",
+          "description": "Implementation name and version."
+        },
+        "policy": {
+          "$ref": "#/$defs/ValidationPolicy",
+          "description": "The policy it applies."
+        },
+        "snapshot": {
+          "type": "string",
+          "description": "Fingerprint of the scene snapshot it is bound to."
+        },
+        "group": {
+          "type": "string",
+          "description": "The joint group whose motions it validates."
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The group's joints, in order."
+        },
+        "constraints": {
+          "type": "string",
+          "description": "Fingerprint of the constraints it applies; see constraints_identity."
+        }
+      },
+      "required": [
+        "implementation",
+        "policy",
+        "snapshot",
+        "group",
+        "joints",
+        "constraints"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

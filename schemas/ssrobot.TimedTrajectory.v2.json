@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.TimedTrajectory v1",
+  "title": "ssrobot.TimedTrajectory v2",
   "$ref": "#/$defs/TimedTrajectory",
   "$defs": {
     "EffectiveLimits": {
@@ -120,13 +120,13 @@
     },
     "TimedTrajectory": {
       "type": "object",
-      "description": "An exact timed motion from rest to rest, as the component that produced it",
+      "description": "An exact timed motion from rest to rest: the source law, not a runtime command.",
       "properties": {
         "schema": {
           "const": "ssrobot.TimedTrajectory"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "group": {
           "type": "string",
@@ -172,11 +172,6 @@
           },
           "description": "Constraint classes its producer validated, sorted."
         },
-        "validation_resolution": {
-          "type": "number",
-          "description": "Largest joint step at which its geometry was checked.",
-          "x-unit": "joint"
-        },
         "producer": {
           "type": "string",
           "description": "What produced it, e.g. 'sscbirrt 3.5.0'."
@@ -209,7 +204,6 @@
         "pieces",
         "limits",
         "validated",
-        "validation_resolution",
         "producer"
       ],
       "additionalProperties": false

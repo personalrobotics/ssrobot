@@ -234,7 +234,6 @@ class IntervalWorld:
                     group=GROUP,
                     joints=JOINTS,
                     waypoints=tuple(waypoints),
-                    validation_resolution=1.0,
                 )
             )
             subject = ValidationSubject.PATH
@@ -351,13 +350,12 @@ def _l_shaped(q0: tuple[float, float], q1: tuple[float, float]) -> TimedTrajecto
         pieces=(piece,),
         limits=limits,
         validated=(),
-        validation_resolution=1.0,
         producer="l-shaped",
     )
 
 
 def _path(*waypoints: tuple[float, float]) -> GeometricPath:
-    return GeometricPath(group=GROUP, joints=JOINTS, waypoints=waypoints, validation_resolution=1.0)
+    return GeometricPath(group=GROUP, joints=JOINTS, waypoints=waypoints)
 
 
 def _scenario(out: Path) -> dict[str, Any]:
@@ -510,7 +508,6 @@ def test_reports_are_bound_to_their_exact_subject_and_validator() -> None:
         timed,
         pieces=tuple(replace(p, validation=PieceValidation.SHORTCUT) for p in timed.pieces),
         validated=(),
-        validation_resolution=0.25,
         producer="elsewhere",
         provenance=(("note", "same motion"),),
     )

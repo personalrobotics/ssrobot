@@ -175,9 +175,7 @@ class SnapshotRuntime(Runtime, Protocol):
         attachments, stamped like any direct answer."""
         ...
 
-    def planning_scene(
-        self, snapshot: SceneSnapshot, group: str, edge_resolution: float
-    ) -> PlanningScene:
+    def planning_scene(self, snapshot: SceneSnapshot, group: str) -> PlanningScene:
         """An isolated planning scene for ``group`` over ``snapshot``.
 
         Raises ``ValidationError("incompatible_snapshot")`` if the snapshot was captured

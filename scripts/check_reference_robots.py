@@ -303,15 +303,6 @@ def _matrix(pose: Any) -> Any:
     return T
 
 
-def _region(region: Any) -> Any:
-    """The sstsr region for an ssrobot ``Tsr``, independently of the planning adapter."""
-    import numpy as np
-    import tsr
-
-    bounds = np.array([*region.position_bounds, *region.rotation_bounds], dtype=float)
-    return tsr.TSR(T0_w=_matrix(region.origin), Tw_e=_matrix(region.offset), Bw=bounds)
-
-
 def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path) -> dict[str, Any]:
     """The two-robot planning proof (#24): one function for every robot.
 
@@ -365,15 +356,16 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
 
         continuous = {j.name for j in description.joints if j.kind is JointKind.CONTINUOUS}
 
-        def achieved(result: Any, snapshot: Any) -> dict[str, Any]:
-            """Where the robot actually is after executing, in a fresh snapshot.
+        def achieved(result: Any, planned_in: Any, snapshot: Any) -> dict[str, Any]:
+            """Where the robot actually is after executing, in a fresh snapshot: the
+            physical outcome, not geometric validity, which the planner's validator and
+            ``prepare``'s goal check already established.
 
             For a configuration goal: the largest joint error to the goal, continuous
-            joints modulo a turn. For a region goal: that the planned goal pose is in the
-            request's own regions (sstsr distance 0), and how far the executed frame ended
-            from that planned pose, in position and rotation. The executed pose is not
-            measured with sstsr's distance directly: it is wrong for a pose just under a
-            rotation bound narrower than a turn, reporting about pi for a 0.006 rad miss.
+            joints modulo a turn. For a region goal: how far the executed frame ended from
+            the planned goal pose, in position and rotation. The planned pose is computed
+            in the scene it was planned in; joints outside the group (ADA's articutool)
+            may settle during execution, which moves the frame without changing the plan.
             """
             request = result.request
             q = tuple(snapshot.position(j) for j in request.joints)
@@ -397,20 +389,17 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
                     "within": error <= ACHIEVED_JOINT_ERROR,
                     "bound": ACHIEVED_JOINT_ERROR,
                 }
+            plan_scene = ctx.planning_scene(planned_in, request.group)
+            planned = _matrix(plan_scene.forward_kinematics(result.trajectory.goal, request.frame))
             scene = ctx.planning_scene(snapshot, request.group)
-            planned = _matrix(scene.forward_kinematics(result.trajectory.goal, request.frame))
             actual = _matrix(scene.forward_kinematics(q, request.frame))
-            in_region = min(float(_region(t).distance(planned)[0]) for t in goal.tsrs)
             position = float(np.linalg.norm(actual[:3, 3] - planned[:3, 3]))
             cos = (np.trace(planned[:3, :3].T @ actual[:3, :3]) - 1) / 2
             rotation = float(math.acos(min(1.0, max(-1.0, cos))))
             return {
-                "planned_goal_tsr_distance": in_region,
                 "position_error_m": position,
                 "rotation_error_rad": rotation,
-                "within": in_region == 0.0
-                and position <= ACHIEVED_POSITION_M
-                and rotation <= ACHIEVED_ROTATION_RAD,
+                "within": position <= ACHIEVED_POSITION_M and rotation <= ACHIEVED_ROTATION_RAD,
                 "bounds": [ACHIEVED_POSITION_M, ACHIEVED_ROTATION_RAD],
             }
 
@@ -437,6 +426,7 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
             entry["trajectory_pieces"] = len(result.trajectory.pieces)
             entry["trajectory_duration_s"] = result.trajectory.duration
             scene = ctx.planning_scene(snapshot, arm.group)
+            validator = planner.validator(result.request, scene)
             if name == "region":
                 try:
                     arm.plan_to_tsr(
@@ -451,8 +441,9 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
                     record["refusals"]["unsupported_constraint"] = error.code
                 try:
                     prepare(
-                        replace(result, trajectory=None),
+                        replace(result, trajectory=None, validation=result.validation[:1]),
                         scene,
+                        validator=validator,
                         description=description,
                         period_ns=PLAN_PERIOD_NS,
                     )
@@ -460,19 +451,35 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
                 except SsrobotError as error:
                     record["refusals"]["path_only_result"] = error.code
             try:
-                ready = prepare(result, scene, description=description, period_ns=PLAN_PERIOD_NS)
+                ready = prepare(
+                    result,
+                    scene,
+                    validator=validator,
+                    description=description,
+                    period_ns=PLAN_PERIOD_NS,
+                )
             except SsrobotError as error:
                 entry["prepared"] = f"{error.code}: {error.message}"
                 continue
             (out / f"{name}.prepared.json").write_text(dumps(ready) + "\n")
             entry["prepared"] = {c.name: c.detail for c in ready.checks}
             entry["sampled_source"] = ready.command == result.trajectory.sample(PLAN_PERIOD_NS)
+            # One validator answered for the path, the trajectory, and the command.
+            entry["validation"] = {
+                "implementation": ready.compiled_validation.validator.implementation,
+                "policy": ready.compiled_validation.validator.policy.summary,
+                "path": result.validation[0].valid,
+                "trajectory": result.validation[1].valid,
+                "compiled": ready.compiled_validation.valid,
+                "compiled_checks": ready.compiled_validation.checks,
+                "geometry_preserved": ready.geometry_preserved,
+            }
             execution = ctx.submit(ready.command, snapshot=snapshot, source="planner")
             status = ctx.run_until(execution, max_ticks=20_000)
             entry["state"] = status.state.value
             entry["finished_ns"] = status.stamp.time_ns
             entry["planned_in_snapshot"] = execution.submission.snapshot == snapshot.fingerprint()
-            entry["achieved"] = achieved(result, ctx.snapshot())
+            entry["achieved"] = achieved(result, snapshot, ctx.snapshot())
     (out / "scenario.json").write_text(json.dumps(record, indent=2) + "\n")
     return record
 
@@ -650,7 +657,10 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
             "planning_scenario",
             [p.get("state") for p in plans.values()] == ["succeeded"] * 2
             and all(
-                p.get("sampled_source") and p.get("planned_in_snapshot") for p in plans.values()
+                p.get("sampled_source")
+                and p.get("planned_in_snapshot")
+                and p.get("validation", {}).get("compiled")
+                for p in plans.values()
             )
             and all(p["achieved"]["within"] for p in plans.values()),
             f"{len(plans)} plans: {plans}",

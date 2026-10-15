@@ -13,7 +13,8 @@ uv add "ssrobot[mujoco,planning]"
 | --- | --- |
 | `CBiRRT(description, *, kinematics=None, config=None, backend="auto")` | A `Planner`: sscbirrt's constrained bidirectional RRT, timed by sscbirrt |
 | `SsikKinematics.from_package(package, manipulator)` | Analytic IK for one manipulator from the package's canonical MJCF |
-| `prepare(result, scene, *, description, period_ns, processor=None, tolerance=1e-3)` | The runtime command for a plan, independently checked: a `PreparedTrajectory` |
+| `CBiRRT.validator(request, scene)` | The `MotionValidator` the planner applies to `request`: an `SscbirrtValidator` over sscbirrt's public `Validator` |
+| `prepare(result, scene, *, validator, description, period_ns, processor=None, tolerance=1e-3)` | The runtime command for a plan, its motions validated by `validator` and its readiness checked: a `PreparedTrajectory` |
 | `RestToRestProcessor()` | A path-preserving `TrajectoryProcessor` for a plan that has only a path |
 
 The adapter depends only on the neutral `PlanningScene`, never on `MujocoRuntime` or a
@@ -22,12 +23,12 @@ naming the missing package; core never imports it, and the dependency gate check
 
 ## Who owns what
 
-Motion validity is moving onto one validator (#132): the neutral `MotionValidator`
-contract in [contracts.md](contracts.md), *Motion validation*. When sscbirrt exposes
-its validator publicly (personalrobotics/sscbirrt#230), this adapter will wrap it.
-`prepare`'s own collision, path-constraint, and step-length loops, and
-`PlanningScene.is_edge_valid`, will then be removed. Until then, `prepare`'s checks
-below are a second definition of motion validity and can disagree with the planner's.
+Motion validity has one answer, from sscbirrt's validator, behind ssrobot's neutral
+`MotionValidator` contract ([contracts.md](contracts.md), *Motion validation*). The
+planner, its final checks, and `prepare` all ask the same validator, so the same motion
+gets the same answer everywhere. That answer is only as strong as the validator's
+policy. Today the policy is 0.05 rad between checked states, and nothing is claimed
+between them; personalrobotics/sscbirrt#222 owns that policy.
 
 Whoever changes the geometry of a motion validates the change:
 
@@ -60,15 +61,17 @@ A plan lowers the request into sscbirrt:
 | `OffsetGoal` | a goal TSR at the end of the line, and a path-constraint TSR along it, both in a frame whose x axis is the direction |
 | `TsrGoal`, `path_constraint` | goal TSRs (any one), constraint TSRs (all) |
 | the scene's `native()` checker, or its `is_valid` | the collision checker |
-| the scene's `edge_resolution` | `CBiRRTConfig.edge_resolution` |
+| (the planner's own `config`) | the validation policy: `CBiRRTConfig.edge_resolution`, recorded in every report |
 | `timeout_s`, `seed`, `abort` | `CBiRRTConfig.timeout`, the seed, `CBiRRTConfig.abort_fn` |
 | `limits.effective_velocity`, `limits.effective_acceleration` | `TrajectoryOptions` limits |
 
 The robot model's forward kinematics of `frame` comes from the bound IK when there is
 one, and from the planning scene otherwise. A MuJoCo planning scene's native checker
-and ssik kinematics of a family sscbirrt verifies natively run on sscbirrt's native
-backend; anything else runs on its Python backend, and the result's diagnostics give
-the reasons.
+with ssik kinematics runs on sscbirrt's native backend when ssik's native solver
+supports the arm's family (`ssik.cpp.NATIVE_FAMILIES`), as it does for the UR5e and the
+JACO2. Other kinematics, or a scene without a native checker, use the Python backend,
+and the result's diagnostics give the reasons. The validator reports which backend
+answered.
 
 Results map to `PlanStatus`:
 
@@ -106,47 +109,72 @@ with the scene's forward kinematics, at the start and 8 seeded configurations, w
 `RestToRestProcessor` times a geometric path along its own lines. Each segment follows
 one synchronized trapezoid (or triangle) in its path parameter, as fast as the most
 limiting joint allows, and comes to rest at every waypoint. It never leaves the path,
-so it validates only the velocity and acceleration limits, and its trajectory keeps the
-path's validation resolution.
+so it validates only the velocity and acceleration limits.
+
+## The validator
+
+`CBiRRT.validator(request, scene)` returns an `SscbirrtValidator`: sscbirrt's public
+`Validator` for the same planner and constraints as `plan` uses
+(`sscbirrt.CBiRRT.validator`), behind ssrobot's `MotionValidator`. It runs no sampling
+or constraint check of its own.
+- **Identity.** It records sscbirrt's version and backend as the implementation
+  (`sscbirrt 3.9.0 native`), sscbirrt's `ValidationPolicy` field for field, and the
+  request's snapshot, group, and `constraints_identity`.
+- **Witnesses.** Contacts come from the planning scene's state query, so they carry
+  ssrobot's names.
+- **The planner's own reports.** `PlanResult.validation` and `Trajectory.validation`
+  are recorded through the same mapping and checked against their subjects. The
+  trajectory is validated with its source path as evidence, as sscbirrt timed it along
+  that path; the report cites the path (`evidence`), and the trajectory's identity does
+  not include it.
+- **Faithful mapping.** Before translating an sscbirrt report, the adapter checks it
+  field by field. That covers its type, subject kind, interpolation or law, policy,
+  interval count, duration, and witness. Anything that disagrees is refused
+  (`planner_contract`), never relabelled.
 
 ## Preparing a command
 
-A plan carries its request, so `prepare(plan, scene, ...)` needs nothing else: every
-`plan_to_*` result goes straight to it. It samples the plan's trajectory every
-`period_ns` (`TimedTrajectory.sample`). A result with only a path needs `processor`, and
-fails with `untimed_result` without one.
+A plan carries its request and its evidence. `prepare(plan, scene, validator=...)`
+works as follows:
+- **Source evidence.** It checks that the plan's reports come from `validator`, about
+  exactly the plan's path and trajectory. A path-only result needs `processor`, and
+  fails with `untimed_result` without one. The processed trajectory is then validated by
+  the same validator.
+- **Compiling.** It samples the trajectory every `period_ns` (`TimedTrajectory.sample`).
+  The runtime executes the command as straight lines between those samples, which is a
+  new motion, so the same validator validates the command as a linear path
+  (`compiled_validation`). `geometry_preserved` is true only if the command traces
+  exactly the source path's curve (`traces`). That means the same endpoints, every
+  corner a command waypoint, and every command waypoint on the path in order, within
+  1e-9. A one-segment path stopped at rest compiles to the same line; a shortcut does
+  not.
 
-The verification resolution is the stricter of the scene's `edge_resolution` and the
-trajectory's own `validation_resolution`, so preparation never claims finer evidence
-than the trajectory carried. The command is then checked as the runtime executes it, a
-straight joint-space line between consecutive waypoints:
+The checks:
 
 | Check | Passes when |
 | --- | --- |
-| `description_limits` | `check_command` accepts it: joint order, position limits, and the description's velocity and acceleration limits |
+| `source_motion` | the validator's report on the source trajectory is valid |
+| `compiled_motion` | its report on the command, as executed, is valid; otherwise the witness and its contacts are named |
+| `description_limits` | `check_command` accepts the command: joint order, position limits, and the description's velocity and acceleration limits |
 | `effective_rates` | every step and waypoint is within the request's effective limits |
 | `start` | the first waypoint is the request's start, within 1e-9 |
 | `goal` | the last waypoint is within `tolerance` of a goal configuration (continuous joints modulo a turn), or of a goal TSR |
-| `continuous_joints` | no continuous joint moves half a turn or more in one step, so the line cannot go the wrong way round |
-| `chord_resolution` | no step is longer than the verification resolution in any joint. Otherwise a shorter `period_ns` is needed |
-| `collision` | the planning scene accepts every step as an edge |
-| `tsr_path` | with a path constraint or an offset goal: every state along every executed step, at both ends, at least the midpoint, and no two more than the verification resolution apart, is within `tolerance` of every constraint TSR. Forward kinematics are nonlinear, so waypoints on a constraint do not imply the steps between them are |
 
 Every failed check is named in one `execution_unready` error. A successful
-`PreparedTrajectory` records the request and source-trajectory fingerprints, the source
-law, the period, the runtime's linear interpolation, the command, and every check.
-Submit its command with the snapshot it was planned in.
+`PreparedTrajectory` records the request, the source trajectory's identity and law, the
+period, the runtime's linear interpolation, the command, every check, both reports,
+and `geometry_preserved`. Submit its command with the snapshot it was planned in.
 
 ## Evidence
 
 | Artifact | Shows |
 | --- | --- |
-| `artifacts/test_sscbirrt_plans_a_carry_that_executes/` | The example arm holds the box from `pedestal.xml`. A lift and a carry are each planned natively by `plan_to_configuration` at half speed and half acceleration, and go straight to `prepare`. Their results, which carry their requests, and their prepared commands are written. The command is exactly the sampled planner trajectory, so there is no second timing pass, and every check passes. Both execute, the box stays held with no violation, and a second run is byte-identical. |
+| `artifacts/test_sscbirrt_plans_a_carry_that_executes/` | The example arm holds the box from `pedestal.xml`. A lift and a carry are each planned natively by `plan_to_configuration` at half speed and half acceleration, and go straight to `prepare`. Their results, which carry their requests and the planner's own path and trajectory reports, and their prepared commands are written. The validator's public calls give the same reports, and the prepared command carries the source report and a compiled report from that validator, with `geometry_preserved` false. The command is exactly the sampled planner trajectory, so there is no second timing pass, and every check passes. Both execute, the box stays held with no violation, and a second run is byte-identical. |
 | `artifacts/test_neutral_providers_and_geometric_paths/` | The same query through a scene with no native checker plans on sscbirrt's Python backend and passes every check. Its path without the trajectory is refused without a processor (`untimed_result`); with `RestToRestProcessor` it is prepared and executed. A second run is byte-identical. |
-| `artifacts/test_preparation_never_claims_more_than_it_rechecks/evidence.json` | The bare example arm swings its elbow 0.5 rad, timed by `RestToRestProcessor`. A path validated at 0.01 is refused at a 20 ms period: its steps reach 0.031, though the scene's resolution is 0.05. At 2 ms its steps are 0.003 and it is accepted. With the tcp constrained to the straight line between its start and goal, a 10 s period gives two waypoints, both exactly on the line, but the executed step between them arcs 15 mm off it, so the plan is refused (`tsr_path`). |
-| `artifacts/test_adapter_refusals/refusals.json` | ssik cannot solve the three-joint arm (`kinematics_unavailable`); a pose goal without kinematics (`unsupported_goal`) and effort limits (`unsupported_constraint`) are refused at negotiation; a goal in collision is `infeasible`; an abort is `cancelled`; a path through the pedestal is never execution-ready (`execution_unready`). |
-| `artifacts/reference-robots/<robot>/scenario/run-{1,2}/` (CI job `reference-robots`) | The two-robot planning proof (#24): one function, given each robot's `scenario` data in `references/robots.toml`, plans from the installed package with ssik kinematics. Geodude's `right_arm` plans to a side-grasp band around a cylinder for its hand, and ADA's `arm`, which carries the articutool, to a band for its fork tip pointing down above the cylinder. Each then plans to its named configuration. Every plan is prepared and executed, and a fresh snapshot shows where the robot actually ended: Geodude's hand within 3.3 mm and 0.007 rad of the planned goal pose, ADA's fork tip within 4.0 mm and 0.015 rad, and both named configurations within 0.006 rad. An effort-limit constraint and a path-only result are refused, and the two runs hold the same files, byte-identical. |
+| `artifacts/test_one_validator_answers_everywhere/evidence.json` | The example arm in the pedestal scene swings its shoulder from -0.5 to 0.5 rad with the elbow lowered. Both waypoints are valid states, but the planner's validator refuses the motion between them: a collision witness at segment 0, fraction 0.3, naming `left_finger` and `pedestal`, under the recorded 0.05 rad policy, on sscbirrt's native backend. `prepare` has no check of its own to disagree with it, and repeated or reordered queries give equal reports. A path constraint the planner cannot plan with, on this three-joint arm with no kinematics, has no validator either (`unsupported_constraint`). |
+| `artifacts/test_adapter_refusals/refusals.json` | ssik cannot solve the three-joint arm (`kinematics_unavailable`). A pose goal without kinematics (`unsupported_goal`) and effort limits (`unsupported_constraint`) are refused at negotiation. A goal in collision is `infeasible`, and an abort is `cancelled`. The validator refuses a path into the pedestal with a collision witness naming the pedestal, and a success claiming that report is refused (`invalid_motion`). |
+| `artifacts/test_evidence_is_bound_not_relabelled/evidence.json` | A trajectory validated with and without its source path has one identity; only the report's `evidence` differs. sscbirrt reports relabelled as a state, under another policy, or with another interval count are refused (`planner_contract`). `geometry_preserved` is true for a one-segment path stopped at rest and compiled every 2 ms, and false for sscbirrt's shortcut trajectory. |
+| `artifacts/reference-robots/<robot>/scenario/run-{1,2}/` (CI job `reference-robots`) | The two-robot planning proof (#24): one function, given each robot's `scenario` data in `references/robots.toml`, plans from the installed package with ssik kinematics. Geodude's `right_arm` plans to a side-grasp band around a cylinder for its hand, and ADA's `arm`, which carries the articutool, to a band for its fork tip pointing down above the cylinder. Each then plans to its named configuration. Every plan runs on sscbirrt's native backend. One validator (`sscbirrt 3.9.0 native`, 0.05 rad policy) answers for each plan's path, its trajectory, and its compiled command, and all are valid. The command is a new motion (`geometry_preserved` false) and is executed. A fresh snapshot shows where the robot actually ended: Geodude's hand within 1.8 mm and 0.004 rad of the planned goal pose, ADA's fork tip within 7.6 mm and 0.012 rad, and both named configurations within the runtime's 0.01 goal tolerance. An effort-limit constraint and a path-only result are refused, and the two runs hold the same files, byte-identical. |
 
-ADA's JACO2 uses ssik's `ikgeo.general_6r` solver, which sscbirrt does not yet run
-natively, so its pose, offset, and TSR queries plan on sscbirrt's Python backend; its
-first query also waits about 30 s for ssik to prepare that solver.
+ADA's JACO2 uses ssik's `ikgeo.general_6r` solver. ssik prepares it once, which takes
+about 30 s, and caches the result.

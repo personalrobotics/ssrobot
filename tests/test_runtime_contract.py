@@ -403,12 +403,12 @@ class _SnapshotScripted(_SceneScripted):
         self,
         tamper: Callable[[SceneSnapshot], SceneSnapshot] | None = None,
         *,
-        scene_resolution: float | None = None,
+        scene_group: str | None = None,
         contact_names: tuple[str, str] = ("tcp", "box"),
     ) -> None:
         super().__init__()
         self.snapshot_tamper = tamper
-        self.scene_resolution = scene_resolution  # answer this instead of the request
+        self.scene_group = scene_group  # answer for this group instead of the requested one
         self.contact_names = contact_names
 
     def world(self) -> str:
@@ -435,16 +435,11 @@ class _SnapshotScripted(_SceneScripted):
         )
         return taken if self.snapshot_tamper is None else self.snapshot_tamper(taken)
 
-    def planning_scene(
-        self, snapshot: SceneSnapshot, group: str, edge_resolution: float
-    ) -> PlanningScene:
+    def planning_scene(self, snapshot: SceneSnapshot, group: str) -> PlanningScene:
         assert self._description is not None
+        answered = self.scene_group or group
         return _ScriptedScene(
-            snapshot,
-            group,
-            self._description.group(group).joints,
-            self.scene_resolution or edge_resolution,
-            self.contact_names,
+            snapshot, answered, self._description.group(answered).joints, self.contact_names
         )
 
 
@@ -456,11 +451,10 @@ class _ScriptedScene:
         snapshot: SceneSnapshot,
         group: str,
         joints: tuple[str, ...],
-        resolution: float,
         names: tuple[str, str],
     ) -> None:
         self.snapshot, self.group, self.joints = snapshot, group, joints
-        self.edge_resolution, self.names = resolution, names
+        self.names = names
 
     def forward_kinematics(self, q: Sequence[float], frame: str) -> Pose:
         return Pose(position=(0.0, 0.0, 0.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
@@ -473,9 +467,6 @@ class _ScriptedScene:
         return (
             Contact(kind=ContactKind.SELF_COLLISION, first=first, second=second, distance=-0.01),
         )
-
-    def is_edge_valid(self, q0: Sequence[float], q1: Sequence[float]) -> bool:
-        return False
 
     def native(self) -> object | None:
         return None
@@ -507,11 +498,11 @@ def test_snapshot_runtimes_that_break_their_contract(artifacts: Path) -> None:
     report["without_snapshots"] = missing.value.code
 
     # Planning-scene answers are checked the same way for every provider.
-    with RobotContext(robot, _SnapshotScripted(scene_resolution=99.0)) as ctx:
+    with RobotContext(robot, _SnapshotScripted(scene_group="wrist_only")) as ctx:
         snapshot = ctx.snapshot()
-        with pytest.raises(ValidationError) as coarse:
-            ctx.planning_scene(snapshot, "arm", edge_resolution=0.01)
-        report["coarser_resolution"] = [coarse.value.code, ctx.state.value]
+        with pytest.raises(ValidationError) as other:
+            ctx.planning_scene(snapshot, "arm")
+        report["another_group"] = [other.value.code, ctx.state.value]
     with RobotContext(robot, _SnapshotScripted(contact_names=("ghost_a", "ghost_b"))) as ctx:
         scene = ctx.planning_scene(ctx.snapshot(), "arm")
         with pytest.raises(ValidationError) as ghost:
@@ -527,7 +518,7 @@ def test_snapshot_runtimes_that_break_their_contract(artifacts: Path) -> None:
         "earlier_stamp": ["runtime_contract", "faulted"],
         "honest": 0,
         "without_snapshots": "snapshots_unavailable",
-        "coarser_resolution": ["runtime_contract", "faulted"],
+        "another_group": ["runtime_contract", "faulted"],
         "unknown_contact_names": "runtime_contract",
         "named_contacts": ["box"],
     }

@@ -21,10 +21,11 @@ from sscbirrt.exceptions import (
 )
 
 from ssrobot.description import JointKind, RobotDescription
-from ssrobot.errors import ValidationError
+from ssrobot.errors import CapabilityError, ValidationError
 from ssrobot.execution import Diagnostic
 from ssrobot.planning._frames import box, matrix, region
 from ssrobot.planning._kinematics import SsikKinematics
+from ssrobot.planning._validator import SscbirrtValidator
 from ssrobot.planning_contracts import (
     ConfigurationGoal,
     ConstraintClass,
@@ -44,6 +45,8 @@ from ssrobot.planning_contracts import (
     TimingLaw,
     TrajectoryPiece,
     TsrGoal,
+    path_subject,
+    trajectory_subject,
 )
 from ssrobot.scene import PlanningScene
 
@@ -150,23 +153,31 @@ class CBiRRT:
             results=(ResultForm.GEOMETRIC_PATH, ResultForm.TIMED_TRAJECTORY),
         )
 
-    def plan(
+    def _setup(
         self,
         request: PlanningRequest,
         scene: PlanningScene,
-        *,
         abort: Callable[[], bool] | None = None,
-    ) -> PlanResult:
+    ) -> tuple[Any, list[Any], dict[str, list[Any]]]:
+        """The sscbirrt planner for ``request`` in ``scene``, its path constraints, and
+        its goal arguments: shared by ``plan`` and ``validator`` so both apply the same
+        rules."""
         if (scene.group, scene.joints) != (request.group, request.joints):
             raise ValidationError("joint_mismatch", "the scene plans other joints than the request")
         kinematics = self._kinematics_for(request)
+        if kinematics is None and (request.path_constraint or isinstance(request.goal, OffsetGoal)):
+            # sscbirrt projects onto a path constraint with IK, so neither its planner
+            # nor its validator accepts one without it.
+            raise CapabilityError(
+                "unsupported_constraint",
+                f"path constraints need kinematics for {request.component!r}",
+            )
         frame = request.frame or self.description.manipulator(request.component).tool_frame
         ik = None if kinematics is None else kinematics.bind(scene, frame)
         native = scene.native()
         config = dataclasses.replace(
             self.config,
             timeout=request.timeout_s,
-            edge_resolution=scene.edge_resolution,
             continuous_joints=tuple(
                 self.description.joint(j).kind is JointKind.CONTINUOUS for j in request.joints
             ),
@@ -180,14 +191,36 @@ class CBiRRT:
             backend=self.backend,
         )
         goals = lower_goal(request, scene)
+        constraints = [region(t) for t in request.path_constraint] + goals.get(
+            "constraint_tsrs", []
+        )
+        return planner, constraints, goals
+
+    def validator(self, request: PlanningRequest, scene: PlanningScene) -> SscbirrtValidator:
+        """The validator ``plan`` applies to ``request`` in ``scene``."""
+        planner, constraints, _ = self._setup(request, scene)
+        return SscbirrtValidator(
+            planner.validator(constraint_tsrs=constraints or None), request=request, scene=scene
+        )
+
+    def plan(
+        self,
+        request: PlanningRequest,
+        scene: PlanningScene,
+        *,
+        abort: Callable[[], bool] | None = None,
+    ) -> PlanResult:
+        planner, constraints, goals = self._setup(request, scene, abort)
+        validator = SscbirrtValidator(
+            planner.validator(constraint_tsrs=constraints or None), request=request, scene=scene
+        )
         limits = request.limits
         try:
             native_result = planner.plan(
                 start=np.array(request.start),
                 goal=goals.get("goal"),
                 goal_tsrs=goals.get("goal_tsrs"),
-                constraint_tsrs=[region(t) for t in request.path_constraint]
-                + goals.get("constraint_tsrs", []),
+                constraint_tsrs=constraints or None,
                 seed=request.seed,
                 return_details=True,
                 trajectory=TrajectoryOptions(
@@ -203,18 +236,31 @@ class CBiRRT:
         backend = str(native_result.backend)
         if not native_result.success:
             reason = str(native_result.failure_reason or "no path found")
-            status = PlanStatus.TIMEOUT
+            code, status = "planning_failed", PlanStatus.TIMEOUT
             if reason.startswith("Aborted"):
                 status = PlanStatus.CANCELLED
+            elif reason.startswith("Returned"):  # its own final validation refused it
+                code, status = "invalid_result", PlanStatus.BACKEND_FAILURE
             elif not reason.startswith(("Timeout", "Max iterations")):
                 status = PlanStatus.BACKEND_FAILURE
-            return self._failure(request, status, "planning_failed", reason, backend)
+            return self._failure(request, status, code, reason, backend)
         path = GeometricPath(
             group=request.group,
             joints=request.joints,
             waypoints=tuple(tuple(float(v) for v in q) for q in native_result.path),
-            validation_resolution=scene.edge_resolution,
         )
+        source = native_result.trajectory
+        if (
+            source.path is None
+            or len(source.path) != len(native_result.path)
+            or not all(
+                np.array_equal(a, b) for a, b in zip(source.path, native_result.path, strict=True)
+            )
+        ):
+            raise ValidationError(
+                "planner_contract", "sscbirrt timed its trajectory along another path"
+            )
+        trajectory = _timed(request, source)
         return PlanResult(
             request=request,
             planner=self.name,
@@ -224,7 +270,11 @@ class CBiRRT:
                 Diagnostic(code="backend_reason", message=r) for r in native_result.backend_reasons
             ),
             path=path,
-            trajectory=_timed(request, native_result.trajectory, scene.edge_resolution),
+            trajectory=trajectory,
+            validation=(
+                validator.record(native_result.validation, path_subject(path)),
+                validator.record(source.validation, trajectory_subject(trajectory), evidence=path),
+            ),
         )
 
     def _failure(
@@ -297,7 +347,7 @@ def _offset(
     return [end], [along]
 
 
-def _timed(request: PlanningRequest, trajectory: object, resolution: float) -> TimedTrajectory:
+def _timed(request: PlanningRequest, trajectory: object) -> TimedTrajectory:
     """The neutral record of sscbirrt's trajectory, ramp for ramp."""
     pieces = tuple(
         TrajectoryPiece(
@@ -333,7 +383,6 @@ def _timed(request: PlanningRequest, trajectory: object, resolution: float) -> T
         pieces=pieces,
         limits=request.limits,
         validated=request.constraints,
-        validation_resolution=resolution,
         producer=f"sscbirrt-{version('sscbirrt')}",
         provenance=tuple(sorted(provenance.items())),
     )

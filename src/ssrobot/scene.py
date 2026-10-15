@@ -255,11 +255,6 @@ class PlanningScene(Protocol):
         """The snapshot it was materialized from."""
         ...
 
-    @property
-    def edge_resolution(self) -> float:
-        """Largest joint step between the configurations an edge check tests."""
-        ...
-
     def forward_kinematics(self, q: Sequence[float], frame: str) -> Pose:
         """``frame``'s pose in the world at ``q``."""
         ...
@@ -270,11 +265,6 @@ class PlanningScene(Protocol):
 
     def contacts(self, q: Sequence[float]) -> tuple[Contact, ...]:
         """Every disallowed contact at ``q``."""
-        ...
-
-    def is_edge_valid(self, q0: Sequence[float], q1: Sequence[float]) -> bool:
-        """Whether the straight joint-space line from ``q0`` to ``q1`` is valid, checked
-        at most ``edge_resolution`` apart in every joint, including ``q1``."""
         ...
 
     def native(self) -> object | None:

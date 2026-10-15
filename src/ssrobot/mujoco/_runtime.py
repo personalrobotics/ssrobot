@@ -471,9 +471,7 @@ class MujocoRuntime:
         self._open_data()
         return self._identity
 
-    def planning_scene(
-        self, snapshot: SceneSnapshot, group: str, edge_resolution: float
-    ) -> PlanningScene:
+    def planning_scene(self, snapshot: SceneSnapshot, group: str) -> PlanningScene:
         """A planning scene built on sscbirrt's native MuJoCo scene; see docs/mujoco.md."""
         if snapshot.model != self._identity:
             raise ValidationError(
@@ -494,7 +492,6 @@ class MujocoRuntime:
             fixtures=self._fixtures,
             snapshot=snapshot,
             group=group,
-            edge_resolution=edge_resolution,
         )
         unchanged(self._package)
         return scene

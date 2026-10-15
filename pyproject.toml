@@ -15,16 +15,16 @@ ssrobot = "ssrobot.cli:main"
 # another, and MujocoRuntime checks it at open. Planning scenes are built on that adapter;
 # within one minor release because they construct its native attachment and snapshot
 # types directly.
-mujoco = ["mujoco==3.14.0", "sscbirrt[mujoco]>=3.5,<3.6"]
+mujoco = ["mujoco==3.14.0", "sscbirrt[mujoco]>=3.9,<3.10"]
 # The sscbirrt, ssik, and sstsr adapter. 3.5 is the first sscbirrt to return a timed
 # trajectory under velocity and acceleration limits.
-planning = ["sscbirrt[ssik]>=3.5,<3.6"]
+planning = ["sscbirrt[ssik]>=3.9,<3.10"]
 
 [dependency-groups]
 dev = [
     "jsonschema>=4.23",
     "mujoco==3.14.0",
-    "sscbirrt[mujoco,ssik]>=3.5,<3.6",
+    "sscbirrt[mujoco,ssik]>=3.9,<3.10",
     "mypy>=1.13",
     "pytest>=8.3",
     "ruff>=0.8",
