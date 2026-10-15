@@ -78,8 +78,8 @@ command, and submits it only if every check passes:
 
 Pose, offset, and TSR goals, and path constraints, need kinematics for the arm:
 `CBiRRT(description, kinematics=SsikKinematics.from_package(package, arm))`. Without
-it, `CBiRRT` offers configuration goals only, and any other goal is refused at
-negotiation (`unsupported_goal`).
+it, `CBiRRT` offers configuration goals only: any other goal is refused at
+negotiation (`unsupported_goal`), and a path constraint with `unsupported_constraint`.
 
 The request may select the controlled frame, scale velocity and acceleration, and set a
 timeout and random seed. Declared attachments move with the robot during collision
