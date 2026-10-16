@@ -416,6 +416,9 @@ def test_adapter_refusals(artifacts: Path) -> None:
             "no_kinematics_for_three_joints": _code(
                 lambda: SsikKinematics.from_package(package, "arm")
             ),
+            "planner_from_package_without_kinematics": _code(
+                lambda: CBiRRT.from_package(package, "arm")
+            ),
             "pose_goal_without_kinematics": _code(
                 lambda: plan(PoseGoal(pose=pose, position_tolerance=1e-3, rotation_tolerance=1e-2))
             ),
@@ -442,6 +445,7 @@ def test_adapter_refusals(artifacts: Path) -> None:
     assert "pedestal" in {name for c in witness.contacts for name in (c.first, c.second)}
     assert codes == {
         "no_kinematics_for_three_joints": "kinematics_unavailable",
+        "planner_from_package_without_kinematics": "kinematics_unavailable",
         "pose_goal_without_kinematics": "unsupported_goal",
         "effort_limits": "unsupported_constraint",
         "goal_in_collision": "infeasible",

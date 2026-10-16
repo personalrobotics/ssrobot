@@ -72,15 +72,14 @@ argument.
 ```python
 import ssrobot
 from ssrobot.mujoco import MujocoRuntime            # `mujoco` extra
-from ssrobot.planning import CBiRRT, SsikKinematics  # `planning` extra
+from ssrobot.planning import CBiRRT                 # `planning` extra
 
 package = ssrobot.load_installed_package("geodude_assets")
-planner = CBiRRT(package.description, kinematics=SsikKinematics.from_package(package, "right_arm"))
+planner = CBiRRT.from_package(package, "right_arm")    # with ssik kinematics for that arm
 with ssrobot.RobotContext(package.description, MujocoRuntime(package, scene="tabletop.xml")) as ctx:
     arm = ctx.manipulator("right_arm")              # explicit; there is no active arm
-    snapshot = ctx.snapshot()                       # the world the plan is made in
     goal = ssrobot.Pose(position=(0.6, -0.2, 1.0), quat_wxyz=(0.0, 1.0, 0.0, 0.0))
-    plan = arm.plan_to_end_effector_pose(goal, snapshot=snapshot, planner=planner)
+    plan = arm.plan_to_end_effector_pose(goal, planner=planner)  # in the world as it is now
     execution = ctx.execute(plan, planner=planner)  # compiled for this runtime, then submitted
     result = ctx.run_until(execution, max_ticks=20_000)  # steps the manual clock to the end
 ```
@@ -107,8 +106,7 @@ No planner is installed or imported.
 with ssrobot.RobotContext(robot, MujocoRuntime(scene="tabletop.xml")) as ctx:
     ctx.add_sink(recorder)                          # optional LeRobotDataset recorder
     arm = ctx.manipulator("right_arm")
-    snapshot = ctx.snapshot()
-    approach = arm.plan_to_tsr(pregrasp, snapshot=snapshot, planner=planner)
+    approach = arm.plan_to_tsr(pregrasp, planner=planner)
     ctx.run_until(ctx.execute(approach, planner=planner), max_ticks=20_000)  # planner owns the arm…
     PolicyRunner(ctx, grasp_policy).run_episode()   # …then ownership passes to the policy
 ```

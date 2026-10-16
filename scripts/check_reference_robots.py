@@ -579,6 +579,131 @@ GUARD_MAX_IK_STEP = 0.05
 a descent; a larger one is a branch switch, and the descent is refused."""
 
 
+UP = (0.0, 0.0, 1.0)
+"""The concise journey's motion: the tool straight up, in the world."""
+
+JOURNEY_CONCEPTS = (
+    "robot package",
+    "runtime",
+    "context",
+    "manipulator view",
+    "planner",
+    "plan",
+    "execution",
+)
+"""What a user of the concise journey meets, for #31's cost report."""
+
+JOURNEY_CHOICES = {
+    "runtime": "which simulator or robot executes; nothing chooses it for you",
+    "manipulator": "which arm moves; a robot with several never guesses",
+    "planner": "which planner, kinematics, and validation policy; no registry picks one",
+    "plan, then execute": "planning never moves the robot; the plan can be inspected first",
+    "planner at execute": "a plan is data; its validator comes from the planner you name",
+    "max_ticks": "how long to wait; the wait is bounded and blocking",
+}
+"""Why each remaining explicit argument is there."""
+
+
+def journey(package: Any, manipulator: str, runtime: Any, sinks: list[Any]) -> tuple[Any, Any, Any]:
+    """The concise task-space journey (#142), as a user writes it. The tagged lines are
+    counted for the cost report."""
+    from ssrobot import RobotContext
+    from ssrobot.planning import CBiRRT
+
+    planner = CBiRRT.from_package(package, manipulator)  # setup
+    with RobotContext(package.description, runtime, sinks=sinks) as ctx:  # setup
+        arm = ctx.manipulator(manipulator)  # setup
+        plan = arm.plan_to_end_effector_offset(UP, 0.05, planner=planner)  # motion
+        execution = ctx.execute(plan, planner=planner)  # motion
+        status = ctx.run_until(execution, max_ticks=20_000)  # motion
+    return plan, execution, status
+
+
+def concise(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path) -> dict[str, Any]:
+    """The concise planning proof (#142): ``journey`` on the robot's manipulator, with
+    its plan, compiled command, linked trace records, terminal status, and cost. Then,
+    in the scenario's scene: an omitted snapshot gives the request an explicit one taken
+    at the same instant does; an implicitly captured plan is refused once the scene
+    changes, before anything is submitted; every manipulator ssik cannot solve is
+    refused with a typed error; and a robot with several manipulators never guesses."""
+    import inspect
+
+    from ssrobot import OffsetGoal, RobotContext, SsrobotError, TraceKind
+    from ssrobot._wire import fingerprint
+    from ssrobot.mujoco import MujocoRuntime
+    from ssrobot.planning import CBiRRT
+
+    out.mkdir(parents=True, exist_ok=True)
+    description = package.description
+    name = spec["manipulator"]
+    links = (TraceKind.COMPILED, TraceKind.SUBMITTED, TraceKind.STATUS)
+    linked: list[Any] = []
+    record: dict[str, Any] = {}
+
+    def keep(r: Any) -> None:
+        if r.kind in links:
+            linked.append(r)
+
+    plan, execution, status = journey(
+        package, name, MujocoRuntime(package, keyframe=keyframe), [keep]
+    )
+    (out / "concise.plan.json").write_text(dumps(plan) + "\n")
+    compiled = next(r.payload for r in linked if r.kind is TraceKind.COMPILED)
+    (out / "concise.compiled.json").write_text(dumps(compiled) + "\n")
+    source = inspect.getsource(journey)
+    record["journey"] = {
+        "goal": type(plan.request.goal).__name__,
+        "plan": plan.status.value,
+        "trace": [r.kind.value for r in linked if r.kind is not TraceKind.STATUS]
+        + [linked[-1].payload.state.value],
+        "submission_names_compiled": execution.submission.prepared == fingerprint(compiled),
+        "submission_names_snapshot": execution.submission.snapshot == plan.request.snapshot,
+        "terminal": status.state.value,
+    }
+    record["cost"] = {
+        "setup_lines": source.count("# setup"),
+        "motion_lines": source.count("# motion"),
+        "concepts": list(JOURNEY_CONCEPTS),
+        "explicit_choices": JOURNEY_CHOICES,
+    }
+    with RobotContext(
+        description, MujocoRuntime(package, keyframe=keyframe, scene=spec["scene"])
+    ) as ctx:
+        planner = CBiRRT.from_package(package, name)
+        arm = ctx.manipulator(name)
+        goal = OffsetGoal(
+            direction=UP, distance=0.05, position_tolerance=1e-3, rotation_tolerance=1e-2
+        )
+        explicit = arm.request(goal, snapshot=ctx.snapshot())
+        record["omitted_equals_explicit"] = arm.request(goal) == explicit
+        stale = arm.plan_to_end_effector_offset(UP, 0.05, planner=planner)
+        submitted = len(ctx.executions)
+        effector = description.manipulator(name).end_effector
+        ctx.attach(spec["object"], effector)
+        try:
+            ctx.execute(stale, planner=planner)
+            record["stale"] = "accepted"
+        except SsrobotError as error:
+            record["stale"] = error.code
+        record["submitted_when_stale"] = len(ctx.executions) - submitted
+        ctx.detach(spec["object"])
+        kinematics = {}
+        for manipulator in description.manipulators:
+            try:
+                CBiRRT.from_package(package, manipulator.name)
+                kinematics[manipulator.name] = "available"
+            except SsrobotError as error:
+                kinematics[manipulator.name] = error.code
+        record["kinematics"] = kinematics
+        try:
+            ctx.manipulator()
+            record["unnamed_manipulator"] = "selected"
+        except SsrobotError as error:
+            record["unnamed_manipulator"] = error.code
+    (out / "concise.json").write_text(json.dumps(record, indent=2, default=str) + "\n")
+    return record
+
+
 def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path) -> dict[str, Any]:
     """The guarded-contact proof (#124): one function for every robot, like ``scenario``.
 
@@ -787,6 +912,15 @@ def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] |
             f.name: f.read_bytes() == (second / f.name).read_bytes()
             for f in sorted(first.iterdir())
         }
+        runs = [
+            concise(package, spec, keyframe, out.parent / "concise" / f"run-{i}") for i in (1, 2)
+        ]
+        first, second = (out.parent / "concise" / f"run-{i}" for i in (1, 2))
+        record["concise"] = runs[0]
+        record["concise_identical"] = {
+            f.name: f.read_bytes() == (second / f.name).read_bytes()
+            for f in sorted(first.iterdir())
+        }
         if "guard" in spec:
             runs = [
                 guarded(package, spec, keyframe, out.parent / "guarded" / f"run-{i}")
@@ -980,6 +1114,28 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
         identical = startup_record.get("guarded_identical", {})
         add(
             "guarded_deterministic",
+            bool(identical) and all(identical.values()),
+            f"two runs, byte for byte: {identical}",
+        )
+    if spec is not None:
+        concise = startup_record.get("concise", {})
+        journey = concise.get("journey", {})
+        several = robot["expect"]["manipulators"] > 1
+        add(
+            "concise_journey",
+            journey.get("terminal") == "succeeded"
+            and journey.get("submission_names_compiled")
+            and journey.get("submission_names_snapshot")
+            and concise.get("omitted_equals_explicit")
+            and concise.get("stale") == "stale_snapshot"
+            and concise.get("submitted_when_stale") == 0
+            and concise.get("unnamed_manipulator")
+            == ("ambiguous_manipulator" if several else "selected"),
+            json.dumps(concise, default=str),
+        )
+        identical = startup_record.get("concise_identical", {})
+        add(
+            "concise_deterministic",
             bool(identical) and all(identical.values()),
             f"two runs, byte for byte: {identical}",
         )

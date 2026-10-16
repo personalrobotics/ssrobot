@@ -75,7 +75,8 @@ jobs:
       - name: The README plan runs from the installed wheel
         working-directory: ${{ github.workspace }}
         run: |
-          sed -n '/^### Planning/,/^##/p' README.md | sed -n '/^```python$/,/^```$/p' | sed '1d;$d' > "$RUNNER_TEMP/readme_planning.py"
+          # The section's first Python block is the complete, runnable example.
+          sed -n '/^### Planning/,/^##/p' README.md | sed -n '/^```python$/,/^```$/{p;/^```$/q;}' | sed '1d;$d' > "$RUNNER_TEMP/readme_planning.py"
           clean-planning/bin/python -P "$RUNNER_TEMP/readme_planning.py" | tee "$RUNNER_TEMP/readme_planning.txt"
           grep -q '^succeeded native ' "$RUNNER_TEMP/readme_planning.txt"
       - name: A planning scene builds on sscbirrt's native scene from the installed wheel

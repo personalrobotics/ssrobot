@@ -80,9 +80,10 @@ command, and submits it only if every check passes:
 | Any of the above while a frame remains in task-space regions along the path | the call's `path_constraint` option |
 
 Pose, offset, and TSR goals, and path constraints, need kinematics for the arm:
-`CBiRRT(description, kinematics=SsikKinematics.from_package(package, arm))`. Without
-it, `CBiRRT` offers configuration goals only: any other goal is refused at
-negotiation (`unsupported_goal`), and a path constraint with `unsupported_constraint`.
+`CBiRRT.from_package(package, "right_arm")` builds the planner with ssik kinematics for
+that manipulator, or fails with `kinematics_unavailable`. `CBiRRT(description)` offers
+configuration goals only: any other goal is refused at negotiation (`unsupported_goal`),
+and a path constraint with `unsupported_constraint`.
 
 The request may select the controlled frame, scale velocity and acceleration, and set a
 timeout and random seed. Declared attachments move with the robot during collision
@@ -98,18 +99,40 @@ package = ssrobot.load_package("examples/packages/mujoco_arm")
 runtime = MujocoRuntime(package, scene="examples/scenes/pedestal.xml")
 with ssrobot.RobotContext(package.description, runtime) as ctx:
     arm = ctx.manipulator()                                  # the only manipulator
-    planner = CBiRRT(package.description)
-    snapshot = ctx.snapshot()
-    plan = arm.plan_to_configuration(
-        (-0.6, -0.4, 0.0), snapshot=snapshot, planner=planner, velocity_scaling=0.5
+    planner = CBiRRT(package.description)                    # configuration goals
+    plan = arm.plan_to_configuration(                        # in the world as it is now
+        (-0.6, -0.4, 0.0), planner=planner, velocity_scaling=0.5
     )                                                        # carries its request
     execution = ctx.execute(plan, planner=planner)           # compile, validate, submit
     status = ctx.run_until(execution, max_ticks=5_000)
     print(status.state.value, plan.backend, round(plan.trajectory.duration, 2), "s")
 ```
 
-`SsikKinematics.from_package(package, "right_arm")` adds pose, offset, and TSR goals for
-a 6- or 7-joint arm. A plan made before the scene changed (an object attached or
+Without `snapshot=`, a planning call captures exactly one snapshot as it starts and
+plans in it; pass `snapshot=ctx.snapshot()` to plan several requests in exactly the same
+world. What stays explicit is deliberate:
+- the runtime, because nothing chooses a simulator or a robot for you;
+- the manipulator, when the robot has several (Geodude never guesses);
+- the planner, with its kinematics and validation policy, because there is no registry;
+- planning, then `execute`, because planning never moves the robot, and the plan can
+  be inspected first;
+- `planner=` again at `execute`, because a plan is data, and its validator comes from
+  the planner you name;
+- `max_ticks`, because the wait is bounded and blocking.
+
+On Geodude and ADA, a straight move of the tool is three setup lines and three motion
+lines:
+
+```python
+planner = CBiRRT.from_package(package, "right_arm")
+with ssrobot.RobotContext(package.description, runtime) as ctx:
+    arm = ctx.manipulator("right_arm")
+    plan = arm.plan_to_end_effector_offset((0.0, 0.0, 1.0), 0.05, planner=planner)
+    execution = ctx.execute(plan, planner=planner)
+    status = ctx.run_until(execution, max_ticks=20_000)
+```
+
+A plan made before the scene changed (an object attached or
 detached) is refused with `stale_snapshot`, and the trace links each execution to the
 compiled command and validation evidence it ran. `ssrobot.plan_portfolio` runs several
 planner, seed, and processor attempts at one request in isolated scenes of one snapshot,
@@ -122,7 +145,7 @@ describes the adapter, validation policy, and checks.
 The two reference robots, Geodude and ADA (Kinova JACO), run one planning scenario from
 their installed packages in CI: the same function plans to a task space region and to a
 named configuration, executes both, and is byte-identical across two runs, with no
-robot-specific code. See *Reference robots* in [docs/packages.md](docs/packages.md).
+robot-specific code. So does the concise journey above. See *Reference robots* in [docs/packages.md](docs/packages.md).
 
 ## Target v0.1
 
