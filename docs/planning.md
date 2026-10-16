@@ -40,6 +40,10 @@ Pass `snapshot=ctx.snapshot()` explicitly to plan several requests in exactly th
 world. A plan captured either way is refused at `execute` once the scene changes
 (`stale_snapshot`).
 
+This journey is for a manual clock, as in simulation, where `run_until` steps the runtime
+and `max_ticks` bounds it. On an external clock, as on hardware, `run_until` polls
+instead and needs `timeout_s`, wall-clock seconds; it refuses `max_ticks` alone.
+
 What stays explicit is deliberate:
 - the runtime, because nothing chooses a simulator or a robot for you;
 - the manipulator, when the robot has several (`ambiguous_manipulator` otherwise);
@@ -49,7 +53,8 @@ What stays explicit is deliberate:
   plan can be inspected first;
 - `planner=` again at `execute`, because a `PlanResult` is serializable data with no
   live validator, and the validator comes from the planner you name;
-- `max_ticks`, because `run_until` blocks, and the wait is bounded.
+- `max_ticks` (manual clock) or `timeout_s` (external clock), because `run_until` blocks,
+  and the wait is bounded.
 
 The reference check runs this journey on Geodude and ADA and reports its cost:
 - 7 concepts: package, runtime, context, manipulator view, planner, plan, and

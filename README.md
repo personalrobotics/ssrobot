@@ -118,10 +118,11 @@ world. What stays explicit is deliberate:
   be inspected first;
 - `planner=` again at `execute`, because a plan is data, and its validator comes from
   the planner you name;
-- `max_ticks`, because the wait is bounded and blocking.
+- `max_ticks`, because the wait is bounded and blocking. That is for a manual clock, as
+  in simulation; on an external clock, as on hardware, `run_until` takes `timeout_s`.
 
-On Geodude and ADA, a straight move of the tool is three setup lines and three motion
-lines:
+On Geodude and ADA in simulation, a straight move of the tool is three setup lines and
+three motion lines:
 
 ```python
 planner = CBiRRT.from_package(package, "right_arm")

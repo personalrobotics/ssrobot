@@ -450,6 +450,11 @@ the uv version. The script then runs two public commands, and opens the runtime:
     changes, with nothing submitted;
   - which manipulators ssik can build a planner for;
   - an unnamed manipulator is refused on a robot with several.
+
+  The journey must capture exactly one snapshot, the one its request and submission
+  name. In CI, the whole check runs with the built ssrobot wheel, installed with the
+  locked extras into a clean environment (`--require-installed-ssrobot`, which fails
+  unless ssrobot is loaded from outside the checkout).
 - The **guarded-contact proof** (#124), when the scenario has a `guard` table. One
   function, `guarded`, serves every robot. The table gives:
   - the frame and its region relative to the object;

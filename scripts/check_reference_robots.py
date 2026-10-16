@@ -636,7 +636,7 @@ def concise(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
     out.mkdir(parents=True, exist_ok=True)
     description = package.description
     name = spec["manipulator"]
-    links = (TraceKind.COMPILED, TraceKind.SUBMITTED, TraceKind.STATUS)
+    links = (TraceKind.SNAPSHOT, TraceKind.COMPILED, TraceKind.SUBMITTED, TraceKind.STATUS)
     linked: list[Any] = []
     record: dict[str, Any] = {}
 
@@ -651,11 +651,15 @@ def concise(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
     compiled = next(r.payload for r in linked if r.kind is TraceKind.COMPILED)
     (out / "concise.compiled.json").write_text(dumps(compiled) + "\n")
     source = inspect.getsource(journey)
+    snapshots = [r.payload.fingerprint() for r in linked if r.kind is TraceKind.SNAPSHOT]
     record["journey"] = {
         "goal": type(plan.request.goal).__name__,
         "plan": plan.status.value,
         "trace": [r.kind.value for r in linked if r.kind is not TraceKind.STATUS]
         + [linked[-1].payload.state.value],
+        # Planning without snapshot= captured exactly one, the one everything names.
+        "one_snapshot": snapshots == [plan.request.snapshot]
+        and execution.submission.snapshot == snapshots[0],
         "submission_names_compiled": execution.submission.prepared == fingerprint(compiled),
         "submission_names_snapshot": execution.submission.snapshot == plan.request.snapshot,
         "terminal": status.state.value,
@@ -889,10 +893,17 @@ def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] |
     with RobotContext(package.description, runtime) as ctx:
         for _ in range(STARTUP_STEPS):
             ctx.step()
+        import ssrobot
+
         record = {
             "loaded_from_install": package.root.resolve().is_relative_to(
                 Path(os.environ["PYTHONPATH"]).resolve()
             ),
+            # Where ssrobot itself came from: an installed wheel, or this checkout.
+            "ssrobot_location": str(Path(ssrobot.__file__).resolve().parent),
+            "ssrobot_from_checkout": Path(ssrobot.__file__)
+            .resolve()
+            .is_relative_to((ROOT / "src").resolve()),
             "runtime_version": ctx.info.runtime_version,
             "steps": STARTUP_STEPS,
             "time_ns": ctx.now.time_ns,
@@ -975,7 +986,9 @@ def mujoco_startup(
     )
 
 
-def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
+def check(
+    robot: dict[str, Any], out: Path, scratch: Path, require_installed: bool = False
+) -> dict[str, Any]:
     name = robot["name"]
     out.mkdir(parents=True, exist_ok=True)
     source, archive_sha = fetch(robot["repository"], robot["commit"], scratch / "source")
@@ -1051,6 +1064,12 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
     if not started:
         return record
     startup_record = json.loads((out / "mujoco-startup.json").read_text())
+    if require_installed:
+        add(
+            "ssrobot_installed",
+            not startup_record["ssrobot_from_checkout"],
+            f"ssrobot loaded from {startup_record['ssrobot_location']}",
+        )
     compare(
         "mujoco_confirmed",
         {"commands": expect["confirmed_commands"], "channels": expect["confirmed_channels"]},
@@ -1124,6 +1143,7 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
         add(
             "concise_journey",
             journey.get("terminal") == "succeeded"
+            and journey.get("one_snapshot")
             and journey.get("submission_names_compiled")
             and journey.get("submission_names_snapshot")
             and concise.get("omitted_equals_explicit")
@@ -1148,6 +1168,11 @@ def main() -> int:
     parser.add_argument("--startup", nargs=2, metavar=("MODULE", "OUT"), help=argparse.SUPPRESS)
     parser.add_argument("--keyframe", help=argparse.SUPPRESS)
     parser.add_argument("--scenario", type=json.loads, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--require-installed-ssrobot",
+        action="store_true",
+        help="fail unless ssrobot itself is loaded from an installed wheel, not this checkout",
+    )
     args = parser.parse_args()
     if args.startup is not None:
         return startup(args.startup[0], Path(args.startup[1]), args.keyframe, args.scenario)
@@ -1157,7 +1182,14 @@ def main() -> int:
     robots = []
     for robot in pins["robots"]:
         with tempfile.TemporaryDirectory(prefix=f"ssrobot-{robot['name']}-") as scratch:
-            robots.append(check(robot, args.out / robot["name"], Path(scratch)))
+            robots.append(
+                check(
+                    robot,
+                    args.out / robot["name"],
+                    Path(scratch),
+                    require_installed=args.require_installed_ssrobot,
+                )
+            )
     franka = json.loads((FRANKA / "provenance.json").read_text())
     milestone = {
         "toolchain": toolchain(),
