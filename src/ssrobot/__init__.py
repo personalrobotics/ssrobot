@@ -126,6 +126,7 @@ from ssrobot.portfolio import (
     PlanAttempt,
     Portfolio,
     PortfolioReport,
+    StopReason,
     plan_portfolio,
 )
 from ssrobot.preparation import prepare
@@ -262,6 +263,7 @@ __all__ = [
     "SourceItem",
     "SsrobotError",
     "StaleRevisionError",
+    "StopReason",
     "Submission",
     "TimedTrajectory",
     "Timestamp",

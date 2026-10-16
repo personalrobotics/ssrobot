@@ -3,23 +3,27 @@
 ``plan_portfolio`` plans one request in one immutable snapshot with an explicit, bounded
 list of attempts (planner, processor, seed, priority). Each attempt gets its own planning
 scene, built from that snapshot before any attempt runs, and runs on a bounded thread
-pool. Cancellation is cooperative:
+pool. Attempts that may run at once must have distinct planner instances. Cancellation
+is cooperative:
 - attempts not yet started are canceled immediately;
 - running planners receive the abort signal, which they must poll (``Planner.plan``).
 
 Python cannot safely stop a planner that ignores the signal.
 
 Every successful attempt is validated again by its planner's validator, on a fresh scene
-of the same snapshot. The selection is by declared priority, then by the shortest
-motion, then by attempt order; it never depends on which attempt finished first.
-Executing the selected plan is ``RobotContext.execute``'s job, which also checks that the
-snapshot is still current.
+of the same snapshot. The report is bound to the exact motion that would execute: the
+planner's trajectory, or its path timed once by the attempt's processor. That motion,
+with its fresh validation, is the attempt's candidate plan. The selection is by
+declared priority, then by the shortest duration, then by attempt order; it never
+depends on which attempt finished first. Executing the selected candidate is
+``RobotContext.execute``'s job, which also checks that the snapshot is still current.
 """
 
 from __future__ import annotations
 
 import enum
 import math
+import re
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -28,17 +32,21 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from ssrobot._wire import Record, Value, fingerprint, meta
+from ssrobot.conventions import check_name
 from ssrobot.errors import SsrobotError, ValidationError
 from ssrobot.planning_contracts import (
+    MotionValidation,
     Planner,
     PlanningRequest,
     PlanResult,
     PlanStatus,
-    TimedTrajectory,
     TrajectoryProcessor,
+    check_bound,
     check_planned_in,
     check_result,
+    check_validation,
     negotiate,
+    trajectory_subject,
 )
 from ssrobot.scene import PlanningScene, SceneSnapshot
 
@@ -48,14 +56,17 @@ if TYPE_CHECKING:
 MAX_ATTEMPTS = 32
 """The most attempts one portfolio may declare."""
 
-SELECTION = "highest priority, then shortest motion, then earliest attempt"
+SELECTION = "highest priority, then shortest duration, then earliest attempt"
 """How the selected attempt is chosen among the valid ones."""
+
+_FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True, slots=True)
 class PlanAttempt:
     """One attempt: a planner, the processor that times a path-only result, the seed
-    (the request's when None), and a priority (higher is preferred)."""
+    (the request's when None), and a priority (higher is preferred). Attempts that may
+    run at once (more than one worker) must not share a planner instance."""
 
     planner: Planner
     processor: TrajectoryProcessor | None = None
@@ -71,11 +82,26 @@ class AttemptOutcome(enum.StrEnum):
     CANCELED = "canceled"
     """Canceled before it started."""
     FAILED = "failed"
-    """The planner ran and did not succeed, or raised an expected error."""
+    """The planner did not succeed, or the planner, its processor, or its validator
+    raised an expected error."""
     INVALID = "invalid"
     """It succeeded, but its motion failed validation on a fresh scene."""
     VALID = "valid"
     """It succeeded, and its motion is valid: a candidate."""
+
+
+class StopReason(enum.StrEnum):
+    """Why a portfolio stopped its remaining work."""
+
+    TIMEOUT = "timeout"
+    ABORTED = "aborted"
+
+
+def _check_fingerprint(value: str | None, path: str) -> None:
+    if value is not None and not _FINGERPRINT.fullmatch(value):
+        raise ValidationError(
+            "invalid_fingerprint", f"{path} must be a SHA-256 hex digest", path=path
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -93,17 +119,54 @@ class AttemptRecord(Value):
     )
     detail: str = field(default="", metadata=meta("Why it ended so: a code or a witness."))
     duration_s: float | None = field(
-        default=None, metadata=meta("Its motion's duration, if it is a candidate.", unit="s")
+        default=None, metadata=meta("Its candidate's duration, if it is valid.", unit="s")
     )
     result: str | None = field(
-        default=None, metadata=meta("Fingerprint of its PlanResult, if it returned one.")
+        default=None, metadata=meta("Fingerprint of the planner's PlanResult, if it returned one.")
     )
+    validation: str | None = field(
+        default=None,
+        metadata=meta("Fingerprint of the fresh MotionValidation of its motion, if validated."),
+    )
+
+    def _validate(self) -> None:
+        check_name(self.planner, path="planner")
+        if self.processor is not None:
+            check_name(self.processor, path="processor")
+        if self.index < 0:
+            raise ValidationError("out_of_limits", "index is negative", path="index")
+        _check_fingerprint(self.result, "result")
+        _check_fingerprint(self.validation, "validation")
+        o, succeeded = self.outcome, self.status is PlanStatus.SUCCEEDED
+
+        def refuse(message: str, path: str) -> ValidationError:
+            return ValidationError("inconsistent_outcome", f"{o}: {message}", path=path)
+
+        ran = self.result is not None
+        if (self.status is not None) != ran:
+            raise refuse("a status exactly when the planner returned a result", "status")
+        if o in (AttemptOutcome.REFUSED, AttemptOutcome.CANCELED) and ran:
+            raise refuse("nothing was planned", "result")
+        if o is AttemptOutcome.REFUSED and not self.detail:
+            raise refuse("names why it was refused", "detail")
+        if o in (AttemptOutcome.INVALID, AttemptOutcome.VALID) and not (
+            succeeded and self.validation is not None
+        ):
+            raise refuse("a succeeded result with a fresh validation", "validation")
+        if o is AttemptOutcome.FAILED and self.validation is not None:
+            raise refuse("no motion was validated", "validation")
+        if (o is AttemptOutcome.VALID) != (self.duration_s is not None):
+            raise refuse("a duration exactly when valid", "duration_s")
+        if self.duration_s is not None and not (
+            math.isfinite(self.duration_s) and self.duration_s >= 0.0
+        ):
+            raise ValidationError("out_of_limits", "duration_s is not finite", path="duration_s")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PortfolioReport(Record):
     """Every attempt of one portfolio and which was selected, reproducible from the same
-    inputs whatever order the attempts finished in, unless it was canceled or timed out."""
+    inputs whatever order the attempts finished in, unless it was stopped."""
 
     SCHEMA = "ssrobot.PortfolioReport"
     VERSION = 1
@@ -115,29 +178,76 @@ class PortfolioReport(Record):
         default=None, metadata=meta("The selected attempt's index, if any is valid.", unit="count")
     )
     selection: str = field(default=SELECTION, metadata=meta("The selection rule."))
-    stopped: str | None = field(
-        default=None,
-        metadata=meta("Why remaining work was stopped: 'timeout' or 'aborted'; None if not."),
+    stopped: StopReason | None = field(
+        default=None, metadata=meta("Why remaining work was stopped, if it was.")
     )
+
+    def _validate(self) -> None:
+        _check_fingerprint(self.snapshot, "snapshot")
+        _check_fingerprint(self.request, "request")
+        if not 1 <= len(self.attempts) <= MAX_ATTEMPTS:
+            raise ValidationError(
+                "out_of_limits", f"between 1 and {MAX_ATTEMPTS} attempts", path="attempts"
+            )
+        for i, a in enumerate(self.attempts):
+            if a.index != i:
+                raise ValidationError(
+                    "noncanonical_order", "attempts are in declared order", path=f"attempts[{i}]"
+                )
+            if a.outcome is AttemptOutcome.CANCELED and (
+                self.stopped is None or a.detail != self.stopped.value
+            ):
+                raise ValidationError(
+                    "inconsistent_outcome",
+                    "an attempt is canceled only when the portfolio stopped, and says why",
+                    path=f"attempts[{i}]",
+                )
+        if self.selection != SELECTION:
+            raise ValidationError(
+                "unsupported_value", f"the selection rule is {SELECTION!r}", path="selection"
+            )
+        if self.selected != select(self.attempts):
+            raise ValidationError(
+                "inconsistent_outcome",
+                f"the rule selects {select(self.attempts)}, not {self.selected}",
+                path="selected",
+            )
+
+
+def select(attempts: Sequence[AttemptRecord]) -> int | None:
+    """The index ``SELECTION`` chooses among ``attempts``, or None if none is valid."""
+    valid = [a for a in attempts if a.outcome is AttemptOutcome.VALID]
+    best = min(
+        valid,
+        key=lambda a: (-a.priority, a.duration_s, a.index),
+        default=None,
+    )
+    return None if best is None else best.index
 
 
 @dataclass(frozen=True, slots=True)
 class Portfolio:
-    """A portfolio's report, each attempt's result, and the selected attempt."""
+    """A portfolio's report, each attempt's raw result and candidate, and the selected
+    attempt. A candidate is the exact motion validated: the planner's result, with its
+    path timed once by the processor if it returned only a path, and the fresh
+    validation in place of the planner's own trajectory report."""
 
     report: PortfolioReport
     attempts: tuple[PlanAttempt, ...]
     results: tuple[PlanResult | None, ...]
+    candidates: tuple[PlanResult | None, ...]
 
     @property
     def selected(self) -> tuple[PlanAttempt, PlanResult] | None:
-        """The selected attempt and its plan, to execute with ``RobotContext.execute``."""
+        """The selected attempt and its candidate. Execute it with
+        ``RobotContext.execute(candidate, planner=attempt.planner)``: it is already timed,
+        so no processor runs again."""
         index = self.report.selected
         if index is None:
             return None
-        result = self.results[index]
-        assert result is not None
-        return self.attempts[index], result
+        candidate = self.candidates[index]
+        assert candidate is not None
+        return self.attempts[index], candidate
 
 
 def plan_portfolio(
@@ -153,10 +263,12 @@ def plan_portfolio(
     """Plan ``request`` with every attempt, each in its own scene of ``snapshot``.
 
     ``snapshot`` is the one ``request`` was built in. At most ``workers`` attempts run at
-    once. When ``timeout_s`` passes, or ``abort`` returns True, attempts not yet started
-    are canceled and running planners receive the abort signal; the report says which
-    stopped it. A planner's expected errors are recorded as failures; anything else
-    propagates, after every attempt has stopped.
+    once; with more than one, no two attempts may share a planner instance
+    (``shared_planner``). When ``timeout_s`` passes, or ``abort`` returns True, attempts
+    not yet started are canceled and running planners receive the abort signal; the
+    report says which stopped it. Expected errors from an attempt's planner, processor,
+    or validator are recorded against that attempt; anything else propagates, after
+    every attempt has stopped.
     """
     attempts = tuple(attempts)
     if not attempts or len(attempts) > MAX_ATTEMPTS:
@@ -167,6 +279,12 @@ def plan_portfolio(
         raise ValidationError(
             "out_of_limits", "workers must be between 1 and the attempts", path="workers"
         )
+    if workers > 1 and len({id(a.planner) for a in attempts}) != len(attempts):
+        raise ValidationError(
+            "shared_planner",
+            "attempts that may run at once need their own planner instances",
+            path="attempts",
+        )
     if timeout_s is not None and not (math.isfinite(timeout_s) and timeout_s > 0):
         raise ValidationError("out_of_limits", "timeout_s must be positive", path="timeout_s")
     if not isinstance(snapshot, SceneSnapshot):
@@ -175,6 +293,7 @@ def plan_portfolio(
 
     records: list[AttemptRecord | None] = [None] * len(attempts)
     results: list[PlanResult | None] = [None] * len(attempts)
+    candidates: list[PlanResult | None] = [None] * len(attempts)
     requests = [request if a.seed is None else replace(request, seed=a.seed) for a in attempts]
 
     def record(i: int, outcome: AttemptOutcome, **fields: object) -> None:
@@ -209,7 +328,7 @@ def plan_portfolio(
         check_result(requests[i], result)
         return result
 
-    stopped: str | None = None
+    stopped: StopReason | None = None
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ssrobot-portfolio")
     try:
         futures: dict[Future[PlanResult], int] = {pool.submit(run, i): i for i in scenes}
@@ -217,9 +336,9 @@ def plan_portfolio(
         while pending:
             done, pending = wait(pending, timeout=0.01, return_when=FIRST_COMPLETED)
             if stopped is None and deadline is not None and time.monotonic() >= deadline:
-                stopped = "timeout"
+                stopped = StopReason.TIMEOUT
             if stopped is None and abort is not None and abort():
-                stopped = "aborted"
+                stopped = StopReason.ABORTED
             if stopped is not None and not stop.is_set():
                 stop.set()
                 for future in pending:
@@ -235,7 +354,8 @@ def plan_portfolio(
             pending = {f for f in pending if not f.cancelled()}
         for future, i in futures.items():
             if future.cancelled():
-                record(i, AttemptOutcome.CANCELED, detail=stopped or "")
+                assert stopped is not None
+                record(i, AttemptOutcome.CANCELED, detail=stopped.value)
     finally:
         stop.set()
         pool.shutdown(wait=True, cancel_futures=True)
@@ -245,55 +365,81 @@ def plan_portfolio(
     for i, result in enumerate(results):
         if result is None:
             continue
-        a = attempts[i]
-        common = {"status": result.status, "result": fingerprint(result)}
+        ran = {"status": result.status, "result": fingerprint(result)}
         if not result.succeeded:
-            record(i, AttemptOutcome.FAILED, detail=result.status.value, **common)
+            record(i, AttemptOutcome.FAILED, detail=result.status.value, **ran)
             continue
-        valid, detail, motion = _validate(a, requests[i], result, ctx, snapshot)
-        if not valid:
-            record(i, AttemptOutcome.INVALID, detail=detail, **common)
+        try:
+            candidate, fresh = _candidate(attempts[i], requests[i], result, ctx, snapshot)
+        except SsrobotError as e:
+            record(i, AttemptOutcome.FAILED, detail=f"{e.code}: {e.message}", **ran)
             continue
-        record(i, AttemptOutcome.VALID, detail=detail, duration_s=motion.duration, **common)
+        checked = {**ran, "validation": fingerprint(fresh)}
+        if candidate is None:
+            witness = fresh.witness
+            assert witness is not None
+            detail = f"{witness.failure.value} at t = {witness.time_s} s"
+            record(i, AttemptOutcome.INVALID, detail=detail, **checked)
+            continue
+        candidates[i] = candidate
+        assert candidate.trajectory is not None
+        record(
+            i,
+            AttemptOutcome.VALID,
+            detail="valid",
+            duration_s=candidate.trajectory.duration,
+            **checked,
+        )
 
     final = tuple(r for r in records if r is not None)
     assert len(final) == len(attempts)
-    candidates = [r for r in final if r.outcome is AttemptOutcome.VALID]
-    best = min(
-        candidates,
-        key=lambda r: (-r.priority, r.duration_s, r.index),
-        default=None,
-    )
     report = PortfolioReport(
         snapshot=snapshot.fingerprint(),
         request=fingerprint(request),
         attempts=final,
-        selected=None if best is None else best.index,
+        selected=select(final),
         stopped=stopped,
     )
-    return Portfolio(report=report, attempts=attempts, results=tuple(results))
+    return Portfolio(
+        report=report, attempts=attempts, results=tuple(results), candidates=tuple(candidates)
+    )
 
 
-def _validate(
+def _candidate(
     attempt: PlanAttempt,
     request: PlanningRequest,
     result: PlanResult,
     ctx: RobotContext,
     snapshot: SceneSnapshot,
-) -> tuple[bool, str, TimedTrajectory]:
-    """Whether ``result``'s motion is valid by its planner's validator, on a fresh
-    scene of ``snapshot``: the motion as it would execute, timed by the processor if
-    the planner returned only a path."""
+) -> tuple[PlanResult | None, MotionValidation]:
+    """The fresh validation of ``result``'s motion as it would execute, by its planner's
+    validator on a fresh scene of ``snapshot``, and the candidate plan carrying exactly
+    that motion and report; no candidate if the motion is invalid. The report is checked
+    to come from that validator, bound to the request, about exactly that motion with
+    its path as evidence."""
     scene = ctx.planning_scene(snapshot, request.group)
     validator = attempt.planner.validator(request, scene)
+    check_bound(validator.identity, request, path="validator")
     path = result.path
     timed = result.trajectory
     if timed is None:
         assert path is not None and attempt.processor is not None  # negotiated
-        timed = attempt.processor.process(path, request.limits)
+        timed = attempt.processor.process(path, request.limits)  # once: the candidate's
     report = validator.validate_trajectory(timed, path)
-    if report.valid:
-        return True, "valid", timed
-    witness = report.witness
-    assert witness is not None
-    return False, f"{witness.failure.value} at t = {witness.time_s} s", timed
+    check_validation(
+        report, validator=validator.identity, subject=trajectory_subject(timed), evidence=path
+    )
+    if not report.valid:
+        return None, report
+    if result.trajectory is None:
+        # The processor validated the rates; the planner's validator, just now, the rest
+        # of what the planner offers (negotiation required that they cover the request).
+        offered = attempt.planner.capabilities(request).constraints
+        validated = set(timed.validated) | (set(request.constraints) & set(offered))
+        timed = replace(
+            timed,
+            validated=tuple(sorted(validated)),
+            provenance=(*timed.provenance, ("validation", fingerprint(report))),
+        )
+    reports = (result.validation[0], report) if path is not None else (report,)
+    return replace(result, trajectory=timed, validation=reports), report

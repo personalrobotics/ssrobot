@@ -80,7 +80,7 @@
               "type": "null"
             }
           ],
-          "description": "Its motion's duration, if it is a candidate.",
+          "description": "Its candidate's duration, if it is valid.",
           "x-unit": "s"
         },
         "result": {
@@ -92,7 +92,18 @@
               "type": "null"
             }
           ],
-          "description": "Fingerprint of its PlanResult, if it returned one."
+          "description": "Fingerprint of the planner's PlanResult, if it returned one."
+        },
+        "validation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the fresh MotionValidation of its motion, if validated."
         }
       },
       "required": [
@@ -148,13 +159,17 @@
         "stopped": {
           "anyOf": [
             {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "timeout",
+                "aborted"
+              ]
             },
             {
               "type": "null"
             }
           ],
-          "description": "Why remaining work was stopped: 'timeout' or 'aborted'; None if not."
+          "description": "Why remaining work was stopped, if it was."
         }
       },
       "required": [

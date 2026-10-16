@@ -113,7 +113,7 @@ a 6- or 7-joint arm. A plan made before the scene changed (an object attached or
 detached) is refused with `stale_snapshot`, and the trace links each execution to the
 compiled command and validation evidence it ran. `ssrobot.plan_portfolio` runs several
 planner, seed, and processor attempts at one request in isolated scenes of one snapshot,
-and selects by declared priority and motion length, never by which finished first. The
+and selects by declared priority and duration, never by which finished first. The
 validation guarantee is discrete:
 `CBiRRTConfig.edge_resolution` is the user-selected largest joint-space distance between
 checked states, and nothing is claimed between them. [docs/planning.md](docs/planning.md)
