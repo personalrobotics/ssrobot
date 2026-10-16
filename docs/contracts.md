@@ -46,7 +46,7 @@ uses them:
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
 | Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `GuardedJointTrajectory`, `WrenchGuard`, `WrenchPart`, `GuardOutcome`, `GuardCause`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
 | Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `GuardCapability`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
-| Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `TimedTrajectory`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `PreparedTrajectory`, `prepare`, `MotionValidator`, `MotionValidation` |
+| Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `TimedTrajectory`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `PreparedTrajectory`, `prepare`, `MotionValidator`, `MotionValidation`, `plan_portfolio`, `PlanAttempt`, `Portfolio`, `PortfolioReport`, `AttemptRecord`, `AttemptOutcome` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
 | Error handling | `SsrobotError`, `ValidationError`, `CapabilityError`, `OwnershipError`, `StaleRevisionError`, `LifecycleError` |
 
@@ -817,6 +817,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
 | [`TraceRecord`](../schemas/ssrobot.TraceRecord.v1.json) | One event in a trace. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
+| [`PortfolioReport`](../schemas/ssrobot.PortfolioReport.v1.json) | Every attempt of a planner portfolio and which was selected. See planning.md. |
 | [`ConformanceReport`](../schemas/ssrobot.ConformanceReport.v1.json) | The result of a conformance run. |
 | [`SceneState`](../schemas/ssrobot.SceneState.v1.json) | A context's scene: its objects and fixtures, what it holds, and its revision. |
 | [`AttachmentViolation`](../schemas/ssrobot.AttachmentViolation.v1.json) | A runtime's report that an attached object left its declared transform. |

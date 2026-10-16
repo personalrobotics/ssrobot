@@ -120,6 +120,15 @@ from ssrobot.planning_contracts import (
     Tsr,
     TsrGoal,
 )
+from ssrobot.portfolio import (
+    AttemptOutcome,
+    AttemptRecord,
+    PlanAttempt,
+    Portfolio,
+    PortfolioReport,
+    StopReason,
+    plan_portfolio,
+)
 from ssrobot.preparation import prepare
 from ssrobot.replay import ReplayRuntime, ReplayScript, ReplayTick
 from ssrobot.resources import ResolvedFile, SourceItem
@@ -144,6 +153,8 @@ __all__ = [
     "AssetStore",
     "Attachment",
     "AttachmentViolation",
+    "AttemptOutcome",
+    "AttemptRecord",
     "BasePoseGoal",
     "BaseTwistCommand",
     "BaseView",
@@ -214,12 +225,15 @@ __all__ = [
     "OwnershipError",
     "PackageManifest",
     "PackageReport",
+    "PlanAttempt",
     "PlanResult",
     "PlanStatus",
     "Planner",
     "PlannerCapabilities",
     "PlanningRequest",
     "PlanningScene",
+    "Portfolio",
+    "PortfolioReport",
     "Pose",
     "PoseGoal",
     "PreparedTrajectory",
@@ -249,6 +263,7 @@ __all__ = [
     "SourceItem",
     "SsrobotError",
     "StaleRevisionError",
+    "StopReason",
     "Submission",
     "TimedTrajectory",
     "Timestamp",
@@ -268,6 +283,7 @@ __all__ = [
     "load_installed_package",
     "load_package",
     "loads",
+    "plan_portfolio",
     "prepare",
     "read_trace",
 ]
