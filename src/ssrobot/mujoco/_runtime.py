@@ -263,6 +263,7 @@ class MujocoRuntime:
         self._model: Any = None
         self._data: Any = None
         self._mapping: MujocoMapping | None = None
+        self._render_model: Any = None  # render_state's copy of the compiled model
         self._description: RobotDescription | None = None
         self._ticks = 0
         self._timestep_ns = 0
@@ -663,6 +664,7 @@ class MujocoRuntime:
         self._sources = (package.root / entry.path, scene_source)
         scene_identity = None if scene_source is None else scene_source.identity
         self._identity = f"{model_signature(package, entry.name)}:{scene_identity or ''}"
+        self._render_model = None  # a new open compiles a new model
         self._mapping = MujocoMapping(
             mujoco=MUJOCO_VERSION,
             description=fingerprint,

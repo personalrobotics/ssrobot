@@ -880,6 +880,34 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
     return finish(record)
 
 
+def render(ctx: Any, runtime: Any) -> dict[str, Any]:
+    """What a viewer gets through ``ssrobot.mujoco.render_state`` (#125): a frame that
+    names the context's time and world, and that MuJoCo can draw offscreen."""
+    import mujoco
+
+    from ssrobot.mujoco import render_state
+
+    frame = render_state(ctx)
+    drawn = False
+    try:
+        renderer = mujoco.Renderer(frame.model, 48, 64)
+    except Exception as error:  # no OpenGL context: reported, not hidden
+        drawn_detail = f"no renderer: {error}"
+    else:
+        try:
+            renderer.update_scene(frame.data)
+            drawn = bool(renderer.render().any())
+            drawn_detail = "drawn" if drawn else "blank"
+        finally:
+            renderer.close()
+    return {
+        "time_ns": frame.time.time_ns,
+        "matches": frame.time == ctx.now and frame.world == runtime.world(),
+        "drawn": drawn,
+        "detail": drawn_detail,
+    }
+
+
 def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] | None) -> int:
     """Open MujocoRuntime on the installed ``module``, step it, and write what it bound.
 
@@ -911,6 +939,7 @@ def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] |
             "confirmed": {"commands": len(ctx.info.commands), "channels": len(ctx.info.channels)},
             "mapping": json.loads(dumps(runtime.mapping)),
         }
+        record["render"] = render(ctx, runtime)
         record["driven"] = drive(ctx)
     if spec is not None:
         # Twice, from the same start, to show the artifacts are deterministic.
@@ -1074,6 +1103,12 @@ def check(
         "mujoco_confirmed",
         {"commands": expect["confirmed_commands"], "channels": expect["confirmed_channels"]},
         startup_record["confirmed"],
+    )
+    rendered = startup_record["render"]
+    add(
+        "render_state",
+        rendered["matches"] and rendered["drawn"],
+        f"frame at {rendered['time_ns']} ns, {rendered['detail']}",
     )
     driven = startup_record["driven"]
     add(

@@ -29,6 +29,7 @@ from ssrobot.mujoco._model import (
     MujocoObject,
     MujocoProfile,
 )
+from ssrobot.mujoco._render import RenderState, render_state
 from ssrobot.mujoco._runtime import MujocoRuntime
 from ssrobot.mujoco._scene import SceneFile
 
@@ -48,5 +49,7 @@ __all__ = [
     "MujocoObject",
     "MujocoProfile",
     "MujocoRuntime",
+    "RenderState",
     "SceneFile",
+    "render_state",
 ]
