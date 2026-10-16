@@ -30,7 +30,7 @@ from ssrobot.commands import (
 from ssrobot.conventions import Pose
 from ssrobot.description import CommandCapability, JointGroup, RobotDescription
 from ssrobot.errors import CapabilityError, ValidationError
-from ssrobot.execution import Modification, ModificationKind
+from ssrobot.execution import GuardCause, GuardOutcome, Modification, ModificationKind
 from ssrobot.observations import VECTOR_QUANTITIES, Observation, ObservationRequest, Quantity
 from ssrobot.runtime import RuntimeInfo
 
@@ -104,7 +104,7 @@ def check_command(
     elif isinstance(command, JointTrajectory):
         _check_trajectory(description, info, command, "")
     elif isinstance(command, GuardedJointTrajectory):
-        _check_guard(description, info, command.guard)
+        _check_guard(description, info, command)
         _check_trajectory(description, info, command.trajectory, "trajectory")
     else:
         _check_instant(description, command, info, "")
@@ -130,10 +130,11 @@ def _check_trajectory(
 
 
 def _check_guard(
-    description: RobotDescription, info: RuntimeInfo | None, guard: WrenchGuard
+    description: RobotDescription, info: RuntimeInfo | None, command: GuardedJointTrajectory
 ) -> None:
-    """A guard reads a declared wrench channel, and the runtime evaluates it there with
-    every feature it asks for."""
+    """A guard reads a declared wrench channel, and the runtime evaluates it for the
+    trajectory's group, there, with every feature it asks for."""
+    guard, component = command.guard, command.trajectory.group
     spec = next((c for c in description.channels if c.name == guard.channel), None)
     if spec is None:
         raise ValidationError(
@@ -147,17 +148,20 @@ def _check_guard(
         )
     if info is None:
         return
-    if info.guards is None:
+    support = next((g for g in info.guards if g.component == component), None)
+    if support is None:
         raise CapabilityError(
-            "guards_unavailable", "the runtime does not evaluate guards", path="guard"
+            "guards_unavailable",
+            f"the runtime does not guard trajectories of {component!r}",
+            path="guard",
         )
-    if guard.channel not in info.guards.channels:
+    if guard.channel not in support.channels:
         raise CapabilityError(
             "unavailable_guard_channel",
             f"the runtime does not guard on {guard.channel!r}",
             path="guard.channel",
         )
-    if guard.tare and not info.guards.tare:
+    if guard.tare and not support.tare:
         raise CapabilityError(
             "unsupported_guard_feature", "the runtime cannot tare a guard", path="guard.tare"
         )
@@ -331,6 +335,30 @@ def _lowerings(command: Command) -> set[tuple[object, ...]]:
     if isinstance(command, ActionChunk):
         return {_applied_key(c) for c in command.steps[0]}
     return {_applied_key(command)}
+
+
+def check_guard_outcome(guard: WrenchGuard, outcome: GuardOutcome) -> None:
+    """Raise unless ``outcome`` is ``guard``'s decision on its own evidence: the measure
+    of every reading in its window, from its baseline, by the guard's rule. A trigger
+    needs a full window at or over the threshold; a completion must not have one."""
+
+    def refuse(message: str, path: str) -> ValidationError:
+        return ValidationError("guard_mismatch", message, path=path)
+
+    if outcome.part is not guard.part:
+        raise refuse(f"measures {outcome.part}, the guard {guard.part}", "part")
+    if (outcome.baseline is not None) != guard.tare:
+        raise refuse("has a baseline exactly when the guard tares", "baseline")
+    if len(outcome.window) > guard.samples:
+        raise refuse(f"{len(outcome.window)} readings for {guard.samples} samples", "window")
+    measures = [guard.measure(w, outcome.baseline) for w in outcome.window]
+    if outcome.measure != measures[-1]:
+        raise refuse(f"measure {outcome.measure} is not {measures[-1]}", "measure")
+    held = len(measures) == guard.samples and all(m >= guard.threshold for m in measures)
+    if (outcome.cause is GuardCause.GUARD_TRIGGERED) != held:
+        raise refuse(
+            f"{outcome.cause} on measures {measures}, threshold {guard.threshold}", "cause"
+        )
 
 
 def check_applied(description: RobotDescription, command: Command, applied: InstantCommand) -> None:

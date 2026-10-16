@@ -98,7 +98,7 @@
     },
     "GuardOutcome": {
       "type": "object",
-      "description": "How a ``GuardedJointTrajectory`` ended, with the evidence for it.",
+      "description": "How a ``GuardedJointTrajectory`` ended, with the evidence to reproduce the",
       "properties": {
         "cause": {
           "type": "string",
@@ -123,7 +123,7 @@
         },
         "measure": {
           "type": "number",
-          "description": "The guarded measure at the deciding tick.",
+          "description": "The guarded measure at the deciding tick: the last of window.",
           "x-unit-by": {
             "field": "part",
             "units": {
@@ -132,12 +132,30 @@
             }
           }
         },
-        "wrench": {
+        "baseline": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The tare reading, untared, if the guard tares.",
+          "x-unit": "channel"
+        },
+        "window": {
           "type": "array",
           "items": {
-            "type": "number"
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
           },
-          "description": "The wrench read at the deciding tick, untared.",
+          "description": "The last readings evaluated, untared, oldest first: the guard's samples, or every one if fewer were evaluated.",
           "x-unit": "channel"
         }
       },
@@ -146,7 +164,7 @@
         "elapsed_ns",
         "part",
         "measure",
-        "wrench"
+        "window"
       ],
       "additionalProperties": false,
       "allOf": [

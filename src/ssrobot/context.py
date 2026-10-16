@@ -20,6 +20,7 @@ from ssrobot._wire import fingerprint
 from ssrobot.commands import (
     ActionChunk,
     Command,
+    CommandKind,
     GuardedJointTrajectory,
     TrajectoryContract,
     command_components,
@@ -75,7 +76,13 @@ from ssrobot.scene import (
     TrackedAttachment,
 )
 from ssrobot.trace import TraceKind, TracePayload, TraceRecord, TraceSink
-from ssrobot.validation import check_applied, check_command, check_observation, check_request
+from ssrobot.validation import (
+    check_applied,
+    check_command,
+    check_guard_outcome,
+    check_observation,
+    check_request,
+)
 
 
 class ContextState(enum.StrEnum):
@@ -944,12 +951,21 @@ class RobotContext:
                     "undeclared_capability", f"runtime offers undeclared channel {name!r}"
                 )
         wrenches = {c.name for c in self._description.channels if c.quantity is Quantity.WRENCH}
-        for name in () if info.guards is None else info.guards.channels:
-            if name not in wrenches or name not in info.channels:
+        trajectories = {
+            c.component for c in info.commands if c.kind is CommandKind.JOINT_TRAJECTORY
+        }
+        for guards in info.guards:
+            if guards.component not in trajectories:
                 raise CapabilityError(
                     "undeclared_capability",
-                    f"runtime guards on {name!r}, which is not a confirmed wrench channel",
+                    f"runtime guards {guards.component!r}, which takes no joint trajectories",
                 )
+            for name in guards.channels:
+                if name not in wrenches or name not in info.channels:
+                    raise CapabilityError(
+                        "undeclared_capability",
+                        f"runtime guards on {name!r}, which is not a confirmed wrench channel",
+                    )
         has_scene = callable(getattr(self._runtime, "attach", None)) and callable(
             getattr(self._runtime, "detach", None)
         )
@@ -1066,8 +1082,10 @@ class RobotContext:
                     )
                 if event.guard is not None:
                     assert isinstance(command, GuardedJointTrajectory)
-                    if event.guard.part is not command.guard.part:
-                        raise self._breach(f"{execution.id}'s guard outcome measures another part")
+                    try:
+                        check_guard_outcome(command.guard, event.guard)
+                    except SsrobotError as e:
+                        raise self._breach(f"{execution.id}'s guard outcome: {e}") from None
                 self._record(event, self._runtime_source)
         self._now = update.stamp
         if stepped:

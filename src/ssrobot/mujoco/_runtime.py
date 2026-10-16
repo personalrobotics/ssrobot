@@ -9,7 +9,7 @@ import math
 import os
 import sys
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +22,8 @@ from ssrobot.commands import (
     Command,
     CommandKind,
     GripperCommand,
+    GuardCapability,
     GuardedJointTrajectory,
-    GuardSupport,
     InstantCommand,
     JointCommand,
     JointMode,
@@ -101,7 +101,7 @@ class _Running:
     started_ns: int | None = None
     ended_ns: int | None = None  # a trajectory: when its last waypoint was applied
     baseline: tuple[float, ...] | None = None  # a tared guard: the wrench at the start
-    over: int = 0  # a guard: consecutive ticks at or over its threshold
+    window: list[tuple[float, ...]] = field(default_factory=list)  # a guard's last readings
 
 
 def _trajectory(command: Command) -> JointTrajectory | None:
@@ -680,17 +680,17 @@ class MujocoRuntime:
             commands=commands,
             channels=channels,
         )
+        confirmed = tuple(
+            c for c, b in zip(description.commands, commands, strict=True) if b.unavailable is None
+        )
+        guarded = sorted({c.component for c in confirmed if c.kind is CommandKind.JOINT_TRAJECTORY})
         return RuntimeInfo(
             runtime="mujoco",
             runtime_version=f"ssrobot {ssrobot_version()}; mujoco {MUJOCO_VERSION}",
             clock_mode=ClockMode.MANUAL,
             clock=self._clock,
             description=fingerprint,
-            commands=tuple(
-                c
-                for c, b in zip(description.commands, commands, strict=True)
-                if b.unavailable is None
-            ),
+            commands=confirmed,
             channels=tuple(b.name for b in channels if b.unavailable is None),
             objects=tuple(sorted(self._objects)),
             fixtures=fixtures,
@@ -700,10 +700,20 @@ class MujocoRuntime:
                 interpolation=TrajectoryInterpolation.LINEAR,
                 fixed_period=True,
             ),
-            # Every bound wrench channel, read once per control tick in step().
-            guards=GuardSupport(channels=tuple(sorted(self._wrenches)), tare=True)
-            if self._wrenches
-            else None,
+            # Every trajectory-driven group, on every bound wrench channel. step() reads
+            # the guard after each tick's physics and sets the hold before the next tick,
+            # so the joints hold no later than one period after the triggering reading.
+            guards=tuple(
+                GuardCapability(
+                    component=component,
+                    channels=tuple(sorted(self._wrenches)),
+                    tare=True,
+                    period_ns=self._substeps * timestep_ns,
+                    stop_latency_ns=self._substeps * timestep_ns,
+                )
+                for component in guarded
+                if self._wrenches
+            ),
         )
 
     def _bind_grippers(
@@ -1074,13 +1084,13 @@ class MujocoRuntime:
         now: Timestamp,
     ) -> GuardOutcome:
         assert running.started_ns is not None
-        wrench = self._wrench(command.guard.channel)
         return GuardOutcome(
             cause=cause,
             elapsed_ns=now.time_ns - running.started_ns,
             part=command.guard.part,
-            measure=command.guard.measure(wrench, running.baseline),
-            wrench=wrench,
+            measure=command.guard.measure(running.window[-1], running.baseline),
+            baseline=running.baseline,
+            window=tuple(running.window),
         )
 
     def _guard(self, execution: str, running: _Running, now: Timestamp) -> None:
@@ -1090,9 +1100,10 @@ class MujocoRuntime:
         command = running.command
         assert isinstance(command, GuardedJointTrajectory)
         guard = command.guard
-        measured = guard.measure(self._wrench(guard.channel), running.baseline)
-        running.over = running.over + 1 if measured >= guard.threshold else 0
-        if running.over < guard.samples:
+        running.window = [*running.window, self._wrench(guard.channel)][-guard.samples :]
+        if len(running.window) < guard.samples or any(
+            guard.measure(w, running.baseline) < guard.threshold for w in running.window
+        ):
             return
         data = self._open_data()
         trajectory = command.trajectory

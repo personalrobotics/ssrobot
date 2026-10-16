@@ -620,9 +620,48 @@
       ],
       "additionalProperties": false
     },
+    "GuardCapability": {
+      "type": "object",
+      "description": "Guarded trajectories a runtime executes for one component, and the timing it",
+      "properties": {
+        "component": {
+          "type": "string",
+          "description": "The joint group whose trajectories may be guarded."
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Wrench channels a guard may read, sorted."
+        },
+        "tare": {
+          "type": "boolean",
+          "description": "Whether it measures from the reading at the start."
+        },
+        "period_ns": {
+          "type": "integer",
+          "description": "Time between guard evaluations.",
+          "x-unit": "ns"
+        },
+        "stop_latency_ns": {
+          "type": "integer",
+          "description": "Longest time from a triggering reading to the hold.",
+          "x-unit": "ns"
+        }
+      },
+      "required": [
+        "component",
+        "channels",
+        "tare",
+        "period_ns",
+        "stop_latency_ns"
+      ],
+      "additionalProperties": false
+    },
     "GuardOutcome": {
       "type": "object",
-      "description": "How a ``GuardedJointTrajectory`` ended, with the evidence for it.",
+      "description": "How a ``GuardedJointTrajectory`` ended, with the evidence to reproduce the",
       "properties": {
         "cause": {
           "type": "string",
@@ -647,7 +686,7 @@
         },
         "measure": {
           "type": "number",
-          "description": "The guarded measure at the deciding tick.",
+          "description": "The guarded measure at the deciding tick: the last of window.",
           "x-unit-by": {
             "field": "part",
             "units": {
@@ -656,12 +695,30 @@
             }
           }
         },
-        "wrench": {
+        "baseline": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The tare reading, untared, if the guard tares.",
+          "x-unit": "channel"
+        },
+        "window": {
           "type": "array",
           "items": {
-            "type": "number"
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
           },
-          "description": "The wrench read at the deciding tick, untared.",
+          "description": "The last readings evaluated, untared, oldest first: the guard's samples, or every one if fewer were evaluated.",
           "x-unit": "channel"
         }
       },
@@ -670,7 +727,7 @@
         "elapsed_ns",
         "part",
         "measure",
-        "wrench"
+        "window"
       ],
       "additionalProperties": false,
       "allOf": [
@@ -713,28 +770,6 @@
           }
         }
       ]
-    },
-    "GuardSupport": {
-      "type": "object",
-      "description": "Which guards a runtime evaluates at its own control rate. Any component it",
-      "properties": {
-        "channels": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Wrench channels a guard may read, sorted."
-        },
-        "tare": {
-          "type": "boolean",
-          "description": "Whether it measures from the reading at the start."
-        }
-      },
-      "required": [
-        "channels",
-        "tare"
-      ],
-      "additionalProperties": false
     },
     "GuardedJointTrajectory": {
       "type": "object",
@@ -1745,15 +1780,11 @@
           "description": "How it executes a JointTrajectory; None if it declares no contract, so timed plans cannot be compiled for it."
         },
         "guards": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/GuardSupport"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Which force-torque guards it evaluates at control rate; None if it cannot execute a GuardedJointTrajectory."
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GuardCapability"
+          },
+          "description": "Per component, which force-torque guards it evaluates and how fast it stops, sorted by component; empty if it cannot execute a GuardedJointTrajectory."
         }
       },
       "required": [

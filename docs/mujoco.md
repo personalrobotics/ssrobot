@@ -105,8 +105,9 @@ the position a control of 0 would give. A joint starting just past its stop, wit
 - the scene's objects and fixtures, if it has a scene;
 - the trajectory contract: a fixed period of `substeps × timestep`, one step, with
   `linear` interpolation.
-- guard support: every bound wrench channel, with tare (none if the model has no
-  force-torque sensor).
+- guard support for every group it confirms for joint trajectories: every bound wrench
+  channel, with tare, evaluated every control tick, with a stop latency of one control
+  tick (none if the model has no force-torque sensor).
 
 ## Model
 

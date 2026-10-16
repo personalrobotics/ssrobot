@@ -44,10 +44,14 @@
       ],
       "additionalProperties": false
     },
-    "GuardSupport": {
+    "GuardCapability": {
       "type": "object",
-      "description": "Which guards a runtime evaluates at its own control rate. Any component it",
+      "description": "Guarded trajectories a runtime executes for one component, and the timing it",
       "properties": {
+        "component": {
+          "type": "string",
+          "description": "The joint group whose trajectories may be guarded."
+        },
         "channels": {
           "type": "array",
           "items": {
@@ -58,11 +62,24 @@
         "tare": {
           "type": "boolean",
           "description": "Whether it measures from the reading at the start."
+        },
+        "period_ns": {
+          "type": "integer",
+          "description": "Time between guard evaluations.",
+          "x-unit": "ns"
+        },
+        "stop_latency_ns": {
+          "type": "integer",
+          "description": "Longest time from a triggering reading to the hold.",
+          "x-unit": "ns"
         }
       },
       "required": [
+        "component",
         "channels",
-        "tare"
+        "tare",
+        "period_ns",
+        "stop_latency_ns"
       ],
       "additionalProperties": false
     },
@@ -140,15 +157,11 @@
           "description": "How it executes a JointTrajectory; None if it declares no contract, so timed plans cannot be compiled for it."
         },
         "guards": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/GuardSupport"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Which force-torque guards it evaluates at control rate; None if it cannot execute a GuardedJointTrajectory."
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GuardCapability"
+          },
+          "description": "Per component, which force-torque guards it evaluates and how fast it stops, sorted by component; empty if it cannot execute a GuardedJointTrajectory."
         }
       },
       "required": [

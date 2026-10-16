@@ -257,28 +257,40 @@ class WrenchGuard(Value):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class GuardSupport(Value):
-    """Which guards a runtime evaluates at its own control rate. Any component it
-    confirms for joint trajectories may be guarded, on these channels."""
+class GuardCapability(Value):
+    """Guarded trajectories a runtime executes for one component, and the timing it
+    guarantees. It evaluates the guard every ``period_ns`` of runtime time, and the
+    joints hold no later than ``stop_latency_ns`` after the reading that triggers it."""
 
+    component: str = field(metadata=meta("The joint group whose trajectories may be guarded."))
     channels: tuple[str, ...] = field(metadata=meta("Wrench channels a guard may read, sorted."))
     tare: bool = field(metadata=meta("Whether it measures from the reading at the start."))
+    period_ns: int = field(metadata=meta("Time between guard evaluations.", unit="ns"))
+    stop_latency_ns: int = field(
+        metadata=meta("Longest time from a triggering reading to the hold.", unit="ns")
+    )
 
     def _validate(self) -> None:
+        check_name(self.component, path="component")
+        if not self.channels:
+            raise ValidationError("shape_mismatch", "at least one channel", path="channels")
         for i, name in enumerate(self.channels):
             check_name(name, path=f"channels[{i}]")
         if list(self.channels) != sorted(set(self.channels)):
             raise ValidationError(
                 "noncanonical_order", "channels must be sorted and unique", path="channels"
             )
+        for name in ("period_ns", "stop_latency_ns"):
+            if getattr(self, name) <= 0:
+                raise ValidationError("out_of_limits", f"{name} must be positive", path=name)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GuardedJointTrajectory(Record):
     """A ``JointTrajectory`` executed as usual until its guard triggers. The runtime then
-    holds the joints where they are, within one control tick. It ends ``succeeded``
-    either way; the status's ``guard`` says which (``GuardOutcome``), and the caller
-    decides whether that is success."""
+    holds the joints where they are, within its ``GuardCapability.stop_latency_ns``. It
+    ends ``succeeded`` either way; the status's ``guard`` says which (``GuardOutcome``),
+    and the caller decides whether that is success."""
 
     SCHEMA = "ssrobot.GuardedJointTrajectory"
     VERSION = 1

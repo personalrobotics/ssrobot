@@ -59,7 +59,8 @@ class GuardCause(enum.StrEnum):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GuardOutcome(Value):
-    """How a ``GuardedJointTrajectory`` ended, with the evidence for it."""
+    """How a ``GuardedJointTrajectory`` ended, with the evidence to reproduce the
+    decision from the submitted guard: the tare baseline and the deciding readings."""
 
     cause: GuardCause = field(metadata=meta("Why it ended."))
     elapsed_ns: int = field(
@@ -68,19 +69,32 @@ class GuardOutcome(Value):
     part: WrenchPart = field(metadata=meta("Which half of the wrench was measured."))
     measure: float = field(
         metadata=meta(
-            "The guarded measure at the deciding tick.",
+            "The guarded measure at the deciding tick: the last of window.",
             unit_by=("part", {"force": "N", "torque": "N*m"}),
         )
     )
-    wrench: tuple[float, ...] = field(
-        metadata=meta("The wrench read at the deciding tick, untared.", unit="channel")
+    baseline: tuple[float, ...] | None = field(
+        default=None,
+        metadata=meta("The tare reading, untared, if the guard tares.", unit="channel"),
+    )
+    window: tuple[tuple[float, ...], ...] = field(
+        metadata=meta(
+            "The last readings evaluated, untared, oldest first: the guard's samples, or "
+            "every one if fewer were evaluated.",
+            unit="channel",
+        )
     )
 
     def _validate(self) -> None:
         if self.elapsed_ns < 0:
             raise ValidationError("out_of_limits", "elapsed_ns is negative", path="elapsed_ns")
-        if len(self.wrench) != 6 or not all(math.isfinite(v) for v in self.wrench):
-            raise ValidationError("shape_mismatch", "a wrench is six finite values", path="wrench")
+        if not self.window:
+            raise ValidationError("shape_mismatch", "at least one reading", path="window")
+        rows = [("baseline", self.baseline)] if self.baseline is not None else []
+        rows += [(f"window[{i}]", w) for i, w in enumerate(self.window)]
+        for path, wrench in rows:
+            if len(wrench) != 6 or not all(math.isfinite(v) for v in wrench):
+                raise ValidationError("shape_mismatch", "a wrench is six finite values", path=path)
         if not math.isfinite(self.measure):
             raise ValidationError("out_of_limits", "measure is not finite", path="measure")
 
