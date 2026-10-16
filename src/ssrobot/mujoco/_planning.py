@@ -19,6 +19,7 @@ from ssrobot.description import RobotDescription
 from ssrobot.errors import CapabilityError, ValidationError
 from ssrobot.mujoco._model import FrameBinding, MujocoObject
 from ssrobot.mujoco._runtime import relative, world_pose
+from ssrobot.mujoco._scene import SceneSource
 from ssrobot.scene import Contact, ContactKind, SceneSnapshot
 
 _BODY = mujoco.mjtObj.mjOBJ_BODY
@@ -47,13 +48,13 @@ def _pose(position: Any, quat: Any) -> Pose:
 
 
 def planning_model(
-    model_path: Path, scene_xml: bytes | None, excludes: Sequence[tuple[str, str]]
+    model_path: Path, scene: SceneSource | None, excludes: Sequence[tuple[str, str]]
 ) -> Any:
     """The runtime's model, rebuilt from the same sources, with ``excludes`` added: the
     collision allowances that sscbirrt's native policy would not otherwise honour."""
     spec = mujoco.MjSpec.from_file(str(model_path))
-    if scene_xml is not None:
-        child = mujoco.MjSpec.from_string(scene_xml.decode())
+    if scene is not None:
+        child = scene.spec()
         spec.attach(child, frame=spec.worldbody.add_frame(), prefix="")
     for first, second in excludes:
         exclude = spec.add_exclude()
@@ -139,7 +140,7 @@ def materialize(
     description: RobotDescription,
     frames: dict[str, FrameBinding],
     runtime_model: Any,
-    sources: tuple[Path, bytes | None],
+    sources: tuple[Path, SceneSource | None],
     objects: dict[str, int],
     fixtures: dict[str, int],
     snapshot: SceneSnapshot,

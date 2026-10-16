@@ -17,6 +17,7 @@ from ssrobot.conventions import check_name
 from ssrobot.description import JointKind, RobotDescription
 from ssrobot.errors import CapabilityError, SsrobotError, ValidationError
 from ssrobot.execution import Diagnostic
+from ssrobot.mujoco._scene import SceneFile
 from ssrobot.observations import Quantity
 from ssrobot.package import ModelEntry, ModelFormat, ProfileEntry, RobotPackage, load_package
 
@@ -212,9 +213,16 @@ class MujocoMapping(Value):
     scene: str | None = field(
         default=None, metadata=meta("Scene file composed with the model, as given, if any.")
     )
-    scene_sha256: str | None = field(
+    scene_identity: str | None = field(
         default=None,
-        metadata=meta("SHA-256 of the scene file, which is self-contained and was compiled."),
+        metadata=meta(
+            "The scene's identity: SHA-256 over each file's root-relative path and hash, "
+            "so it survives moving the scene and changes with any file."
+        ),
+    )
+    scene_files: tuple[SceneFile, ...] = field(
+        default=(),
+        metadata=meta("Every file of the scene's closure, by root-relative path and hash."),
     )
     objects: tuple[str, ...] = field(
         default=(), metadata=meta("Scene bodies with a free joint: attachable objects.")

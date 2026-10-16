@@ -255,8 +255,8 @@ def test_invalid_attachments_and_scenes_change_nothing(artifacts: Path, tmp_path
         "scene_conflict": '<body name="link1"><freejoint/><geom size=".02"/></body>',
         "articulated_object": '<body name="door"><joint type="hinge"/><geom size=".02"/></body>',
         "unnamed_body": '<body><freejoint/><geom size=".02"/></body>',
-        "scene_include": '<include file="object.xml"/>',
-        "scene_mesh_file": '<body name="cup"><freejoint/><geom type="mesh" mesh="cup"/></body>'
+        "missing_include": '<include file="object.xml"/>',
+        "missing_mesh_file": '<body name="cup"><freejoint/><geom type="mesh" mesh="cup"/></body>'
         '</worldbody><asset><mesh name="cup" file="cup.stl"/></asset><worldbody>',
     }
     for name, body in scenes.items():
@@ -284,6 +284,6 @@ def test_invalid_attachments_and_scenes_change_nothing(artifacts: Path, tmp_path
         "scene_conflict": "scene_conflict",
         "articulated_object": "invalid_scene",
         "unnamed_body": "invalid_scene",
-        "scene_include": "invalid_scene",
-        "scene_mesh_file": "invalid_scene",
+        "missing_include": "invalid_scene",
+        "missing_mesh_file": "invalid_scene",
     }
