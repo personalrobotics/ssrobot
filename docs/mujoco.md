@@ -419,23 +419,26 @@ loop is an application that calls `step()`; it is not a different runtime mode.
 ## Viewers
 
 A viewer is application code: ssrobot creates no viewer, thread, or synchronization loop.
-`ssrobot.mujoco.render_state(ctx)` gives one the current frame of a context's
-`MujocoRuntime` as a `RenderState`:
-- `model`, a copy of the compiled `MjModel`, made once per open and shared by every
-  state of that open;
-- `data`, a copy of the current `MjData`, made for this state alone;
-- `time` and `revision`, the context's runtime time and scene revision it shows;
+`ssrobot.mujoco.render_handle(ctx)` gives one viewer a `RenderHandle` over a context's
+`MujocoRuntime`:
+- `model`, the handle's own copy of the compiled `MjModel`;
+- `data`, its own `MjData` of that copy;
 - `world`, the model and scene identity, as `world()` and snapshots name it.
 
-`copy_into(data)` loads the frame into a viewer's own `MjData` of `model`. Call it when
-you choose, typically after `step()`. For example, with mj_viser:
-`viewer = MujocoViewer(frame.model, mujoco.MjData(frame.model))`, then
-`render_state(ctx).copy_into(viewer.data)` every few ticks.
+`capture()` copies the runtime's current state into `data`, and returns the
+`RenderFrame` it now shows: the context's runtime `time`, scene `revision`, and `world`.
+Capture when you choose, typically after `step()`. For example, with mj_viser:
+`handle = render_handle(ctx)`, `viewer = MujocoViewer(handle.model, handle.data)`, then
+`handle.capture()` and `viewer.sync()` every few ticks.
 
-Every object is a copy, so a viewer may change anything it holds, and nothing reaches the
-runtime: the next observation and command result are the same. A change to the shared
-model copy shows in later states of the same open, never in the runtime. A context over
-any other runtime fails with `render_unavailable`.
+Each handle owns its copies, so a viewer may change anything it holds:
+- nothing reaches the runtime, whose next observation and command result are the same;
+- nothing reaches another viewer, whose handle has its own model.
+
+A capture overwrites the handle's data with the runtime's state, but a change a viewer
+made to its own model stays in it. After the runtime reopens, `capture()` fails with
+`stale_render`, since the handle's model would no longer describe it; make a new handle.
+A context over any other runtime fails with `render_unavailable`.
 
 ## Evidence
 
@@ -455,7 +458,7 @@ any other runtime fails with `render_unavailable`.
 | `artifacts/test_planning_scenes_are_isolated_and_agree/isolation.json`, `trace.jsonl` | After the grasp, with the pedestal allowed, one snapshot and two planning scenes.<br>**Isolation:** the scenes start with equal answers (validity, contacts, `tcp` pose). Each is then queried at configurations the other never sees, and afterwards both answer exactly as before, while the snapshot's fingerprint and the live arm are unchanged.<br>**Accuracy:** forward kinematics matches an independently compiled model exactly.<br>**Semantics:** the grasp configuration is valid, raised and swung aside are valid, and the lift and the carry edges are valid. Swinging down puts the held box and the fingers into the floor, and driving the fingers into the pedestal names it; both are invalid.<br>**Round trip:** a snapshot decoded from JSON answers identically.<br>A second run is byte-identical. |
 | `artifacts/test_an_allowed_static_robot_frame_is_honoured/static_frame_allowance.json` | A puck resting on the example arm's fixed `base`, declared held by the hand. With only the hand's frames allowed, the planning scene refuses the state and names the `base`/`puck` contact; with `base` allowed too, the state is valid with no contact. |
 | `artifacts/test_a_profiled_joint_measures_the_opening/gripper_opening.json` | The example package with `opening` declared on `left_finger_joint` (closed 0, open 0.04). Closed on the box, open, and closed on nothing, the reported opening equals the calibrated map of the joint's position, read independently from a snapshot: 0.366, 0.999, and 0. A measuring joint of another component, and equal closed and open values, fail with `invalid_profile` at open. |
-| `artifacts/test_a_viewer_reads_runtime_state_and_cannot_change_it/render_state.json`, `{clean,vandalized}.trace.jsonl` | The example arm in `pedestal.xml` runs one script twice: capture, move above the box, declare the grasp, capture. In one run a viewer scrambles each copy's positions, doubles every geom, and runs its own physics on them. Both runs give byte-identical traces, frames, and observations. Each frame names the context's time and revision (0 then 1, after the grasp) and the snapshot's world, with the runtime's own positions. `copy_into` reproduces the frame, it draws offscreen, and a context over `ReplayRuntime` fails with `render_unavailable`. A second run is byte-identical. |
+| `artifacts/test_a_viewer_reads_runtime_state_and_cannot_change_it/render_state.json`, `{clean,vandalized}.trace.jsonl` | The example arm in `pedestal.xml` runs one script twice: capture, move above the box, declare the grasp, capture. In one run a viewer vandalizes its handle after each capture, scrambling positions, doubling every geom, and running its own physics. Both runs give byte-identical traces and the same observation. A second viewer's handle, made after the vandalism, holds the compiled model, compared by its geometry and mass contents. The vandal's handle keeps its own doubled model, though each capture restores the runtime's positions. Each capture names the context's time and revision (0, then 1 after the grasp) and the snapshot's world. A handle draws offscreen, refuses to capture after its runtime reopens (`stale_render`), and a context over `ReplayRuntime` fails with `render_unavailable`. A second run is byte-identical. |
 | `artifacts/test_planning_refuses_what_does_not_apply/refusals.json`, `trace.jsonl` | Each refusal with its code: a snapshot of the same robot without the scene, materialized or submitted (`incompatible_snapshot`); decoded snapshots with a renamed joint, a missing object, or an unknown allow name (`incompatible_snapshot`); an unknown group or frame; a zero edge resolution; and short, non-finite, string, or boolean configurations. A snapshot with altered attachments at the current revision is `stale_snapshot` at submit. A configuration outside limits is invalid. A plan submitted with its snapshot runs and is linked to it in the trace. After a detach, the same snapshot is `stale_snapshot`. |
 | `installed-conformance` (CI) | The `[mujoco]` wheel, in a clean environment, builds a planning scene on sscbirrt's native checker. |
 | `reference-robots/<robot>/mujoco-startup.json` (CI) | Geodude and ADA opened from their installed wheels: mapping, runtime version, and exact time after 10 steps. |

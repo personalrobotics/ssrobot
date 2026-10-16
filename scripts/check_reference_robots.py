@@ -881,21 +881,22 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
 
 
 def render(ctx: Any, runtime: Any) -> dict[str, Any]:
-    """What a viewer gets through ``ssrobot.mujoco.render_state`` (#125): a frame that
-    names the context's time and world, and that MuJoCo can draw offscreen."""
+    """What a viewer gets through ``ssrobot.mujoco.render_handle`` (#125): a capture that
+    names the context's time and world, into data MuJoCo can draw offscreen."""
     import mujoco
 
-    from ssrobot.mujoco import render_state
+    from ssrobot.mujoco import render_handle
 
-    frame = render_state(ctx)
+    handle = render_handle(ctx)
+    frame = handle.capture()
     drawn = False
     try:
-        renderer = mujoco.Renderer(frame.model, 48, 64)
+        renderer = mujoco.Renderer(handle.model, 48, 64)
     except Exception as error:  # no OpenGL context: reported, not hidden
         drawn_detail = f"no renderer: {error}"
     else:
         try:
-            renderer.update_scene(frame.data)
+            renderer.update_scene(handle.data)
             drawn = bool(renderer.render().any())
             drawn_detail = "drawn" if drawn else "blank"
         finally:
