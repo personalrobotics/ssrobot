@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import bisect
-import hashlib
 import itertools
 import math
 import os
 import sys
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -70,6 +68,7 @@ from ssrobot.mujoco._model import (
     unchanged,
     versions,
 )
+from ssrobot.mujoco._scene import SceneSource, load_scene
 from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
 from ssrobot.package import RobotPackage
 from ssrobot.runtime import RuntimeEvent, RuntimeInfo, RuntimeUpdate
@@ -233,6 +232,7 @@ class MujocoRuntime:
         goal_tolerance: float = 0.01,
         settle_ns: int = 1_000_000_000,
         scene: str | os.PathLike[str] | None = None,
+        scene_root: str | os.PathLike[str] | None = None,
         attach_tolerance_m: float = 0.01,
         attach_tolerance_rad: float = 0.1,
     ) -> None:
@@ -254,6 +254,9 @@ class MujocoRuntime:
         self._keyframe = keyframe
         self._profile = profile
         self._scene = None if scene is None else Path(scene)
+        if scene_root is not None and scene is None:
+            raise ValidationError("invalid_argument", "scene_root needs a scene", path="scene_root")
+        self._scene_root = None if scene_root is None else Path(scene_root)
         self._settle_ns = settle_ns
         self._clock = f"mujoco:{package.description.name}"
         self._model: Any = None
@@ -273,7 +276,7 @@ class MujocoRuntime:
         self._events: list[RuntimeEvent] = []
         self._objects: dict[str, int] = {}  # scene object: MuJoCo body id
         self._fixtures: dict[str, int] = {}  # scene fixture: MuJoCo body id
-        self._sources: tuple[Path, bytes | None] | None = None  # model file, scene bytes
+        self._sources: tuple[Path, SceneSource | None] | None = None  # model file, scene
         self._identity = ""  # the simulated world, for snapshot compatibility
         self._attached: dict[str, _Tracked] = {}
 
@@ -543,7 +546,7 @@ class MujocoRuntime:
         profile = MujocoProfile() if profile_entry is None else load_profile(package, profile_entry)
         entry = select_model(package, profile, profile_entry)
         objects: dict[str, str] = {}  # top-level scene body: "object" or "fixture"
-        scene_sha256, scene_xml = None, None
+        scene_source: SceneSource | None = None
         try:
             if self._scene is None:
                 model = mujoco.MjModel.from_xml_path(str(package.root / entry.path))
@@ -552,8 +555,8 @@ class MujocoRuntime:
         except ValueError as e:
             raise ValidationError("model_compile_failed", str(e), path=entry.path) from None
         if self._scene is not None:
-            model, objects, scene_xml = _compose(spec, self._scene)
-            scene_sha256 = hashlib.sha256(scene_xml).hexdigest()
+            scene_source = load_scene(self._scene, self._scene_root)
+            model, objects = _compose(spec, scene_source)
         unchanged(package)
         keyframe = self._keyframe if self._keyframe is not None else profile.keyframe
         timestep_ns = round(float(model.opt.timestep) * 1e9)
@@ -656,8 +659,9 @@ class MujocoRuntime:
         }
         fixtures = tuple(sorted(b for b, kind in objects.items() if kind == "fixture"))
         self._fixtures = {b: mujoco.mj_name2id(model, _BODY, b) for b in fixtures}
-        self._sources = (package.root / entry.path, scene_xml)
-        self._identity = f"{model_signature(package, entry.name)}:{scene_sha256 or ''}"
+        self._sources = (package.root / entry.path, scene_source)
+        scene_identity = None if scene_source is None else scene_source.identity
+        self._identity = f"{model_signature(package, entry.name)}:{scene_identity or ''}"
         self._mapping = MujocoMapping(
             mujoco=MUJOCO_VERSION,
             description=fingerprint,
@@ -670,7 +674,8 @@ class MujocoRuntime:
             substeps=self._substeps,
             keyframe=keyframe,
             scene=None if self._scene is None else str(self._scene),
-            scene_sha256=scene_sha256,
+            scene_identity=scene_identity,
+            scene_files=() if scene_source is None else scene_source.files,
             objects=tuple(sorted(self._objects)),
             fixtures=fixtures,
             frames=frames,
@@ -1133,29 +1138,12 @@ _BODY = mujoco.mjtObj.mjOBJ_BODY
 _FREE = mujoco.mjtJoint.mjJNT_FREE
 
 
-def _compose(spec: Any, scene: Path) -> tuple[Any, dict[str, str], bytes]:
-    """Compile the robot with a scene's bodies. Return the model, each top-level scene
-    body's kind (``object``, one free joint; ``fixture``, no joints), and the scene
-    bytes, which are exactly what was compiled.
-
-    A scene must be one self-contained file for now: an include, mesh, texture, or other
-    file reference would be compiled without being part of the recorded identity.
-    """
+def _compose(spec: Any, scene: SceneSource) -> tuple[Any, dict[str, str]]:
+    """Compile the robot with a scene's bodies, from the scene's bytes read once. Return
+    the model and each top-level scene body's kind (``object``, one free joint;
+    ``fixture``, no joints)."""
     try:
-        raw = scene.read_bytes()
-        root = ET.fromstring(raw)
-    except (OSError, ET.ParseError) as e:
-        raise ValidationError("invalid_scene", str(e), path="scene") from None
-    for element in root.iter():
-        referenced = [k for k in element.attrib if k.startswith("file")]
-        if element.tag == "include" or referenced:
-            raise ValidationError(
-                "invalid_scene",
-                f"<{element.tag}> refers to another file; a scene must be self-contained",
-                path="scene",
-            )
-    try:
-        child = mujoco.MjSpec.from_string(raw.decode())
+        child = scene.spec()
     except (ValueError, UnicodeDecodeError) as e:
         raise ValidationError("invalid_scene", str(e), path="scene") from None
     kinds = {}
@@ -1182,7 +1170,7 @@ def _compose(spec: Any, scene: Path) -> tuple[Any, dict[str, str], bytes]:
         message = str(e).strip()
         code = "scene_conflict" if "repeated name" in message else "invalid_scene"
         raise ValidationError(code, message, path="scene") from None
-    return model, kinds, raw
+    return model, kinds
 
 
 def _check_aliases(description: RobotDescription, commands: tuple[CommandBinding, ...]) -> None:
