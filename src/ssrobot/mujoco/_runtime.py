@@ -92,6 +92,7 @@ class _Gripper:
     drives: tuple[tuple[Actuator, float, float], ...]
     low: float
     high: float
+    measure: tuple[int, float, float] | None = None  # (qpos address, closed, open)
 
 
 @dataclass
@@ -784,7 +785,31 @@ class MujocoRuntime:
                     "no opening in [0, 1] is within every actuator's control range",
                     path=path,
                 )
-            bound[gripper.gripper] = _Gripper(drives=tuple(drives), low=low, high=high)
+            measure = None
+            if gripper.opening is not None:
+                where = f"{path}.opening.joint"
+                name = gripper.opening.joint
+                if name not in description.gripper(gripper.gripper).joints:
+                    raise ValidationError(
+                        "invalid_profile",
+                        f"{name!r} is not one of gripper {gripper.gripper!r}'s joints",
+                        path=where,
+                    )
+                joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+                if joint < 0 or int(model.jnt_type[joint]) not in (int(_HINGE), int(_SLIDE)):
+                    raise ValidationError(
+                        "invalid_profile",
+                        f"{name!r} is not a hinge or slide joint of the model",
+                        path=where,
+                    )
+                measure = (
+                    int(model.jnt_qposadr[joint]),
+                    gripper.opening.closed,
+                    gripper.opening.open,
+                )
+            bound[gripper.gripper] = _Gripper(
+                drives=tuple(drives), low=low, high=high, measure=measure
+            )
         return bound
 
     def _bind_command(
@@ -1033,8 +1058,14 @@ class MujocoRuntime:
         return ArrayValue(dtype=dtype, shape=tuple(array.shape), data=array.tobytes())
 
     def _opening(self, gripper: str) -> float:
-        """The mean opening of a gripper's actuators, from their lengths, in [0, 1]."""
+        """The gripper's opening in [0, 1]: from its profiled measuring joint, or else the
+        mean over its actuators, from their lengths."""
         data = self._open_data()
+        measure = self._grippers[gripper].measure
+        if measure is not None:
+            address, closed, open_ = measure
+            value = (float(data.qpos[address]) - closed) / (open_ - closed)
+            return min(max(value, 0.0), 1.0)
         openings = []
         for drive, closed, open_ in self._grippers[gripper].drives:
             low, high = drive.length_for(closed), drive.length_for(open_)
@@ -1136,6 +1167,8 @@ class MujocoRuntime:
 
 _BODY = mujoco.mjtObj.mjOBJ_BODY
 _FREE = mujoco.mjtJoint.mjJNT_FREE
+_HINGE = mujoco.mjtJoint.mjJNT_HINGE
+_SLIDE = mujoco.mjtJoint.mjJNT_SLIDE
 
 
 def _compose(spec: Any, scene: SceneSource) -> tuple[Any, dict[str, str]]:

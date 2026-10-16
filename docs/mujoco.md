@@ -314,9 +314,11 @@ records every unconfirmed one with a diagnostic, and the context refuses it
 Channels are confirmed the same way:
 
 - `joint_position` and `joint_velocity` read `qpos` and `qvel` at the group's joints.
-- `gripper_opening` needs the profile. It inverts the profile's map from the
-  actuators' lengths, `(L − L_closed) / (L_open − L_closed)`, clipped to [0, 1] and
-  averaged over the gripper's actuators.
+- `gripper_opening` needs the profile. With the gripper's `opening` declared, it is
+  that joint's calibrated position, `(q − q_closed) / (q_open − q_closed)`, clipped to
+  [0, 1]. Otherwise it inverts the profile's map from the actuators' lengths,
+  `(L − L_closed) / (L_open − L_closed)`, clipped to [0, 1] and averaged over the
+  gripper's actuators.
 - `joint_effort` reads `qfrc_actuator` at the group's joints: the force the actuators
   apply to each joint.
 - `pose` reports `source` in `frame`, from the two frames' world poses. A body's pose is
@@ -361,6 +363,7 @@ actuators = [
   { actuator = "left_finger", closed = 0.0, open = 0.04 },
   { actuator = "right_finger", closed = 0.0, open = 0.04 },
 ]
+opening = { joint = "left_finger_joint", closed = 0.0, open = 0.04 }  # optional
 ```
 
 Each gripper actuator must be a position servo that moves only joints the gripper
@@ -369,6 +372,15 @@ the larger. The opening command interpolates between them. At open, the runtime
 computes the openings every actuator's control range allows, and fails if there are
 none. The runtime uses the profile named by `profile`, or the package's only `mujoco` profile, or
 none. The profile is one of the package's hashed files, so `package_changed` covers it.
+
+A gripper's optional `opening` names the joint whose position measures how open it is,
+calibrated: `closed` is its position when the fingers close on nothing, and `open` its
+position when they are open. Declare it for a gripper whose actuated joints travel
+their full range whether or not the fingers are blocked, as in a compliant linkage.
+There, actuator lengths read "closed" with an object between the fingers, and the
+opening could not tell a held object from a missed one. The joint must be one of the
+gripper's own hinge or slide joints (`invalid_profile`), and `closed` and `open` must be
+finite and differ. Commands still drive the actuators by their map.
 
 ## Execution
 
@@ -421,6 +433,7 @@ loop is an application that calls `step()`; it is not a different runtime mode.
 | `artifacts/test_scenes_include_files_and_assets_under_one_identity/scene_assets.json` | A scene that sets `meshdir`, includes a table fixture with a mesh visual, and has a free cylinder, opened with the example arm. The mapping lists `meshes/leg.stl`, `parts/table.xml`, and `scene.xml` with their hashes. A moved copy keeps the identity; editing the include or the mesh changes it. A declared `scene_root` lets the scene use a sibling directory's mesh, which it otherwise cannot reach (`scene_escape`). `..`, a symlink out of the root (`scene_escape`), an absolute path, and a `<model file>` reference (`invalid_scene`) are refused. A mesh rewritten after the closure was read does not reach the compiled model. A planning scene builds on the composed world. Two runs are byte-identical. |
 | `artifacts/test_planning_scenes_are_isolated_and_agree/isolation.json`, `trace.jsonl` | After the grasp, with the pedestal allowed, one snapshot and two planning scenes.<br>**Isolation:** the scenes start with equal answers (validity, contacts, `tcp` pose). Each is then queried at configurations the other never sees, and afterwards both answer exactly as before, while the snapshot's fingerprint and the live arm are unchanged.<br>**Accuracy:** forward kinematics matches an independently compiled model exactly.<br>**Semantics:** the grasp configuration is valid, raised and swung aside are valid, and the lift and the carry edges are valid. Swinging down puts the held box and the fingers into the floor, and driving the fingers into the pedestal names it; both are invalid.<br>**Round trip:** a snapshot decoded from JSON answers identically.<br>A second run is byte-identical. |
 | `artifacts/test_an_allowed_static_robot_frame_is_honoured/static_frame_allowance.json` | A puck resting on the example arm's fixed `base`, declared held by the hand. With only the hand's frames allowed, the planning scene refuses the state and names the `base`/`puck` contact; with `base` allowed too, the state is valid with no contact. |
+| `artifacts/test_a_profiled_joint_measures_the_opening/gripper_opening.json` | The example package with `opening` declared on `left_finger_joint` (closed 0, open 0.04). Closed on the box, open, and closed on nothing, the reported opening equals the calibrated map of the joint's position, read independently from a snapshot: 0.366, 0.999, and 0. A measuring joint of another component, and equal closed and open values, fail with `invalid_profile` at open. |
 | `artifacts/test_planning_refuses_what_does_not_apply/refusals.json`, `trace.jsonl` | Each refusal with its code: a snapshot of the same robot without the scene, materialized or submitted (`incompatible_snapshot`); decoded snapshots with a renamed joint, a missing object, or an unknown allow name (`incompatible_snapshot`); an unknown group or frame; a zero edge resolution; and short, non-finite, string, or boolean configurations. A snapshot with altered attachments at the current revision is `stale_snapshot` at submit. A configuration outside limits is invalid. A plan submitted with its snapshot runs and is linked to it in the trace. After a detach, the same snapshot is `stale_snapshot`. |
 | `installed-conformance` (CI) | The `[mujoco]` wheel, in a clean environment, builds a planning scene on sscbirrt's native checker. |
 | `reference-robots/<robot>/mujoco-startup.json` (CI) | Geodude and ADA opened from their installed wheels: mapping, runtime version, and exact time after 10 steps. |

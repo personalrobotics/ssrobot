@@ -29,9 +29,35 @@
       ],
       "additionalProperties": false
     },
+    "GripperOpening": {
+      "type": "object",
+      "description": "The gripper joint whose position measures the opening, calibrated: the opening is",
+      "properties": {
+        "joint": {
+          "type": "string",
+          "description": "One of the gripper's joints."
+        },
+        "closed": {
+          "type": "number",
+          "description": "Its position when the fingers close on nothing.",
+          "x-unit": "joint"
+        },
+        "open": {
+          "type": "number",
+          "description": "Its position when the fingers are open.",
+          "x-unit": "joint"
+        }
+      },
+      "required": [
+        "joint",
+        "closed",
+        "open"
+      ],
+      "additionalProperties": false
+    },
     "GripperProfile": {
       "type": "object",
-      "description": "How a gripper's opening maps to its actuators.",
+      "description": "How a gripper's opening maps to its actuators, and how it is measured.",
       "properties": {
         "gripper": {
           "type": "string",
@@ -43,6 +69,17 @@
             "$ref": "#/$defs/GripperActuator"
           },
           "description": "Its actuators; each is driven between its closed and open values."
+        },
+        "opening": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GripperOpening"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The joint that measures the opening; the actuators' lengths if none."
         }
       },
       "required": [
