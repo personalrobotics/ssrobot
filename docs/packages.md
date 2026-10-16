@@ -430,6 +430,31 @@ the uv version. The script then runs two public commands, and opens the runtime:
   `scenario.json` with every execution's outcome. They are under `scenario/run-1` and
   `run-2`. No full trace is kept: each `applied` record repeats the whole submitted
   trajectory (#130).
+- The **concise planning proof** (#142), for every robot with a scenario. One function,
+  `journey`, is the user's code:
+  - `CBiRRT.from_package` for the manipulator;
+  - the manipulator view;
+  - a 5 cm straight move up with no snapshot;
+  - `ctx.execute`;
+  - `run_until`.
+
+  Its plan, compiled command, and linked trace records are kept, with the terminal
+  status and a cost report: its concepts, its tagged setup and motion lines, and why
+  each remaining argument is explicit.
+
+  In the scenario's scene, `concise` also shows these. It passes when the journey
+  succeeds and all of them hold, byte for byte across two runs:
+  - an omitted snapshot gives exactly the request an explicit one taken at the same
+    instant does;
+  - an implicitly captured plan is refused with `stale_snapshot` after the scene
+    changes, with nothing submitted;
+  - which manipulators ssik can build a planner for;
+  - an unnamed manipulator is refused on a robot with several.
+
+  The journey must capture exactly one snapshot, the one its request and submission
+  name. In CI, the whole check runs with the built ssrobot wheel, installed with the
+  locked extras into a clean environment (`--require-installed-ssrobot`, which fails
+  unless ssrobot is loaded from outside the checkout).
 - The **guarded-contact proof** (#124), when the scenario has a `guard` table. One
   function, `guarded`, serves every robot. The table gives:
   - the frame and its region relative to the object;

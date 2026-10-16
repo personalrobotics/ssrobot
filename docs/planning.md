@@ -12,13 +12,57 @@ uv add "ssrobot[mujoco,planning]"
 | Name | What it is |
 | --- | --- |
 | `CBiRRT(description, *, kinematics=None, config=None, backend="auto")` | A `Planner`: sscbirrt's constrained bidirectional RRT, timed by sscbirrt |
+| `CBiRRT.from_package(package, manipulator, *, config=None, backend="auto")` | The same, with `SsikKinematics.from_package(package, manipulator)`, so it plans pose, offset, and TSR goals and path constraints for that manipulator; `kinematics_unavailable` if ssik cannot solve it |
 | `SsikKinematics.from_package(package, manipulator)` | Analytic IK for one manipulator from the package's canonical MJCF |
 | `CBiRRT.validator(request, scene)` | The `MotionValidator` the planner applies to `request`: an `SscbirrtValidator` over sscbirrt's public `Validator` |
 | `RestToRestProcessor()` | A path-preserving `TrajectoryProcessor` for a plan that has only a path |
 
 Executing a plan is core: `ctx.execute(plan, planner=planner)` compiles it with
 `ssrobot.prepare` for the runtime's declared contract, asking `planner.validator`, and
-submits it (see *Executing a plan*). The adapter depends only on the neutral
+submits it (see *Executing a plan*).
+
+## The ordinary journey
+
+```python
+planner = CBiRRT.from_package(package, "right_arm")              # setup
+with ssrobot.RobotContext(package.description, runtime) as ctx:  # setup
+    arm = ctx.manipulator("right_arm")                           # setup
+    plan = arm.plan_to_end_effector_offset((0.0, 0.0, 1.0), 0.05, planner=planner)
+    execution = ctx.execute(plan, planner=planner)
+    status = ctx.run_until(execution, max_ticks=20_000)
+```
+
+A `plan_to_*` or `request` call without `snapshot=` captures exactly one snapshot as it
+starts, and records its fingerprint in the request. From there it is recorded in the
+result, the compiled artifact, the submission, and the trace, exactly as for an explicit
+snapshot. An omitted snapshot and one captured at the same instant give equal requests.
+Pass `snapshot=ctx.snapshot()` explicitly to plan several requests in exactly the same
+world. A plan captured either way is refused at `execute` once the scene changes
+(`stale_snapshot`).
+
+This journey is for a manual clock, as in simulation, where `run_until` steps the runtime
+and `max_ticks` bounds it. On an external clock, as on hardware, `run_until` polls
+instead and needs `timeout_s`, wall-clock seconds; it refuses `max_ticks` alone.
+
+What stays explicit is deliberate:
+- the runtime, because nothing chooses a simulator or a robot for you;
+- the manipulator, when the robot has several (`ambiguous_manipulator` otherwise);
+- the planner, with its kinematics and validation policy, because there is no planner
+  registry;
+- planning, then `execute`, because a `plan_to_*` call never moves the robot, and the
+  plan can be inspected first;
+- `planner=` again at `execute`, because a `PlanResult` is serializable data with no
+  live validator, and the validator comes from the planner you name;
+- `max_ticks` (manual clock) or `timeout_s` (external clock), because `run_until` blocks,
+  and the wait is bounded.
+
+The reference check runs this journey on Geodude and ADA and reports its cost:
+- 7 concepts: package, runtime, context, manipulator view, planner, plan, and
+  execution;
+- 3 setup lines and 3 motion lines;
+- each explicit choice above.
+
+The adapter depends only on the neutral
 `PlanningScene`, never on `MujocoRuntime` or a live context. Without the extra, `import ssrobot.planning` fails with an `ImportError`
 naming the missing package; core never imports it, and the dependency gate checks both.
 

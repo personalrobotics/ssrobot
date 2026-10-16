@@ -1263,7 +1263,9 @@ class ManipulatorView:
     """Planning calls for one explicitly selected manipulator.
 
     Each call builds a ``PlanningRequest`` from the description and a snapshot alone,
-    then plans it with ``RobotContext.plan``. Pose goals and path constraints apply to
+    then plans it with ``RobotContext.plan``. Without ``snapshot``, a call captures exactly
+    one at entry (``RobotContext.snapshot``): the world as it is now. Pass one to plan
+    several requests in exactly the same world. Pose goals and path constraints apply to
     the manipulator's end-effector frame unless ``frame`` names another. Nothing here
     moves the robot: submit a prepared result to do that.
     """
@@ -1294,7 +1296,7 @@ class ManipulatorView:
         self,
         goal: Goal,
         *,
-        snapshot: SceneSnapshot,
+        snapshot: SceneSnapshot | None = None,
         frame: str | None = None,
         path_constraint: Sequence[Tsr] = (),
         constraints: Sequence[ConstraintClass] = (),
@@ -1303,7 +1305,10 @@ class ManipulatorView:
         timeout_s: float = 10.0,
         seed: int = 0,
     ) -> PlanningRequest:
-        """The fully resolved request for ``goal``. Reads no runtime state."""
+        """The fully resolved request for ``goal``. Reads no runtime state beyond
+        capturing a snapshot when none is given."""
+        if snapshot is None:
+            snapshot = self._context.snapshot()
         if isinstance(goal, BasePoseGoal):
             raise ValidationError(
                 "unsupported_goal", "a manipulator does not plan base poses; use ctx.base()"
@@ -1336,13 +1341,15 @@ class ManipulatorView:
         self,
         goal: Goal,
         *,
-        snapshot: SceneSnapshot,
+        snapshot: SceneSnapshot | None = None,
         planner: Planner,
         processor: TrajectoryProcessor | None = None,
         abort: Callable[[], bool] | None = None,
         **options: Any,
     ) -> PlanResult:
         """Build the request for ``goal`` and plan it; ``options`` go to ``request``."""
+        if snapshot is None:
+            snapshot = self._context.snapshot()
         request = self.request(goal, snapshot=snapshot, **options)
         return self._context.plan(
             request, snapshot=snapshot, planner=planner, processor=processor, abort=abort
@@ -1352,7 +1359,7 @@ class ManipulatorView:
         self,
         configuration: Sequence[float],
         *,
-        snapshot: SceneSnapshot,
+        snapshot: SceneSnapshot | None = None,
         planner: Planner,
         **options: Any,
     ) -> PlanResult:
@@ -1364,7 +1371,7 @@ class ManipulatorView:
         self,
         configurations: Sequence[Sequence[float]],
         *,
-        snapshot: SceneSnapshot,
+        snapshot: SceneSnapshot | None = None,
         planner: Planner,
         **options: Any,
     ) -> PlanResult:
@@ -1378,7 +1385,7 @@ class ManipulatorView:
         self,
         pose: Pose,
         *,
-        snapshot: SceneSnapshot,
+        snapshot: SceneSnapshot | None = None,
         planner: Planner,
         position_tolerance: float = 1e-3,
         rotation_tolerance: float = 1e-2,
@@ -1394,7 +1401,7 @@ class ManipulatorView:
         direction: Sequence[float],
         distance: float,
         *,
-        snapshot: SceneSnapshot,
+        snapshot: SceneSnapshot | None = None,
         planner: Planner,
         position_tolerance: float = 1e-3,
         rotation_tolerance: float = 1e-2,
@@ -1412,7 +1419,12 @@ class ManipulatorView:
         return self.plan(goal, snapshot=snapshot, planner=planner, **options)
 
     def plan_to_tsr(
-        self, tsrs: Sequence[Tsr], *, snapshot: SceneSnapshot, planner: Planner, **options: Any
+        self,
+        tsrs: Sequence[Tsr],
+        *,
+        snapshot: SceneSnapshot | None = None,
+        planner: Planner,
+        **options: Any,
     ) -> PlanResult:
         """Plan into any one of the regions ``tsrs``."""
         goal = TsrGoal(tsrs=tuple(tsrs))
@@ -1436,13 +1448,16 @@ class BaseView:
         self,
         pose: Pose,
         *,
-        snapshot: SceneSnapshot,
+        snapshot: SceneSnapshot | None = None,
         velocity_scaling: float = 1.0,
         acceleration_scaling: float = 1.0,
         timeout_s: float = 10.0,
         seed: int = 0,
     ) -> PlanningRequest:
-        """The fully resolved request to bring the base frame to ``pose``."""
+        """The fully resolved request to bring the base frame to ``pose``, in
+        ``snapshot``, or in one captured now."""
+        if snapshot is None:
+            snapshot = self._context.snapshot()
         return build_request(
             self._context.description,
             snapshot,
@@ -1460,12 +1475,14 @@ class BaseView:
         self,
         pose: Pose,
         *,
-        snapshot: SceneSnapshot,
+        snapshot: SceneSnapshot | None = None,
         planner: Planner,
         processor: TrajectoryProcessor | None = None,
         abort: Callable[[], bool] | None = None,
         **options: Any,
     ) -> PlanResult:
+        if snapshot is None:
+            snapshot = self._context.snapshot()
         request = self.request(pose, snapshot=snapshot, **options)
         return self._context.plan(
             request, snapshot=snapshot, planner=planner, processor=processor, abort=abort

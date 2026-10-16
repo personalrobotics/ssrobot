@@ -24,6 +24,7 @@ from sscbirrt.exceptions import (
 from ssrobot.description import JointKind, RobotDescription
 from ssrobot.errors import CapabilityError, ValidationError
 from ssrobot.execution import Diagnostic
+from ssrobot.package import RobotPackage
 from ssrobot.planning._frames import box, matrix, region
 from ssrobot.planning._kinematics import SsikKinematics
 from ssrobot.planning._validator import SscbirrtValidator
@@ -126,6 +127,26 @@ class CBiRRT:
         self.kinematics = kinematics
         self.config = config or CBiRRTConfig()
         self.backend = backend
+
+    @classmethod
+    def from_package(
+        cls,
+        package: RobotPackage,
+        manipulator: str,
+        *,
+        config: CBiRRTConfig | None = None,
+        backend: str = "auto",
+    ) -> CBiRRT:
+        """A planner for ``package``'s robot with ssik kinematics for ``manipulator``, so
+        it plans pose, offset, and TSR goals and path constraints for that manipulator.
+        Fails with ``kinematics_unavailable`` when ssik cannot solve it; use
+        ``CBiRRT(description)`` for configuration goals alone."""
+        return cls(
+            package.description,
+            kinematics=SsikKinematics.from_package(package, manipulator),
+            config=config,
+            backend=backend,
+        )
 
     @property
     def name(self) -> str:
