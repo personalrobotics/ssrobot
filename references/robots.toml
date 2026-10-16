@@ -6,7 +6,7 @@
 [[robots]]
 name = "geodude"
 repository = "personalrobotics/geodude_assets"
-commit = "9d79afc6c9a2ba6ccb4c755fa8fcfac5240af93a"
+commit = "30ca5ff8706e5d856fd22d2511c879026ee45bb3"
 module = "geodude_assets"
 package_root = "src/geodude_assets"
 # No keyframe: the package's MuJoCo profile starts it at "ready" (#95).
