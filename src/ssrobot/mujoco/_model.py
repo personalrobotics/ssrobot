@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import hashlib
 import importlib.metadata
+import math
 import tomllib
 from dataclasses import dataclass, field
 from typing import Any
@@ -143,12 +144,40 @@ class GripperActuator(Value):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class GripperOpening(Value):
+    """The gripper joint whose position measures the opening, calibrated: the opening is
+    0 at ``closed`` and 1 at ``open``, linearly between, and clamped to [0, 1]. Without
+    one, the opening is measured from the actuators, which misreads a gripper whose
+    actuated joints travel their full range whether or not the fingers are blocked."""
+
+    joint: str = field(metadata=meta("One of the gripper's joints."))
+    closed: float = field(
+        metadata=meta("Its position when the fingers close on nothing.", unit="joint")
+    )
+    open: float = field(metadata=meta("Its position when the fingers are open.", unit="joint"))
+
+    def _validate(self) -> None:
+        check_name(self.joint, path="joint")
+        if (
+            not (math.isfinite(self.closed) and math.isfinite(self.open))
+            or self.closed == self.open
+        ):
+            raise ValidationError(
+                "invalid_profile", "closed and open must be finite and differ", path="open"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class GripperProfile(Value):
-    """How a gripper's opening maps to its actuators."""
+    """How a gripper's opening maps to its actuators, and how it is measured."""
 
     gripper: str = field(metadata=meta("Gripper name in the description."))
     actuators: tuple[GripperActuator, ...] = field(
         metadata=meta("Its actuators; each is driven between its closed and open values.")
+    )
+    opening: GripperOpening | None = field(
+        default=None,
+        metadata=meta("The joint that measures the opening; the actuators' lengths if none."),
     )
 
     def _validate(self) -> None:
