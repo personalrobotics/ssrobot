@@ -133,6 +133,45 @@ def _evidence(work: Path) -> dict[str, Any]:
         ),
     )
 
+    # Empty references are refused as such, not as a failure to index a path.
+    empty = {
+        "include_without_file": SCENE.replace('<include file="parts/table.xml"/>', "<include/>"),
+        "empty_include": SCENE.replace('file="parts/table.xml"', 'file=""'),
+        "empty_mesh_file": SCENE.replace('file="leg.stl"', 'file=" "'),
+        "empty_cube_face": SCENE.replace(
+            "<asset>",
+            '<asset><texture name="sky" type="skybox" fileright="" fileleft="leg.stl"/>',
+        ),
+    }
+    empty_refused = {
+        name: _refused(_tree(work / f"empty_{name}", scene=scene)) for name, scene in empty.items()
+    }
+
+    # Spellings of one file, and a symlink to it inside the root, are read once: the
+    # closure holds one version of its bytes, shared by every MuJoCo lookup key.
+    aliased = _tree(
+        work / "aliased",
+        scene=SCENE.replace(
+            '<mesh name="leg" file="leg.stl"/>',
+            '<mesh name="leg" file="leg.stl"/><mesh name="leg2" file="./leg.stl"/>'
+            '<mesh name="leg3" file="alias.stl"/>',
+        ),
+    )
+    (aliased.parent / "meshes" / "alias.stl").symlink_to(aliased.parent / "meshes" / "leg.stl")
+    reads: list[str] = []
+    original_read = Path.read_bytes
+
+    def counting(self: Path) -> bytes:
+        reads.append(self.name)
+        return original_read(self)
+
+    Path.read_bytes = counting  # type: ignore[method-assign]
+    try:
+        aliases = load_scene(aliased)
+    finally:
+        Path.read_bytes = original_read  # type: ignore[method-assign]
+    leg_versions = {id(v) for k, v in aliases.assets.items() if k.endswith(".stl")}
+
     # The closure is read once; editing a file afterwards changes nothing compiled.
     racing = _tree(work / "racing")
     source = load_scene(racing)
@@ -153,6 +192,13 @@ def _evidence(work: Path) -> dict[str, Any]:
         "escape_by_symlink": _refused(by_link),
         "absolute_reference": _refused(absolute),
         "unresolvable_reference": _refused(unresolvable),
+        "empty_references": empty_refused,
+        "aliases": {
+            "lookup_keys": sorted(aliases.assets),
+            "versions_of_the_mesh": len(leg_versions),
+            "reads_of_the_mesh": reads.count("leg.stl"),
+            "files": [f.path for f in aliases.files],
+        },
         "compiled_mesh_extent_after_disk_edit": round(extent, 6),
         "identity_read_before_the_edit_kept": source.identity == original["identity"],
         "rereading_sees_the_edit": rehashed.identity != original["identity"],
@@ -188,6 +234,11 @@ def test_scenes_include_files_and_assets_under_one_identity(
     assert first["escape_by_symlink"] == "scene_escape"
     assert first["absolute_reference"] == "invalid_scene"
     assert first["unresolvable_reference"] == "invalid_scene"
+    assert first["empty_references"] == dict.fromkeys(first["empty_references"], "invalid_scene")
+    aliases = first["aliases"]
+    assert aliases["lookup_keys"] == ["meshes/./leg.stl", "meshes/alias.stl", "meshes/leg.stl"]
+    assert aliases["versions_of_the_mesh"] == 1 and aliases["reads_of_the_mesh"] == 1
+    assert aliases["files"] == ["meshes/leg.stl", "parts/table.xml", "scene.xml"]
     # The 0.05 m mesh that was hashed, not the 0.5 m one written afterwards.
     assert first["compiled_mesh_extent_after_disk_edit"] <= 0.05
     assert first["identity_read_before_the_edit_kept"] and first["rereading_sees_the_edit"]

@@ -166,8 +166,11 @@ Paths are relative to the scene file's directory, as MuJoCo reads them. The chec
   `invalid_scene`, because MuJoCo would read it from the working directory, outside the
   identity.
 
-Every file is read once and compiled from those bytes in memory, so what was hashed is
-what was compiled: a file edited later does not reach the simulation. At open, it
+Every file is read once, by its resolved path, and compiled from those bytes in memory.
+So what was hashed is what was compiled, and a file edited later does not reach the
+simulation. Spellings of one file (`mesh.stl`, `./mesh.stl`, or a symlink to it inside
+the root) share one read and one recorded hash. An empty or whitespace-only reference,
+including an `<include>` with no `file`, fails with `invalid_scene`. At open, it
 composes the scene with the robot's model, attaching the scene's world body
 to the robot's with no name prefix:
 - **Objects** are the scene's top-level bodies with exactly one free joint. They can be

@@ -74,6 +74,10 @@ def load_scene(scene: Path, root: Path | None = None) -> SceneSource:
         raise ValidationError("invalid_scene", str(e), path="scene") from None
     base = scene.parent  # MuJoCo reads relative references from the scene's directory
     files: dict[str, str] = {}
+    # Each file is read once, by its resolved path: references that differ in spelling
+    # (``mesh.stl``, ``./mesh.stl``, or a symlink inside the root) share the same bytes,
+    # so the closure never holds two versions of one file.
+    cache: dict[Path, bytes] = {}
 
     def read(path: Path, reference: str) -> bytes:
         try:
@@ -88,14 +92,21 @@ def load_scene(scene: Path, root: Path | None = None) -> SceneSource:
                 f"{reference!r} resolves outside the scene root {str(root_dir)!r}",
                 path="scene",
             )
+        if resolved in cache:
+            return cache[resolved]
         try:
             data = resolved.read_bytes()
         except OSError as e:
             raise ValidationError("invalid_scene", str(e), path="scene") from None
+        cache[resolved] = data
         files[resolved.relative_to(root_dir).as_posix()] = hashlib.sha256(data).hexdigest()
         return data
 
     def relative(reference: str, element: str) -> str:
+        if not reference.strip():
+            raise ValidationError(
+                "invalid_scene", f"<{element}> has an empty file reference", path="scene"
+            )
         p = PurePosixPath(reference)
         if p.is_absolute() or reference.startswith("\\\\") or ":" in p.parts[0]:
             raise ValidationError(
