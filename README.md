@@ -52,7 +52,10 @@ with ssrobot.RobotContext(package.description, MujocoRuntime(package)) as ctx:  
     print(status.state.value, ctx.observe(arm_q).readings[0].value)
 ```
 
-It also observes joint state and effort, frame poses, wrenches, and camera images.
+It also observes joint state and effort, frame poses, wrenches, and camera images. A
+`GuardedJointTrajectory` runs a joint trajectory and stops it within one tick when a
+force-torque guard triggers, as for placing or skewering; the status says whether it
+triggered or completed.
 `MujocoRuntime(package, scene="tabletop.xml")` adds task objects from an MJCF scene.
 `ctx.attach(object, end_effector)` then declares a grasp for planners and the trace
 without changing physics: friction alone holds the object, and a slip is reported.

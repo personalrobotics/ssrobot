@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import enum
+import math
 from dataclasses import dataclass, field
 
 from ssrobot._wire import Record, Value, meta
-from ssrobot.commands import Command, InstantCommand
+from ssrobot.commands import Command, InstantCommand, WrenchPart
 from ssrobot.conventions import Timestamp, check_name
 from ssrobot.errors import ValidationError
 
@@ -46,18 +47,74 @@ class Diagnostic(Value):
             check_name(self.component, path="component")
 
 
+class GuardCause(enum.StrEnum):
+    """Why a guarded trajectory ended. Neither is success or failure in itself: the
+    caller decides, since contact is the goal of some motions and a fault in others."""
+
+    GUARD_TRIGGERED = "guard_triggered"
+    """The guard's condition held; the joints were held where they were."""
+    TRAJECTORY_COMPLETED = "trajectory_completed"
+    """The trajectory reached its last waypoint without the guard triggering."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GuardOutcome(Value):
+    """How a ``GuardedJointTrajectory`` ended, with the evidence to reproduce the
+    decision from the submitted guard: the tare baseline and the deciding readings."""
+
+    cause: GuardCause = field(metadata=meta("Why it ended."))
+    elapsed_ns: int = field(
+        metadata=meta("Time since the trajectory started when it ended.", unit="ns")
+    )
+    part: WrenchPart = field(metadata=meta("Which half of the wrench was measured."))
+    measure: float = field(
+        metadata=meta(
+            "The guarded measure at the deciding tick: the last of window.",
+            unit_by=("part", {"force": "N", "torque": "N*m"}),
+        )
+    )
+    baseline: tuple[float, ...] | None = field(
+        default=None,
+        metadata=meta("The tare reading, untared, if the guard tares.", unit="channel"),
+    )
+    window: tuple[tuple[float, ...], ...] = field(
+        metadata=meta(
+            "The last readings evaluated, untared, oldest first: the guard's samples, or "
+            "every one if fewer were evaluated.",
+            unit="channel",
+        )
+    )
+
+    def _validate(self) -> None:
+        if self.elapsed_ns < 0:
+            raise ValidationError("out_of_limits", "elapsed_ns is negative", path="elapsed_ns")
+        if not self.window:
+            raise ValidationError("shape_mismatch", "at least one reading", path="window")
+        rows = [("baseline", self.baseline)] if self.baseline is not None else []
+        rows += [(f"window[{i}]", w) for i, w in enumerate(self.window)]
+        for path, wrench in rows:
+            if len(wrench) != 6 or not all(math.isfinite(v) for v in wrench):
+                raise ValidationError("shape_mismatch", "a wrench is six finite values", path=path)
+        if not math.isfinite(self.measure):
+            raise ValidationError("out_of_limits", "measure is not finite", path="measure")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExecutionStatus(Record):
     """The state of one submitted command at a point in runtime time."""
 
     SCHEMA = "ssrobot.ExecutionStatus"
-    VERSION = 1
+    VERSION = 2
 
     execution: str = field(metadata=meta("Execution identifier, unique within a context."))
     state: ExecutionState = field(metadata=meta("Current state."))
     stamp: Timestamp = field(metadata=meta("When this state was observed."))
     diagnostic: Diagnostic | None = field(
         default=None, metadata=meta("Required for rejected, timed-out, and failed states.")
+    )
+    guard: GuardOutcome | None = field(
+        default=None,
+        metadata=meta("How a guarded trajectory ended; on its succeeded status only."),
     )
 
     def _validate(self) -> None:
@@ -70,6 +127,10 @@ class ExecutionStatus(Record):
         if needs and self.diagnostic is None:
             raise ValidationError(
                 "missing_field", f"{self.state} needs a diagnostic", path="diagnostic"
+            )
+        if self.guard is not None and self.state is not ExecutionState.SUCCEEDED:
+            raise ValidationError(
+                "unexpected_field", "only a succeeded status has a guard outcome", path="guard"
             )
 
 

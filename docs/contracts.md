@@ -44,8 +44,8 @@ uses them:
 | --- | --- |
 | Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `ResolvedFile`, `SourceItem`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointLimitDeclaration`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
-| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
-| Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
+| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `GuardedJointTrajectory`, `WrenchGuard`, `WrenchPart`, `GuardOutcome`, `GuardCause`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
+| Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `GuardCapability`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
 | Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `TimedTrajectory`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `PreparedTrajectory`, `prepare`, `MotionValidator`, `MotionValidation` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
 | Error handling | `SsrobotError`, `ValidationError`, `CapabilityError`, `OwnershipError`, `StaleRevisionError`, `LifecycleError` |
@@ -153,9 +153,15 @@ or task logic.
   mode, clock identity, the fingerprint of the description it bound, and the command
   capabilities and channels it confirms are available now. The context rejects a
   different fingerprint (`stale_description`) and any capability or channel the
-  description does not declare (`undeclared_capability`). Its `trajectory` (version 2)
-  is the runtime's trajectory-execution contract, or None when it cannot declare one
-  (see *Runtime commands*).
+  description does not declare (`undeclared_capability`). In `RuntimeInfo` (version 3),
+  `trajectory` is the runtime's trajectory-execution contract, or None when it cannot
+  declare one (see *Runtime commands*). `guards` lists, per component, a
+  `GuardCapability`: the wrench channels it evaluates force-torque guards on, whether
+  it can tare them, how often it evaluates them (`period_ns`), and the longest time
+  from a triggering reading to the hold (`stop_latency_ns`). It is empty when the
+  runtime cannot execute a `GuardedJointTrajectory` (see *Guarded trajectories*). Each
+  component must be one the runtime confirms for joint trajectories, and each channel
+  a confirmed wrench channel (`undeclared_capability`).
 - `submit(execution, command)` returns `pending` or `rejected` for that execution. The
   context assigns the execution identifier.
 - `cancel(execution)` means stop applying it at once and report nothing further about
@@ -796,15 +802,16 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`KinematicModel`](../schemas/ssrobot.KinematicModel.v1.json) | A robot's frames and joints, as a model loader produces them. |
 | [`ssrobot.package`](../schemas/ssrobot.package.v1.json) | A package manifest, `ssrobot.toml`. See [packages.md](packages.md). |
 | [`PackageReport`](../schemas/ssrobot.PackageReport.v1.json) | What loading a package resolved. |
-| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v2.json) | What an opened runtime binds and confirms. |
+| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v3.json) | What an opened runtime binds and confirms. |
 | [`JointCommand`](../schemas/ssrobot.JointCommand.v1.json) | Instantaneous position, velocity, or effort targets for a group. |
 | [`GripperCommand`](../schemas/ssrobot.GripperCommand.v1.json) | Target opening. |
 | [`BaseTwistCommand`](../schemas/ssrobot.BaseTwistCommand.v1.json) | Planar base velocity. |
 | [`JointTrajectory`](../schemas/ssrobot.JointTrajectory.v1.json) | Timed waypoints from t = 0, strictly increasing. |
+| [`GuardedJointTrajectory`](../schemas/ssrobot.GuardedJointTrajectory.v1.json) | A joint trajectory and the force-torque guard that stops it. |
 | [`ActionChunk`](../schemas/ssrobot.ActionChunk.v1.json) | Fixed-period steps of instantaneous commands from a start time. Every step addresses the same components, joints, and modes. |
 | [`ObservationRequest`](../schemas/ssrobot.ObservationRequest.v1.json) | Channel names to observe. |
 | [`Observation`](../schemas/ssrobot.Observation.v1.json) | Timestamped readings, one per requested channel. |
-| [`ExecutionStatus`](../schemas/ssrobot.ExecutionStatus.v1.json) | The state of a submitted command. |
+| [`ExecutionStatus`](../schemas/ssrobot.ExecutionStatus.v2.json) | The state of a submitted command, and how a guarded trajectory ended. |
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v1.json) | What was requested, what was applied, and every modification between them. |
 | [`Submission`](../schemas/ssrobot.Submission.v2.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
@@ -852,6 +859,10 @@ inspected before any runtime opens. The runtime confirms which are available in
    arithmetic is exact over integer nanoseconds.
 3. The capability is declared (`unsupported_command`).
 4. The capability is available now (`unavailable_command` or `unavailable_channel`).
+5. A guarded trajectory's guard reads a declared wrench channel (`unknown_reference`,
+   `unsupported_quantity`), and the runtime guards the trajectory's group
+   (`guards_unavailable`) on that channel (`unavailable_guard_channel`) with every
+   feature it asks for (`unsupported_guard_feature`). Its trajectory is checked as in steps 2 to 4.
 
 ### Observation channels
 
@@ -888,7 +899,7 @@ readings must carry a unit quaternion.
 | --- | --- | --- |
 | `pending` | no | — |
 | `active` | no | — |
-| `succeeded` | yes | — |
+| `succeeded` | yes | —; a guarded trajectory's carries its `GuardOutcome` |
 | `canceled` | yes | optional |
 | `timed_out` | yes | required |
 | `rejected` | yes | required |
@@ -897,6 +908,39 @@ readings must carry a unit quaternion.
 `AppliedCommand` keeps the requested command next to the instantaneous command a
 runtime actually applied. Every clip, rate limit, or safety override is listed as a
 `Modification`.
+
+### Guarded trajectories
+
+A `GuardedJointTrajectory` is a `JointTrajectory` and a `WrenchGuard`. The runtime
+executes the trajectory exactly as it would alone, and evaluates the guard every
+`GuardCapability.period_ns`, at its own rate; no client loop is involved. It owns only the
+guard and the stop: no IK, Cartesian interpolation, or force control.
+
+- **The measure.** `part` (force or torque) of the guard's wrench channel, in the
+  sensor's frame and with the contract's wrench sign (*Observation channels*). With
+  `tare`, the reading when the motion started is subtracted first. The measure is the
+  magnitude of that vector, or with `axis` (a unit vector in the sensor frame) its
+  signed projection.
+- **The trigger.** The measure is at least `threshold` (positive, in N or N·m) for
+  `samples` consecutive ticks.
+- **The stop.** When it triggers, the runtime holds the trajectory's joints where they
+  are, with a joint position command recorded as `applied`, no later than
+  `GuardCapability.stop_latency_ns` after the triggering reading.
+- **The outcome.** The execution ends `succeeded` either way, and its status carries a
+  `GuardOutcome`: `cause` (`guard_triggered` or `trajectory_completed`), the time since
+  the trajectory started, the deciding measure, and the evidence for the decision: the
+  tare `baseline` (exactly when the guard tares) and the `window` of the last readings
+  evaluated, untared, at most `samples` of them. The context reproduces the decision
+  from that evidence (`check_guard_outcome`). The measure must be the last reading's, a
+  trigger needs a full window at or over the threshold, and a completion must not have
+  one. Anything else is a contract breach (`guard_mismatch`, failing the context with
+  `runtime_contract`). A
+  guarded trajectory that does not settle at its goal fails (`goal_not_reached`), as an
+  unguarded one does. Cancellation, timeout, and faults keep their states, with no
+  outcome. Only a `succeeded` status may carry an outcome, and a guarded trajectory's
+  always does.
+- **Classifying it** is the caller's: contact is the goal of placing or skewering, and
+  a failure for other motions.
 
 ## Traces
 
@@ -1031,6 +1075,7 @@ on sscbirrt's native backend.
 | `artifacts/test_joint_command_schema_fixes_the_unit_of_values_by_mode/joint-command-units.json` | For position, velocity, and effort commands: the mode, the single unit the schema resolves for `values`, and the unit after decoding. |
 | `artifacts/test_conventions_accept_valid_and_reject_ambiguous_input/conventions-report.json` | Every valid and invalid convention case with its expected and actual diagnostic code and path. Covers the MuJoCo, URDF, and ROS timestamp conversions, chunk clocks against manual and external runtimes, and execution-record identifiers. |
 | `artifacts/test_replay_runtime_passes_the_conformance_scenario/run/` | The ReplayRuntime conformance `trace.jsonl` and `conformance-report.json`. The test re-reads them and checks every line against the schema, contiguous sequence numbers, time that never decreases, legal transitions, all five terminal states, and that each applied command is attributed to its submitter. A second run in `rerun/` is byte-identical. |
+| `artifacts/test_guarded_descent_stops_on_contact_and_completes_without_it/` | The example arm's guarded descent onto the box on its pedestal under force magnitude, signed force projection toward and away from the contact, torque magnitude, and a low threshold with and without three-sample debouncing; and the same command without a scene. Each has its `*.command.json`, a compact `*.events.json` of statuses and applied setpoints, and its entry in `guarded.json`. Every trigger ends on exactly the tick the test predicts from its own wrench readings by the guard's rule, with the hold as the last setpoint. Away from the contact never triggers, and the run fails with `goal_not_reached`. The debounced guard ignores the one-tick start transient that the undebounced one stops on. Without a scene the command completes. A canceled guarded trajectory has no outcome. Unknown, non-wrench, unguarded-channel, untarable, and guardless-runtime cases are refused before motion. A second run is byte-identical. |
 | `artifacts/test_runtimes_declare_the_trajectory_contract_they_execute/contracts.json` | For MuJoCo, an evenly and an unevenly ticked replay, and an externally clocked runtime: the contract declared in the `opened` trace record, what `ctx.trajectory_contract` answered, how far three steps advanced the clock, and conformance's `trajectory_contract` outcome. A second run is byte-identical. |
 | `artifacts/test_scene_runtimes_that_break_their_contract/scene-breach-report.json`, `external-attach-trace.jsonl` | An external runtime that measures the object at 100 ns advances the context to 100 ns, and the `scene` record is stamped then. An attach answer stamped before the context's time, or at a later tick of a manual clock, is a contract breach. So is a scene runtime that changes the transform or allow set it was given, or reports a violation for an object that is not attached. Nothing is committed and the runtime is told to detach. A runtime that lists objects without implementing `SceneRuntime` is refused at open. |
 | `artifacts/test_snapshot_runtimes_that_break_their_contract/snapshot-breach-report.json` | A snapshot with the wrong revision, a missing object, or a stamp before the context's time is a contract breach. So is a planning scene coarser than the requested edge resolution. A contact naming unknown entities is `runtime_contract`, while a contact naming a frame and an object passes. A runtime without snapshots fails with `snapshots_unavailable`. |

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from ssrobot._wire import Record, Value, meta
-from ssrobot.commands import Command, TrajectoryContract
+from ssrobot.commands import Command, GuardCapability, TrajectoryContract
 from ssrobot.conventions import ClockMode, Timestamp, check_name
 from ssrobot.description import CommandCapability, RobotDescription
 from ssrobot.errors import ValidationError
@@ -35,7 +35,7 @@ class RuntimeInfo(Record):
     """What an opened runtime reports about itself."""
 
     SCHEMA = "ssrobot.RuntimeInfo"
-    VERSION = 2
+    VERSION = 3
 
     runtime: str = field(metadata=meta("Runtime implementation name."))
     runtime_version: str = field(metadata=meta("Runtime implementation and backend versions."))
@@ -61,6 +61,13 @@ class RuntimeInfo(Record):
             "plans cannot be compiled for it."
         ),
     )
+    guards: tuple[GuardCapability, ...] = field(
+        default=(),
+        metadata=meta(
+            "Per component, which force-torque guards it evaluates and how fast it stops, "
+            "sorted by component; empty if it cannot execute a GuardedJointTrajectory."
+        ),
+    )
 
     def _validate(self) -> None:
         check_name(self.runtime, path="runtime")
@@ -75,6 +82,11 @@ class RuntimeInfo(Record):
         if set(self.objects) & set(self.fixtures):
             raise ValidationError(
                 "duplicate_name", "a name is both an object and a fixture", path="fixtures"
+            )
+        components = [g.component for g in self.guards]
+        if components != sorted(set(components)):
+            raise ValidationError(
+                "noncanonical_order", "guards must be sorted by unique component", path="guards"
             )
         if not _FINGERPRINT.fullmatch(self.description):
             raise ValidationError(

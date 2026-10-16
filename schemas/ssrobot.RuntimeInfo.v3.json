@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.RuntimeInfo v2",
+  "title": "ssrobot.RuntimeInfo v3",
   "$ref": "#/$defs/RuntimeInfo",
   "$defs": {
     "CommandCapability": {
@@ -44,6 +44,45 @@
       ],
       "additionalProperties": false
     },
+    "GuardCapability": {
+      "type": "object",
+      "description": "Guarded trajectories a runtime executes for one component, and the timing it",
+      "properties": {
+        "component": {
+          "type": "string",
+          "description": "The joint group whose trajectories may be guarded."
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Wrench channels a guard may read, sorted."
+        },
+        "tare": {
+          "type": "boolean",
+          "description": "Whether it measures from the reading at the start."
+        },
+        "period_ns": {
+          "type": "integer",
+          "description": "Time between guard evaluations.",
+          "x-unit": "ns"
+        },
+        "stop_latency_ns": {
+          "type": "integer",
+          "description": "Longest time from a triggering reading to the hold.",
+          "x-unit": "ns"
+        }
+      },
+      "required": [
+        "component",
+        "channels",
+        "tare",
+        "period_ns",
+        "stop_latency_ns"
+      ],
+      "additionalProperties": false
+    },
     "RuntimeInfo": {
       "type": "object",
       "description": "What an opened runtime reports about itself.",
@@ -52,7 +91,7 @@
           "const": "ssrobot.RuntimeInfo"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "runtime": {
           "type": "string",
@@ -116,6 +155,13 @@
             }
           ],
           "description": "How it executes a JointTrajectory; None if it declares no contract, so timed plans cannot be compiled for it."
+        },
+        "guards": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GuardCapability"
+          },
+          "description": "Per component, which force-torque guards it evaluates and how fast it stops, sorted by component; empty if it cannot execute a GuardedJointTrajectory."
         }
       },
       "required": [

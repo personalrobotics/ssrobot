@@ -16,7 +16,10 @@ For each robot in references/robots.toml, this script:
 7. runs the two-robot planning proof on it (#24), ``scenario``: one function, given the
    robot's ``scenario`` data, plans to a task space region around an object and to a
    named configuration, prepares and executes each plan, and runs twice
-   to show its artifacts are byte-identical.
+   to show its artifacts are byte-identical;
+8. runs the guarded-contact proof on it (#124), ``guarded``: one function, given the
+   robot's ``scenario.guard`` data, moves a frame straight into the object under a
+   force-torque guard, and the same command where there is nothing to touch, twice.
 
 Steps 1 and 2 need network access: the archive comes from GitHub and the build
 backends from the package index. It writes, under --out, each robot's ``inspect.json``,
@@ -538,6 +541,216 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
     return record
 
 
+def _pose_error(T: Any, target: Any) -> Any:
+    """The 6-vector from ``T`` to ``target``: position, then a small rotation in world."""
+    import numpy as np
+
+    R = target[:3, :3] @ T[:3, :3].T
+    rotation = 0.5 * np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]])
+    return np.concatenate([target[:3, 3] - T[:3, 3], rotation])
+
+
+def _track(scene: Any, frame: str, q: Any, target: Any, iterations: int = 3) -> Any:
+    """Configuration near ``q`` that puts ``frame`` at ``target``: Gauss-Newton steps on
+    the planning scene's own forward kinematics, for a target a fraction of a millimetre
+    away. Test-side trajectory construction for the guarded-contact proof only."""
+    import numpy as np
+
+    q = np.array(q, dtype=float)
+    h = 1e-7
+    for _ in range(iterations):
+        T = _matrix(scene.forward_kinematics(tuple(q), frame))
+        error = _pose_error(T, target)
+        J = np.empty((6, len(q)))
+        for i in range(len(q)):
+            dq = q.copy()
+            dq[i] += h
+            J[:, i] = -_pose_error(_matrix(scene.forward_kinematics(tuple(dq), frame)), T) / h
+        q = q + np.linalg.lstsq(J, error, rcond=None)[0]
+    return q
+
+
+GUARD_SETTLE_TICKS = 500
+"""Control ticks to settle after a move before a guarded descent starts, so the tared
+baseline is not taken mid-transient."""
+
+GUARD_MAX_IK_STEP = 0.05
+"""The largest joint change, in joint units, allowed between consecutive IK waypoints of
+a descent; a larger one is a branch switch, and the descent is refused."""
+
+
+def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path) -> dict[str, Any]:
+    """The guarded-contact proof (#124): one function for every robot, like ``scenario``.
+
+    From the guard table, it plans with sscbirrt to a region above the object, executes,
+    and settles. It then builds a straight world -z descent of the guard frame by IK, one
+    waypoint per control tick on a cosine rest-to-rest profile, and submits it as a
+    ``GuardedJointTrajectory``. The descent is not geometrically validated: it is meant
+    to make contact (see #143). The same command then runs in a runtime without the
+    scene, from the same setpoint, where nothing is touched. Each tick the script reads
+    the wrench itself, so the tick the runtime stopped can be compared with the first
+    tick the guard's condition held. Writes ``guarded.json`` and the command under
+    ``out``.
+    """
+    import numpy as np
+
+    from ssrobot import (
+        GripperCommand,
+        GuardedJointTrajectory,
+        JointCommand,
+        JointMode,
+        JointTrajectory,
+        ObservationRequest,
+        Pose,
+        RobotContext,
+        Tsr,
+        WrenchGuard,
+        WrenchPart,
+    )
+    from ssrobot.mujoco import MujocoRuntime
+    from ssrobot.planning import CBiRRT, SsikKinematics
+
+    out.mkdir(parents=True, exist_ok=True)
+    g = spec["guard"]
+    description = package.description
+    manipulator = description.manipulator(spec["manipulator"])
+    joints = description.group(manipulator.group).joints
+    guard = WrenchGuard(
+        channel=g["channel"],
+        part=WrenchPart(g["part"]),
+        threshold=float(g["threshold"]),
+        tare=True,
+    )
+    channel = ObservationRequest(channels=(guard.channel,))
+
+    def wrench(ctx: Any) -> tuple[float, ...]:
+        return tuple(ctx.observe(channel).readings[0].value)
+
+    def arm_q(ctx: Any) -> tuple[float, ...]:
+        snapshot = ctx.snapshot()
+        return tuple(snapshot.position(j) for j in joints)
+
+    def finish(record: dict[str, Any]) -> dict[str, Any]:
+        (out / "guarded.json").write_text(json.dumps(record, indent=2) + "\n")
+        return record
+
+    def open_grippers(ctx: Any) -> None:
+        if manipulator.end_effector is None:
+            return
+        gripper = description.end_effector(manipulator.end_effector).gripper
+        if gripper is not None:
+            ctx.run_until(ctx.submit(GripperCommand(gripper=gripper, opening=1.0)), max_ticks=1)
+
+    def hold(ctx: Any, setpoint: tuple[float, ...]) -> None:
+        command = JointCommand(
+            group=manipulator.group, joints=joints, mode=JointMode.POSITION, values=setpoint
+        )
+        ctx.run_until(ctx.submit(command), max_ticks=1)
+        for _ in range(GUARD_SETTLE_TICKS):
+            ctx.step()
+
+    def run(ctx: Any, command: Any) -> dict[str, Any]:
+        baseline = wrench(ctx)
+        execution = ctx.submit(command, source="guarded")
+        first_over, tick, peak, profile = None, 0, 0.0, []
+        while not execution.done:
+            ctx.step()
+            tick += 1
+            reading = wrench(ctx)
+            measure = guard.measure(reading, baseline)
+            peak = max(peak, measure)
+            if tick % 25 == 0:
+                profile.append([tick, round(measure, 3), [round(v, 2) for v in reading]])
+            if first_over is None and measure >= guard.threshold:
+                first_over = tick
+        status = execution.status
+        outcome = status.guard
+        return {
+            "state": status.state.value,
+            "cause": None if outcome is None else outcome.cause.value,
+            "elapsed_ns": None if outcome is None else outcome.elapsed_ns,
+            "measure": None if outcome is None else outcome.measure,
+            "ended_tick": tick,
+            "first_tick_over_threshold": first_over,
+            "peak_measure": peak,
+            "profile": profile,
+        }
+
+    record: dict[str, Any] = {"guard": json.loads(dumps(guard))}
+    planner = CBiRRT(description, kinematics=SsikKinematics.from_package(package, manipulator.name))
+    runtime = MujocoRuntime(package, keyframe=keyframe, scene=spec["scene"])
+    with RobotContext(description, runtime) as ctx:
+        open_grippers(ctx)
+        arm = ctx.manipulator(manipulator.name)
+        snapshot = ctx.snapshot()
+        pose = next(o.pose for o in snapshot.objects if o.name == spec["object"])
+        x, y, z = g["offset_position"]
+        w, i, j, k = g["offset_quat_wxyz"]
+        (a, b), (c, d), (e, f) = g["position_bounds"]
+        (r0, r1), (p0, p1), (y0, y1) = g["rotation_bounds"]
+        region = Tsr(
+            origin=Pose(position=pose.position, quat_wxyz=(1.0, 0.0, 0.0, 0.0)),
+            offset=Pose(position=(x, y, z), quat_wxyz=(w, i, j, k)),
+            position_bounds=((a, b), (c, d), (e, f)),
+            rotation_bounds=((r0, r1), (p0, p1), (y0, y1)),
+        )
+        approach = arm.plan_to_tsr([region], snapshot=snapshot, planner=planner, frame=g["frame"])
+        record["approach"] = approach.status.value
+        if not approach.succeeded:
+            return finish(record)
+        status = ctx.run_until(ctx.execute(approach, planner=planner), max_ticks=20_000)
+        record["approach_execution"] = status.state.value
+        assert approach.trajectory is not None
+        setpoint = approach.trajectory.goal
+        hold(ctx, setpoint)
+        start = arm_q(ctx)
+        # The straight descent, by IK on the settled scene, one waypoint per tick.
+        settled = ctx.snapshot()
+        scene = ctx.planning_scene(settled, manipulator.group)
+        T0 = _matrix(scene.forward_kinematics(start, g["frame"]))
+        # The motion's direction: a unit vector in the guard frame, as world.
+        direction = T0[:3, :3] @ np.asarray(g["direction_in_frame"], dtype=float)
+        period = ctx.trajectory_contract.period_ns
+        steps = int(g["duration_ns"]) // period
+        rows, previous = [start], np.array(start)
+        for n in range(1, steps + 1):
+            s = (1.0 - math.cos(math.pi * n / steps)) / 2.0
+            T = T0.copy()
+            T[:3, 3] += s * float(g["distance"]) * direction
+            q = _track(scene, g["frame"], previous, T)
+            jump = float(np.abs(q - previous).max())
+            if jump > GUARD_MAX_IK_STEP:
+                record["descent"] = f"tracking jumped {jump:.3g} at step {n}"
+                return finish(record)
+            rows.append(tuple(float(v) for v in q))
+            previous = q
+        error = _pose_error(_matrix(scene.forward_kinematics(rows[-1], g["frame"])), T)
+        record["descent_end_error"] = float(np.abs(error).max())
+        command = GuardedJointTrajectory(
+            trajectory=JointTrajectory(
+                group=manipulator.group,
+                joints=joints,
+                time_from_start_ns=tuple(n * period for n in range(steps + 1)),
+                positions=tuple(rows),
+            ),
+            guard=guard,
+        )
+        (out / "guarded.command.json").write_text(dumps(command) + "\n")
+        record["descent"] = {"waypoints": len(rows), "distance_m": g["distance"]}
+        record["contact"] = run(ctx, command)
+    # The same command where there is nothing to touch: no scene, the same setpoint.
+    with RobotContext(description, MujocoRuntime(package, keyframe=keyframe)) as ctx:
+        open_grippers(ctx)
+        arm = ctx.manipulator(manipulator.name)
+        snapshot = ctx.snapshot()
+        move = arm.plan_to_configuration(setpoint, snapshot=snapshot, planner=planner)
+        ctx.run_until(ctx.execute(move, planner=planner), max_ticks=20_000)
+        hold(ctx, setpoint)
+        record["free_start_gap"] = max(abs(a - b) for a, b in zip(arm_q(ctx), start, strict=True))
+        record["no_surface"] = run(ctx, command)
+    return finish(record)
+
+
 def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] | None) -> int:
     """Open MujocoRuntime on the installed ``module``, step it, and write what it bound.
 
@@ -574,6 +787,17 @@ def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] |
             f.name: f.read_bytes() == (second / f.name).read_bytes()
             for f in sorted(first.iterdir())
         }
+        if "guard" in spec:
+            runs = [
+                guarded(package, spec, keyframe, out.parent / "guarded" / f"run-{i}")
+                for i in (1, 2)
+            ]
+            first, second = (out.parent / "guarded" / f"run-{i}" for i in (1, 2))
+            record["guarded"] = runs[0]
+            record["guarded_identical"] = {
+                f.name: f.read_bytes() == (second / f.name).read_bytes()
+                for f in sorted(first.iterdir())
+            }
     out.write_text(json.dumps(record, indent=2) + "\n")
     return 0
 
@@ -735,6 +959,27 @@ def check(robot: dict[str, Any], out: Path, scratch: Path) -> dict[str, Any]:
         identical = startup_record["scenario_identical"]
         add(
             "planning_deterministic",
+            bool(identical) and all(identical.values()),
+            f"two runs, byte for byte: {identical}",
+        )
+    if spec is not None and "guard" in spec:
+        guarded = startup_record.get("guarded", {})
+        contact, free = guarded.get("contact", {}), guarded.get("no_surface", {})
+        add(
+            "guarded_contact",
+            contact.get("cause") == "guard_triggered"
+            and contact.get("ended_tick") == contact.get("first_tick_over_threshold")
+            and free.get("cause") == "trajectory_completed"
+            and free.get("first_tick_over_threshold") is None,
+            "contact: "
+            + json.dumps({k: v for k, v in contact.items() if k != "profile"})
+            + "; no surface: "
+            + json.dumps({k: v for k, v in free.items() if k != "profile"})
+            + f"; approach {guarded.get('approach')}, descent {guarded.get('descent')}",
+        )
+        identical = startup_record.get("guarded_identical", {})
+        add(
+            "guarded_deterministic",
             bool(identical) and all(identical.values()),
             f"two runs, byte for byte: {identical}",
         )

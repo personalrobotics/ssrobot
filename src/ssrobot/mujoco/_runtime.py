@@ -9,7 +9,7 @@ import math
 import os
 import sys
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,8 @@ from ssrobot.commands import (
     Command,
     CommandKind,
     GripperCommand,
+    GuardCapability,
+    GuardedJointTrajectory,
     InstantCommand,
     JointCommand,
     JointMode,
@@ -37,6 +39,8 @@ from ssrobot.execution import (
     Diagnostic,
     ExecutionState,
     ExecutionStatus,
+    GuardCause,
+    GuardOutcome,
     Modification,
     ModificationKind,
 )
@@ -96,6 +100,15 @@ class _Running:
     command: Command
     started_ns: int | None = None
     ended_ns: int | None = None  # a trajectory: when its last waypoint was applied
+    baseline: tuple[float, ...] | None = None  # a tared guard: the wrench at the start
+    window: list[tuple[float, ...]] = field(default_factory=list)  # a guard's last readings
+
+
+def _trajectory(command: Command) -> JointTrajectory | None:
+    """The joint trajectory a command executes, guarded or not."""
+    if isinstance(command, GuardedJointTrajectory):
+        return command.trajectory
+    return command if isinstance(command, JointTrajectory) else None
 
 
 _IDENTITY = np.array([1.0, 0.0, 0.0, 0.0])
@@ -315,10 +328,7 @@ class MujocoRuntime:
                 assert spec.frame is not None
                 value = self._pose(spec.source, spec.frame)
             elif spec.quantity is Quantity.WRENCH and channel in self._wrenches:
-                force, torque = self._wrenches[channel]
-                value = tuple(float(v) for v in data.sensordata[force : force + 3]) + tuple(
-                    float(v) for v in data.sensordata[torque : torque + 3]
-                )
+                value = self._wrench(channel)
             elif channel in self._cameras:
                 readings.append(Reading(channel=channel, stamp=now, value=self._image(spec)))
                 continue
@@ -328,11 +338,12 @@ class MujocoRuntime:
         return Observation(stamp=now, readings=tuple(readings))
 
     def submit(self, execution: str, command: Command) -> ExecutionStatus:
-        if isinstance(command, JointTrajectory):
+        trajectory = _trajectory(command)
+        if trajectory is not None:
             data = self._open_data()
             gap = max(
                 abs(float(data.qpos[self._joints[j].qpos_address]) - p)
-                for j, p in zip(command.joints, command.positions[0], strict=True)
+                for j, p in zip(trajectory.joints, trajectory.positions[0], strict=True)
             )
             if gap > START_TOLERANCE:
                 return ExecutionStatus(
@@ -342,7 +353,7 @@ class MujocoRuntime:
                     diagnostic=_unavailable(
                         "start_mismatch",
                         f"first waypoint is {gap:.6g} from the current positions",
-                        command.group,
+                        trajectory.group,
                     ),
                 )
         self._running[execution] = _Running(command=command)
@@ -360,6 +371,9 @@ class MujocoRuntime:
             due, done = self._due(running, applied_at.time_ns)
             if due and running.started_ns is None:
                 running.started_ns = applied_at.time_ns
+                command = running.command
+                if isinstance(command, GuardedJointTrajectory) and command.guard.tare:
+                    running.baseline = self._wrench(command.guard.channel)  # before it moves
                 if not done:
                     self._status(execution, ExecutionState.ACTIVE, applied_at)
             for command in due:
@@ -384,6 +398,11 @@ class MujocoRuntime:
         for execution in finished:
             del self._running[execution]
             self._status(execution, ExecutionState.SUCCEEDED, now)
+        for execution, running in list(self._running.items()):
+            if running.started_ns is not None and isinstance(
+                running.command, GuardedJointTrajectory
+            ):
+                self._guard(execution, running, now)
         for execution, running in list(self._running.items()):
             if running.ended_ns is not None:
                 self._settle(execution, running, now)
@@ -661,17 +680,17 @@ class MujocoRuntime:
             commands=commands,
             channels=channels,
         )
+        confirmed = tuple(
+            c for c, b in zip(description.commands, commands, strict=True) if b.unavailable is None
+        )
+        guarded = sorted({c.component for c in confirmed if c.kind is CommandKind.JOINT_TRAJECTORY})
         return RuntimeInfo(
             runtime="mujoco",
             runtime_version=f"ssrobot {ssrobot_version()}; mujoco {MUJOCO_VERSION}",
             clock_mode=ClockMode.MANUAL,
             clock=self._clock,
             description=fingerprint,
-            commands=tuple(
-                c
-                for c, b in zip(description.commands, commands, strict=True)
-                if b.unavailable is None
-            ),
+            commands=confirmed,
             channels=tuple(b.name for b in channels if b.unavailable is None),
             objects=tuple(sorted(self._objects)),
             fixtures=fixtures,
@@ -680,6 +699,20 @@ class MujocoRuntime:
                 period_ns=self._substeps * timestep_ns,
                 interpolation=TrajectoryInterpolation.LINEAR,
                 fixed_period=True,
+            ),
+            # Every trajectory-driven group, on every bound wrench channel. step() reads
+            # the guard after each tick's physics and sets the hold before the next tick,
+            # so the joints hold no later than one period after the triggering reading.
+            guards=tuple(
+                GuardCapability(
+                    component=component,
+                    channels=tuple(sorted(self._wrenches)),
+                    tare=True,
+                    period_ns=self._substeps * timestep_ns,
+                    stop_latency_ns=self._substeps * timestep_ns,
+                )
+                for component in guarded
+                if self._wrenches
             ),
         )
 
@@ -881,14 +914,15 @@ class MujocoRuntime:
     def _due(self, running: _Running, now_ns: int) -> tuple[list[InstantCommand], bool]:
         """Commands to apply at ``now_ns`` and whether the execution is then done."""
         command = running.command
-        if isinstance(command, JointTrajectory):
+        trajectory = _trajectory(command)
+        if trajectory is not None:
             if running.ended_ns is not None:
                 return [], False  # holding its last waypoint until it settles
             elapsed = 0 if running.started_ns is None else now_ns - running.started_ns
-            end = command.time_from_start_ns[-1]
+            end = trajectory.time_from_start_ns[-1]
             if elapsed >= end:
                 running.ended_ns = now_ns
-            return [_sample(command, min(elapsed, end))], False
+            return [_sample(trajectory, min(elapsed, end))], False
         if isinstance(command, ActionChunk):
             if now_ns < command.start.time_ns:
                 return [], False
@@ -896,6 +930,7 @@ class MujocoRuntime:
                 (now_ns - command.start.time_ns) // command.period_ns, len(command.steps) - 1
             )
             return list(command.steps[index]), index == len(command.steps) - 1
+        assert not isinstance(command, JointTrajectory | GuardedJointTrajectory)
         return [command], True
 
     def _apply(self, command: InstantCommand) -> tuple[InstantCommand, tuple[Modification, ...]]:
@@ -932,8 +967,8 @@ class MujocoRuntime:
         raise CapabilityError("unavailable_command", "base twist is not bound in MuJoCo")
 
     def _settle(self, execution: str, running: _Running, now: Timestamp) -> None:
-        command = running.command
-        assert isinstance(command, JointTrajectory) and running.ended_ns is not None
+        command = _trajectory(running.command)
+        assert command is not None and running.ended_ns is not None
         data = self._open_data()
         error = max(
             abs(float(data.qpos[self._joints[j].qpos_address]) - p)
@@ -941,7 +976,11 @@ class MujocoRuntime:
         )
         if error <= self._goal_tolerance:
             del self._running[execution]
-            self._status(execution, ExecutionState.SUCCEEDED, now)
+            guarded = running.command
+            outcome = None
+            if isinstance(guarded, GuardedJointTrajectory):
+                outcome = self._outcome(GuardCause.TRAJECTORY_COMPLETED, guarded, running, now)
+            self._status(execution, ExecutionState.SUCCEEDED, now, guard=outcome)
         elif now.time_ns - running.ended_ns >= self._settle_ns:
             del self._running[execution]
             self._status(
@@ -1021,10 +1060,73 @@ class MujocoRuntime:
         state: ExecutionState,
         stamp: Timestamp,
         diagnostic: Diagnostic | None = None,
+        guard: GuardOutcome | None = None,
     ) -> None:
         self._events.append(
-            ExecutionStatus(execution=execution, state=state, stamp=stamp, diagnostic=diagnostic)
+            ExecutionStatus(
+                execution=execution, state=state, stamp=stamp, diagnostic=diagnostic, guard=guard
+            )
         )
+
+    def _wrench(self, channel: str) -> tuple[float, ...]:
+        """A bound wrench channel's reading: force, then torque, in the sensor's site."""
+        data = self._open_data()
+        force, torque = self._wrenches[channel]
+        return tuple(float(v) for v in data.sensordata[force : force + 3]) + tuple(
+            float(v) for v in data.sensordata[torque : torque + 3]
+        )
+
+    def _outcome(
+        self,
+        cause: GuardCause,
+        command: GuardedJointTrajectory,
+        running: _Running,
+        now: Timestamp,
+    ) -> GuardOutcome:
+        assert running.started_ns is not None
+        return GuardOutcome(
+            cause=cause,
+            elapsed_ns=now.time_ns - running.started_ns,
+            part=command.guard.part,
+            measure=command.guard.measure(running.window[-1], running.baseline),
+            baseline=running.baseline,
+            window=tuple(running.window),
+        )
+
+    def _guard(self, execution: str, running: _Running, now: Timestamp) -> None:
+        """Evaluate a running guard on this tick's reading. Once it has held for its
+        samples, hold the joints where they are and end the execution: the hold is
+        applied now, so the next tick's physics already holds."""
+        command = running.command
+        assert isinstance(command, GuardedJointTrajectory)
+        guard = command.guard
+        running.window = [*running.window, self._wrench(guard.channel)][-guard.samples :]
+        if len(running.window) < guard.samples or any(
+            guard.measure(w, running.baseline) < guard.threshold for w in running.window
+        ):
+            return
+        data = self._open_data()
+        trajectory = command.trajectory
+        hold: InstantCommand = JointCommand(
+            group=trajectory.group,
+            joints=trajectory.joints,
+            mode=JointMode.POSITION,
+            values=tuple(float(data.qpos[self._joints[j].qpos_address]) for j in trajectory.joints),
+        )
+        hold, clamped = clamp_positions(self._described(), hold)
+        applied, modifications = self._apply(hold)
+        self._events.append(
+            AppliedCommand(
+                execution=execution,
+                stamp=now,
+                requested=command,
+                applied=applied,
+                modifications=clamped + modifications,
+            )
+        )
+        del self._running[execution]
+        outcome = self._outcome(GuardCause.GUARD_TRIGGERED, command, running, now)
+        self._status(execution, ExecutionState.SUCCEEDED, now, guard=outcome)
 
 
 _BODY = mujoco.mjtObj.mjOBJ_BODY

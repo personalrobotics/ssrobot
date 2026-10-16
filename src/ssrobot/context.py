@@ -17,7 +17,14 @@ from types import TracebackType
 from typing import Any, cast
 
 from ssrobot._wire import fingerprint
-from ssrobot.commands import ActionChunk, Command, TrajectoryContract, command_components
+from ssrobot.commands import (
+    ActionChunk,
+    Command,
+    CommandKind,
+    GuardedJointTrajectory,
+    TrajectoryContract,
+    command_components,
+)
 from ssrobot.conventions import ClockMode, Pose, Timestamp, check_name
 from ssrobot.description import EndEffector, Manipulator, MobileBase, RobotDescription
 from ssrobot.errors import (
@@ -37,7 +44,7 @@ from ssrobot.execution import (
     RuntimeHealth,
     Submission,
 )
-from ssrobot.observations import Observation, ObservationRequest
+from ssrobot.observations import Observation, ObservationRequest, Quantity
 from ssrobot.planning_contracts import (
     BasePoseGoal,
     ConfigurationGoal,
@@ -69,7 +76,13 @@ from ssrobot.scene import (
     TrackedAttachment,
 )
 from ssrobot.trace import TraceKind, TracePayload, TraceRecord, TraceSink
-from ssrobot.validation import check_applied, check_command, check_observation, check_request
+from ssrobot.validation import (
+    check_applied,
+    check_command,
+    check_guard_outcome,
+    check_observation,
+    check_request,
+)
 
 
 class ContextState(enum.StrEnum):
@@ -937,6 +950,22 @@ class RobotContext:
                 raise CapabilityError(
                     "undeclared_capability", f"runtime offers undeclared channel {name!r}"
                 )
+        wrenches = {c.name for c in self._description.channels if c.quantity is Quantity.WRENCH}
+        trajectories = {
+            c.component for c in info.commands if c.kind is CommandKind.JOINT_TRAJECTORY
+        }
+        for guards in info.guards:
+            if guards.component not in trajectories:
+                raise CapabilityError(
+                    "undeclared_capability",
+                    f"runtime guards {guards.component!r}, which takes no joint trajectories",
+                )
+            for name in guards.channels:
+                if name not in wrenches or name not in info.channels:
+                    raise CapabilityError(
+                        "undeclared_capability",
+                        f"runtime guards on {name!r}, which is not a confirmed wrench channel",
+                    )
         has_scene = callable(getattr(self._runtime, "attach", None)) and callable(
             getattr(self._runtime, "detach", None)
         )
@@ -1045,6 +1074,18 @@ class RobotContext:
             else:
                 if event.state not in RUNTIME_REPORTED or event.state not in NEXT_STATES[current]:
                     raise self._breach(f"{execution.id} cannot go from {current} to {event.state}")
+                command = execution.command
+                guarded = isinstance(command, GuardedJointTrajectory)
+                if (event.guard is not None) != (guarded and event.state is _E.SUCCEEDED):
+                    raise self._breach(
+                        f"{execution.id} ended {event.state} with guard outcome {event.guard!r}"
+                    )
+                if event.guard is not None:
+                    assert isinstance(command, GuardedJointTrajectory)
+                    try:
+                        check_guard_outcome(command.guard, event.guard)
+                    except SsrobotError as e:
+                        raise self._breach(f"{execution.id}'s guard outcome: {e}") from None
                 self._record(event, self._runtime_source)
         self._now = update.stamp
         if stepped:

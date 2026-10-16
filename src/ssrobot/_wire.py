@@ -39,6 +39,8 @@ UNITS = frozenset(
         "joint/s",  # rad/s or m/s
         "joint/s^2",  # rad/s^2 or m/s^2
         "joint-effort",  # N*m or N
+        "N",
+        "N*m",
         "channel",  # fixed by the observation channel's quantity
     }
 )

@@ -15,9 +15,11 @@ from dataclasses import dataclass, field
 
 from ssrobot._wire import Record, Value, dumps, meta
 from ssrobot.commands import (
+    ActionChunk,
     BaseTwistCommand,
     Command,
     GripperCommand,
+    GuardedJointTrajectory,
     InstantCommand,
     JointCommand,
     JointMode,
@@ -195,6 +197,9 @@ class ReplayRuntime:
         reason = None
         if self._fault is not None:
             reason = Diagnostic(code="faulted", message="the runtime is faulted")
+        elif isinstance(command, GuardedJointTrajectory):
+            # A recording cannot respond to contact, so it declares no guards.
+            reason = Diagnostic(code="guards_unavailable", message="replay evaluates no guards")
         elif isinstance(command, JointTrajectory):
             reason = self._start_mismatch(command)
         if reason is not None:
@@ -322,6 +327,7 @@ class ReplayRuntime:
             elapsed = 0 if running.started_ns is None else now_ns - running.started_ns
             end = command.time_from_start_ns[-1]
             return [_sample(command, min(elapsed, end))], elapsed >= end
+        assert isinstance(command, ActionChunk)  # guarded trajectories are rejected
         if now_ns < command.start.time_ns:
             return [], False
         index = min((now_ns - command.start.time_ns) // command.period_ns, len(command.steps) - 1)
