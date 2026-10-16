@@ -159,6 +159,38 @@ It:
 Any refusal comes before anything reaches the runtime. Nothing is replanned, retimed,
 or retried.
 
+## Planner portfolios
+
+`ssrobot.plan_portfolio(ctx, request, *, snapshot, attempts, workers=1, timeout_s=None,
+abort=None)` plans one request with an explicit list of attempts, at most 32, and
+selects one plan deterministically. Each `PlanAttempt(planner, processor=None,
+seed=None, priority=0)` is negotiated, then given its own planning scene of `snapshot`,
+the one snapshot `request` was built in. All the scenes are built before any attempt
+runs, and attempts run on at most `workers` threads, sharing no mutable state with each
+other or with the live context.
+
+- **Cancellation** is cooperative. When `timeout_s` passes or `abort` returns True,
+  attempts not yet started are `canceled` at once, and running planners receive the
+  abort signal through `Planner.plan`'s `abort`, which they must poll. Python cannot
+  safely stop a planner that does not. The report's `stopped` says why.
+- **Validation.** Every successful attempt is validated again by its own planner's
+  validator, on a fresh scene of the same snapshot, as it would execute: timed by its
+  processor if the planner returned only a path. A motion that fails is `invalid`
+  whatever the planner reported.
+- **Selection** is among `valid` attempts: highest priority, then the shortest
+  motion, then the earliest attempt. Neither wall-clock time nor completion order
+  matters, so without a timeout or abort the `PortfolioReport` is the same however the
+  attempts were scheduled.
+- **The report** records, for every attempt, its planner, processor, seed, priority,
+  outcome (`refused`, `canceled`, `failed`, `invalid`, or `valid`), the planner's
+  status, why, the motion's duration, and its result's fingerprint.
+
+`Portfolio.selected` is the selected attempt and its plan. Execute it with
+`ctx.execute(plan, planner=attempt.planner, processor=attempt.processor)`, which checks
+that the snapshot is still current and compiles it. A planner in a portfolio must be safe
+to call from several threads at once on distinct scenes. `CBiRRT` builds a new sscbirrt
+planner for every call, and the portfolio evidence runs it on three workers.
+
 ## Compiling a plan
 
 `ssrobot.prepare(result, scene, *, validator, description, contract, processor=None,
@@ -205,6 +237,8 @@ Every failed check is named in one `execution_unready` error. A successful
 | --- | --- |
 | `artifacts/test_sscbirrt_plans_a_carry_that_executes/` | The example arm holds the box from `pedestal.xml`. A lift and a carry are each planned natively by `plan_to_configuration` at half speed and half acceleration, and run with `ctx.execute`. Their results, which carry their requests and the planner's own path and trajectory reports, and their compiled commands (the trace's `compiled` records) are written. Each compiled artifact equals offline `prepare` of the same inputs; the submission names its fingerprint and the snapshot; its contract is the runtime's. The validator's public calls give the same reports, and the command is exactly the sampled planner trajectory, with `geometry_preserved` false and every check passing. Both execute, the box stays held with no violation; after a detach, the carry is refused with `stale_snapshot` and nothing submitted. A second run is byte-identical. |
 | `artifacts/test_execute_refuses_requests_this_context_did_not_build/forgeries.json` | Plans whose embedded request was altered after planning (another robot, description, revision, start, or goal), executed against this context's own snapshot, and `prepare` given a non-plan, another goal's validator, or another robot's request: each refusal code, that nothing was submitted, and that the genuine plan still succeeds. A second run is byte-identical. |
+| `artifacts/test_a_portfolio_selects_deterministically_from_isolated_attempts/` | The example arm's pedestal swing planned by a portfolio: three seeded sscbirrt attempts, one highest-priority attempt that corrupts its own scene and plans through the pedestal, and one that negotiation refuses. `portfolio.json` is the report, byte-identical with one worker and with three. The corrupt attempt is `invalid` on a fresh scene; the shortest valid sscbirrt motion is selected. `isolation.json` shows that the live context is unchanged, that every candidate is still valid on a fresh scene, and that the selected plan executes. |
+| `artifacts/test_a_timeout_aborts_running_attempts_and_cancels_pending_ones/canceled.json` | Three attempts that only wait for the abort signal, on one worker, with a 0.2 s timeout: the running one is aborted (`cancelled`), the two pending ones are `canceled` before they start, and nothing is selected. |
 | `artifacts/test_neutral_providers_and_geometric_paths/` | The same query through a scene with no native checker plans on sscbirrt's Python backend and passes every check. Its path without the trajectory is refused without a processor (`untimed_result`); with `RestToRestProcessor` it is prepared and executed. A second run is byte-identical. |
 | `artifacts/test_one_validator_answers_everywhere/evidence.json` | The example arm in the pedestal scene swings its shoulder from -0.5 to 0.5 rad with the elbow lowered. Both waypoints are valid states, but the planner's validator refuses the motion between them: a collision witness at segment 0, fraction 0.3, naming `left_finger` and `pedestal`, under the recorded 0.05 joint-space resolution, on sscbirrt's native backend. `prepare` has no check of its own to disagree with it, and repeated or reordered queries give equal reports. A path constraint the planner cannot plan with, on this three-joint arm with no kinematics, has no validator either (`unsupported_constraint`). |
 | `artifacts/test_adapter_refusals/refusals.json` | ssik cannot solve the three-joint arm (`kinematics_unavailable`). A pose goal without kinematics (`unsupported_goal`) and effort limits (`unsupported_constraint`) are refused at negotiation. A goal in collision is `infeasible`, and an abort is `cancelled`. The validator refuses a path into the pedestal with a collision witness naming the pedestal, and a success claiming that report is refused (`invalid_motion`). |

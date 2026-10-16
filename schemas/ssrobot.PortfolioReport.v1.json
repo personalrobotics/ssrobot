@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.PortfolioReport v1",
+  "$ref": "#/$defs/PortfolioReport",
+  "$defs": {
+    "AttemptRecord": {
+      "type": "object",
+      "description": "What one attempt did, without wall-clock time or completion order.",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "description": "Position in the declared attempts.",
+          "x-unit": "count"
+        },
+        "planner": {
+          "type": "string",
+          "description": "The planner's name."
+        },
+        "processor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The processor's name, if any."
+        },
+        "seed": {
+          "type": "integer",
+          "description": "The seed it planned with.",
+          "x-unit": "1"
+        },
+        "priority": {
+          "type": "integer",
+          "description": "Its declared priority; higher is preferred.",
+          "x-unit": "1"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "refused",
+            "canceled",
+            "failed",
+            "invalid",
+            "valid"
+          ],
+          "description": "How it ended."
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "succeeded",
+                "infeasible",
+                "timeout",
+                "cancelled",
+                "invalid_input",
+                "backend_failure"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The planner's status, if it ran to an answer."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Why it ended so: a code or a witness."
+        },
+        "duration_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its motion's duration, if it is a candidate.",
+          "x-unit": "s"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of its PlanResult, if it returned one."
+        }
+      },
+      "required": [
+        "index",
+        "planner",
+        "seed",
+        "priority",
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    "PortfolioReport": {
+      "type": "object",
+      "description": "Every attempt of one portfolio and which was selected, reproducible from the same",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.PortfolioReport"
+        },
+        "version": {
+          "const": 1
+        },
+        "snapshot": {
+          "type": "string",
+          "description": "Fingerprint of the one snapshot every attempt used."
+        },
+        "request": {
+          "type": "string",
+          "description": "Fingerprint of the request, before per-attempt seeds."
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AttemptRecord"
+          },
+          "description": "Every attempt, in order."
+        },
+        "selected": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The selected attempt's index, if any is valid.",
+          "x-unit": "count"
+        },
+        "selection": {
+          "type": "string",
+          "description": "The selection rule."
+        },
+        "stopped": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why remaining work was stopped: 'timeout' or 'aborted'; None if not."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "snapshot",
+        "request",
+        "attempts"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
