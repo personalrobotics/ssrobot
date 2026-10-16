@@ -265,3 +265,41 @@ def test_planning_refuses_what_does_not_apply(artifacts: Path) -> None:
         "planned_submission": "linked",
     }
     assert len(submitted) == 1
+
+
+ON_BASE = """<mujoco>
+  <worldbody>
+    <body name="puck" pos="0.0 0.08 0.0595">
+      <freejoint/>
+      <geom type="box" size="0.02 0.02 0.01" mass="0.01"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+def test_an_allowed_static_robot_frame_is_honoured(artifacts: Path, tmp_path: Path) -> None:
+    """An attachment may allow contact with any robot frame, including one the arm does
+    not move. A puck rests on the example arm's fixed ``base``, and is declared held by
+    the hand: the planning scene refuses the state unless ``base`` is allowed, and
+    accepts it when it is. Before the fix, the allowance reached sscbirrt only for bodies
+    the arm moves, so a work surface that belongs to the robot was never allowed."""
+    scene = tmp_path / "on_base.xml"
+    scene.write_text(ON_BASE)
+    package = load_package(PACKAGE)
+    report: dict[str, Any] = {}
+    for name, allow in (("hand_only", HAND_FRAMES), ("with_base", (*HAND_FRAMES, "base"))):
+        with RobotContext(package.description, MujocoRuntime(package, scene=scene)) as ctx:
+            ctx.attach("puck", "hand", allow=allow)
+            snapshot = ctx.snapshot()
+            planning = ctx.planning_scene(snapshot, "arm")
+            q = tuple(snapshot.position(j) for j in package.description.group("arm").joints)
+            report[name] = {
+                "allow": list(snapshot.attachments[0].allow),
+                "valid": planning.is_valid(q),
+                "contacts": sorted({(c.first, c.second) for c in planning.contacts(q)}),
+            }
+    (artifacts / "static_frame_allowance.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert report["hand_only"]["valid"] is False
+    assert ["base", "puck"] in [sorted(c) for c in report["hand_only"]["contacts"]]
+    assert report["with_base"]["valid"] is True and report["with_base"]["contacts"] == []

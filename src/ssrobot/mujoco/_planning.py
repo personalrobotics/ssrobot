@@ -165,7 +165,15 @@ def materialize(
         (body_name(c.frame_a), body_name(c.frame_b))
         for c in description.collision_allowances
         if frames[c.frame_a].body != frames[c.frame_b].body
-    ] + [(a.object, name) for a in snapshot.attachments for name in a.allow if name in fixtures]
+    ] + [
+        # Every allowed name, a scene fixture or a robot frame, by its MuJoCo body: sscbirrt
+        # honours a held object's allowance only for bodies the arm moves, so a static
+        # robot body such as a work surface needs the exclude too.
+        (a.object, name if name in fixtures else body_name(name))
+        for a in snapshot.attachments
+        for name in a.allow
+    ]
+    excludes = list(dict.fromkeys(excludes))  # one exclude per body pair
     model = planning_model(sources[0], sources[1], excludes)
 
     def resolve(kind: Any, name: str, path: str) -> int:
