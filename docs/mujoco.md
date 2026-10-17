@@ -427,9 +427,11 @@ A viewer is application code: ssrobot creates no viewer, thread, or synchronizat
 
 `capture()` copies the runtime's current state into `data`, and returns the
 `RenderFrame` it now shows: the context's runtime `time`, scene `revision`, and `world`.
-Capture when you choose, typically after `step()`. For example, with mj_viser:
-`handle = render_handle(ctx)`, `viewer = MujocoViewer(handle.model, handle.data)`, then
-`handle.capture()` and `viewer.sync()` every few ticks.
+Capture when you choose, typically after `step()`. For example, mj_viser's `LiveView`
+takes the handle: `view = LiveView(render_handle(ctx))`, `view.open()`, then
+`view.refresh()` after each `step()`. Each refresh captures and renders, at most
+`max_rate_hz` times a second, and after the runtime reopens the view goes stale
+instead of raising.
 
 Each handle owns its copies, so a viewer may change anything it holds:
 - nothing reaches the runtime, whose next observation and command result are the same;
