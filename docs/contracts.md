@@ -1014,8 +1014,12 @@ finished run directory. It copies the robot package's resolved files, the scene'
 closure, the trace, and the assets the trace references, writes them to a temporary
 directory beside `destination`, verifies that with `open_bundle`, and only then renames
 it into place; `destination` must not exist (`bundle_exists`). The same run gives the
-same bytes. A run whose package or scene reaches a file through a symlink cannot be
-rebuilt from its resolved files, so it fails that verification and nothing is left.
+same bytes. Declared asset directories are kept, even empty ones. A run whose package
+or scene reaches a file through a symlink cannot be rebuilt from its resolved files, so
+it fails that verification and nothing is left.
+
+Only a `SceneSnapshot` names the world a trace ran in, so a bundled trace must snapshot
+at least once. A trace that never does could be bundled with any scene, and is refused.
 
 `open_bundle(path)` verifies a bundle before handing anything out, and imports no
 MuJoCo. It checks, in order:
@@ -1027,7 +1031,7 @@ MuJoCo. It checks, in order:
 | Every declared file exists, and nothing else does | `bundle_missing_file`, `bundle_undeclared_file` |
 | Every file has its declared hash | `bundle_hash_mismatch` |
 | The description fingerprint, model signature, scene identity, and world recomputed from the bundled files are the manifest's | `bundle_identity_mismatch` |
-| The trace reads strictly, and its runtime's description, its clock, and every snapshot's description and world are the manifest's | `bundle_trace_mismatch` |
+| The trace reads strictly; its runtime's description and its clock are the manifest's; it has at least one snapshot, and every snapshot's description and world are the manifest's | `bundle_trace_mismatch` |
 
 It returns a `Bundle`: the manifest, the package loaded from `robot/`, the scene file
 and root in `scene/`, and the trace's path and records. World identity is computed by
@@ -1175,7 +1179,7 @@ on sscbirrt's native backend.
 | `artifacts/test_replay_starts_a_trajectory_from_a_joint_resting_past_its_stop/trace.jsonl` | A replay recorded 0.5 mrad past a stop: a trajectory starting there succeeds, and only its first applied setpoint is clamped, with a `clipped` modification on that joint. |
 | `artifacts/test_applied_commands_stay_within_ownership/` | Applied commands on another source's arm, and beyond limits, both causing a breach. Nothing misleading is published, and every execution fails and releases ownership. |
 | `artifacts/test_invalid_submit_answer_is_rolled_back/rollback-report.json` | A submit answered for the wrong execution: the runtime is told to cancel that exact execution first, nothing stays live, and nothing is committed. |
-| `artifacts/test_a_run_bundles_portably_and_verifiably/` | A bundle of the example arm in a scene with an include and a mesh, with snapshots every 50 ticks, and `bundle-report.json`: the same run bundled twice byte-identically, a moved copy verifying with the same manifest, tampered copies each refused with its code, a scene reached through a symlink refused with nothing left behind, only referenced trace assets bundled, and the bundle opened without importing MuJoCo. |
+| `artifacts/test_a_run_bundles_portably_and_verifiably/` | A bundle of the example arm in a scene with an include and a mesh, with snapshots every 50 ticks, and `bundle-report.json`: the same run bundled twice byte-identically, a moved copy verifying with the same manifest, tampered copies each refused with its code, a scene reached through a symlink refused with nothing left behind, a snapshot-free trace refused with either of two scenes, a package with an empty asset directory bundled and moved, only referenced trace assets bundled, and the bundle opened without importing MuJoCo. |
 | `artifacts/test_read_trace_enforces_whole_trace_invariants/` | Broken traces (gaps, repeats, reordering, time going back, a foreign clock, a mismatched payload stamp, negative time), each rejected with a code and line, and a truncated trace accepted. |
 | `artifacts/test_contexts_share_a_description_but_not_state/contexts-report.json` | Two contexts on one description diverging independently. A cross-clock chunk refused before reaching the runtime. Capability and clock-mode refusals on an externally clocked read-only runtime. Gripper openings at 0, 0.5, and 1 returned, while -0.01 and 1.01 are rejected. Cleanup after a stale open and after an exception. |
 

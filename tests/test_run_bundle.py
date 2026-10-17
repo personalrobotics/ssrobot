@@ -13,6 +13,9 @@ every 50 ticks into a JSONL trace. ``write_bundle`` bundles that run. The eviden
   behind;
 - only the array assets the trace references are bundled: a camera image when the
   runtime confirms the camera, and never an unreferenced file beside the trace;
+- a trace that never snapshots its world is refused, whichever scene it is offered
+  with, since nothing in it names the world it ran in;
+- a package declaring an empty asset directory bundles, and keeps the directory;
 - a bundle opens without importing MuJoCo.
 
 Reproduce with ``pytest tests/test_run_bundle.py``.
@@ -46,8 +49,9 @@ from tests.test_mujoco_scene_assets import SCENE, _tree
 GOAL = (0.6, -0.4, 0.2)
 
 
-def _run(directory: Path, scene: Path) -> Path:
-    """Run the arm to ``GOAL`` in ``scene``, snapshotting every 50 ticks; return the trace."""
+def _run(directory: Path, scene: Path, *, snapshots: bool = True) -> Path:
+    """Run the arm to ``GOAL`` in ``scene``, snapshotting every 50 ticks unless told not
+    to; return the trace."""
     package = load_package(PACKAGE)
     trace = directory / "trace.jsonl"
     with (
@@ -64,21 +68,37 @@ def _run(directory: Path, scene: Path) -> Path:
         if "wrist_rgb" in ctx.info.channels:  # an array reading, stored as a trace asset
             ctx.observe(ObservationRequest(channels=("wrist_rgb",)))
         execution = ctx.submit(motion)
-        ctx.snapshot()
+        if snapshots:
+            ctx.snapshot()
         while not execution.done:
             for _ in range(50):
                 ctx.step()
-            ctx.snapshot()
+            if snapshots:
+                ctx.snapshot()
     decoy = directory / "assets" / f"{hashlib.sha256(b'unreferenced').hexdigest()}.bin"
     decoy.parent.mkdir(exist_ok=True)
     decoy.write_bytes(b"unreferenced")  # beside the trace, but not part of it
     return trace
 
 
-def _bundle(destination: Path, trace: Path, scene: Path) -> Any:
+def _bundle(destination: Path, trace: Path, scene: Path, package: Path = PACKAGE) -> Any:
     return write_bundle(
-        destination, trace=trace, package=load_package(PACKAGE), model="mjcf", scene=scene
+        destination, trace=trace, package=load_package(package), model="mjcf", scene=scene
     )
+
+
+def _with_empty_assets(root: Path) -> Path:
+    """A copy of the example package that declares an empty asset directory."""
+    shutil.copytree(PACKAGE, root)
+    manifest = root / "ssrobot.toml"
+    text = manifest.read_text()
+    manifest.write_text(
+        text.replace(
+            'canonical_model = "mjcf"\n', 'canonical_model = "mjcf"\nassets = ["empty"]\n', 1
+        )
+    )
+    (root / "empty").mkdir()
+    return root
 
 
 def _files(root: Path) -> dict[str, bytes]:
@@ -167,6 +187,20 @@ def test_a_run_bundles_portably_and_verifiably(artifacts: Path, tmp_path: Path) 
     aliased_trace = _run(tmp_path / "aliased_run", aliased)
     unbundleable = tmp_path / "unbundleable"
 
+    # One snapshot-free trace, offered with two scenes that differ: nothing in it names
+    # either world, so neither may be bundled.
+    blind = _run(tmp_path / "blind_run", scene, snapshots=False)
+    other_scene = _tree(tmp_path / "other_scene", scale=0.07)
+    blind_refusals = [
+        _refused(lambda: _bundle(tmp_path / "blind", blind, scene)),
+        _refused(lambda: _bundle(tmp_path / "blind_other", blind, other_scene)),
+    ]
+
+    empty_package = _with_empty_assets(tmp_path / "empty_assets_package")
+    with_empty = _bundle(tmp_path / "with_empty", trace, scene, package=empty_package)
+    shutil.copytree(with_empty.root, tmp_path / "with_empty_moved")
+    empty_moved = open_bundle(tmp_path / "with_empty_moved")
+
     no_mujoco = subprocess.run(
         [
             sys.executable,
@@ -201,6 +235,20 @@ def test_a_run_bundles_portably_and_verifiably(artifacts: Path, tmp_path: Path) 
         "aliased_scene": _refused(lambda: _bundle(unbundleable, aliased_trace, aliased)),
         "aliased_left_nothing": not unbundleable.exists()
         and not any(p.name.startswith(".unbundleable.") for p in tmp_path.iterdir()),
+        "snapshot_free_trace": {
+            "refusals": blind_refusals,
+            "left_nothing": not any(
+                p.name in ("blind", "blind_other") or p.name.startswith(".blind")
+                for p in tmp_path.iterdir()
+            ),
+        },
+        "empty_asset_directory": {
+            "bundled_as_empty_directory": sorted(
+                p.name for p in (with_empty.root / "robot" / "empty").iterdir()
+            )
+            == [],
+            "moved_verifies": empty_moved.manifest == with_empty.manifest,
+        },
         "opened_without_mujoco": {"world": no_mujoco[0], "mujoco_imported": no_mujoco[1]},
     }
     (artifacts / "bundle-report.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -224,4 +272,12 @@ def test_a_run_bundles_portably_and_verifiably(artifacts: Path, tmp_path: Path) 
         "trace_names_another_world": "bundle_trace_mismatch",
     }
     assert report["aliased_scene"] != "accepted" and report["aliased_left_nothing"]
+    assert report["snapshot_free_trace"] == {
+        "refusals": ["bundle_trace_mismatch", "bundle_trace_mismatch"],
+        "left_nothing": True,
+    }
+    assert report["empty_asset_directory"] == {
+        "bundled_as_empty_directory": True,
+        "moved_verifies": True,
+    }
     assert report["opened_without_mujoco"] == {"world": manifest.world, "mujoco_imported": "False"}

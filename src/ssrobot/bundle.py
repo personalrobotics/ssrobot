@@ -128,8 +128,9 @@ def open_bundle(path: str | os.PathLike[str]) -> Bundle:
     4. every file has its declared hash (``bundle_hash_mismatch``);
     5. the description fingerprint, model signature, scene identity, and world
        recomputed from the bundled files are the manifest's (``bundle_identity_mismatch``);
-    6. the trace decodes strictly, and its runtime's description, its clock, and every
-       snapshot's description and world are the manifest's (``bundle_trace_mismatch``).
+    6. the trace decodes strictly, its runtime's description and its clock are the
+       manifest's, and it has at least one snapshot, every one of the manifest's
+       description and world (``bundle_trace_mismatch``).
     """
     root = Path(path)
     manifest_path = root / MANIFEST
@@ -205,12 +206,14 @@ def write_bundle(
 ) -> Bundle:
     """Bundle a finished run at ``destination``, which must not exist.
 
-    ``trace`` is a ``JsonlTrace`` file with its assets beside it; ``package`` and
-    ``model`` are the robot package and model entry the runtime compiled; ``scene`` and
-    ``scene_root`` are the scene as the runtime was given it. The bundle is written to a
-    temporary directory beside ``destination``, verified with ``open_bundle``, and only
-    then renamed into place, so a failure leaves nothing behind. The same run gives the
-    same bytes.
+        ``trace`` is a ``JsonlTrace`` file with its assets beside it; ``package`` and
+        ``model`` are the robot package and model entry the runtime compiled; ``scene`` and
+        ``scene_root`` are the scene as the runtime was given it. The trace must snapshot its
+    world at least once: only a snapshot binds it to that model and scene. Declared asset
+    directories are kept, even empty ones. The bundle is written to a
+        temporary directory beside ``destination``, verified with ``open_bundle``, and only
+        then renamed into place, so a failure leaves nothing behind. The same run gives the
+        same bytes.
     """
     target = Path(destination)
     if target.exists() or target.is_symlink():
@@ -220,12 +223,14 @@ def write_bundle(
     trace_path = Path(trace)
     records = read_trace(trace_path)
     files: dict[str, bytes] = {TRACE: trace_path.read_bytes()}
+    directories: list[str] = []  # declared asset directories, kept even when empty
     for digest in sorted({hashlib.sha256(a.data).hexdigest() for a in _arrays(records)}):
         relative = f"assets/{digest}.bin"
         files[f"trace/{relative}"] = (trace_path.parent / relative).read_bytes()
     for resolved in package.files:
         source = package.root / resolved.path
         if source.is_dir():
+            directories.append(f"robot/{resolved.path}")
             for file in _files_under(source):
                 files[f"robot/{file.relative_to(package.root).as_posix()}"] = file.read_bytes()
         else:
@@ -260,6 +265,8 @@ def write_bundle(
     )
     staging = Path(tempfile.mkdtemp(dir=target.parent, prefix=f".{target.name}."))
     try:
+        for directory in sorted(directories):
+            (staging / directory).mkdir(parents=True, exist_ok=True)
         for name, data in sorted(files.items()):
             (staging / name).parent.mkdir(parents=True, exist_ok=True)
             (staging / name).write_bytes(data)
@@ -284,12 +291,17 @@ def _check_trace(records: tuple[TraceRecord, ...], manifest: RunBundle) -> None:
         raise mismatch("the runtime bound another description", "line 1: description")
     if records[0].clock != manifest.clock:
         raise mismatch(f"the trace's clock is {records[0].clock!r}", "line 1: clock")
+    # Only a snapshot names the world, so at least one must, or nothing ties the trace to
+    # the bundled scene and model rather than any other.
+    snapshots = 0
     for number, record in enumerate(records, start=1):
         snapshot = record.payload
-        if isinstance(snapshot, SceneSnapshot) and (
-            snapshot.model != manifest.world or snapshot.description != manifest.description
-        ):
-            raise mismatch("a snapshot is of another world or description", f"line {number}")
+        if isinstance(snapshot, SceneSnapshot):
+            snapshots += 1
+            if snapshot.model != manifest.world or snapshot.description != manifest.description:
+                raise mismatch("a snapshot is of another world or description", f"line {number}")
+    if not snapshots:
+        raise mismatch("no snapshot names the world the trace ran in", "snapshot")
 
 
 def _listing(root: Path) -> set[str]:
