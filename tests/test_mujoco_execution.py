@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -60,6 +61,33 @@ def _trajectory_to(start: tuple[float, ...], goal: tuple[float, ...]) -> JointTr
     return JointTrajectory(
         group="arm", joints=ARM, time_from_start_ns=(0, 1_000_000_000), positions=(start, goal)
     )
+
+
+def _sampled(duration_ns: int) -> Scenario:
+    """A trajectory to ``GOAL`` with a waypoint every control tick, as ``prepare``
+    compiles a plan: the shape whose applied records once repeated every waypoint. It
+    starts and ends at rest along a cosine, inside the arm's acceleration limits."""
+
+    def scenario(ctx: RobotContext) -> dict[str, Any]:
+        _settle(ctx)
+        start, n = _arm(ctx), duration_ns // TICK_NS
+        positions = tuple(
+            tuple(
+                a + (b - a) * (1 - math.cos(math.pi * k / n)) / 2
+                for a, b in zip(start, GOAL, strict=True)
+            )
+            for k in range(n + 1)
+        )
+        trajectory = JointTrajectory(
+            group="arm",
+            joints=ARM,
+            time_from_start_ns=tuple(k * TICK_NS for k in range(n + 1)),
+            positions=positions,
+        )
+        status = ctx.run_until(ctx.submit(trajectory), max_ticks=n + 1_000)
+        return {"status": status.state.value, "waypoints": n + 1}
+
+    return scenario
 
 
 def _settle(ctx: RobotContext, ticks: int = 100) -> None:
@@ -181,6 +209,9 @@ REVERSED = _write("mujoco.toml", "closed = 0.0, open = 0.04", "closed = 0.04, op
 
 SCENARIOS: dict[str, tuple[Scenario, dict[str, Any], Callable[[Path], None] | None]] = {
     "trajectory": (_reach, {}, None),
+    # The fixture arm rests about 0.0135 rad short of GOAL against gravity.
+    "sampled_2s": (_sampled(2_000_000_000), {"goal_tolerance": 0.05}, None),
+    "sampled_8s": (_sampled(8_000_000_000), {"goal_tolerance": 0.05}, None),
     "chunk": (_chunk, {}, None),
     "gripper": (_gripper, {}, None),
     "gripper_range_limited": (_gripper_to(1.0), {}, NARROW_LEFT),
@@ -235,6 +266,24 @@ def _applied(path: Path) -> list[tuple[int, tuple[float, ...]]]:
     ]
 
 
+SAMPLED = ("sampled_2s", "sampled_8s")
+
+
+def _trace_sizes(path: Path) -> dict[str, int]:
+    """Bytes in a trace, in all, in its submissions, and in its applied records."""
+    lines = path.read_bytes().splitlines(keepends=True)
+    kinds = [json.loads(line)["kind"] for line in lines]
+    applied = [len(line) for line, kind in zip(lines, kinds, strict=True) if kind == "applied"]
+    submitted = [len(line) for line, kind in zip(lines, kinds, strict=True) if kind == "submitted"]
+    return {
+        "total_bytes": sum(len(line) for line in lines),
+        "submitted_bytes": sum(submitted),
+        "applied_records": len(applied),
+        "applied_max_bytes": max(applied),
+        "applied_bytes": sum(applied),
+    }
+
+
 def test_mujoco_executes_trajectories_chunks_and_grippers(artifacts: Path, tmp_path: Path) -> None:
     """Trajectories reach their goal, chunks apply their latest due step, grippers open
     and close, and cancellation, timeouts, and unreachable goals end executions; the
@@ -252,6 +301,16 @@ def test_mujoco_executes_trajectories_chunks_and_grippers(artifacts: Path, tmp_p
 
     assert results["trajectory"]["status"] == "succeeded"
     assert results["trajectory"]["goal_error"] <= 0.01
+
+    # A sampled trajectory's applied records name its submission instead of repeating it,
+    # so they keep one size however long the trajectory, and the trace grows linearly.
+    growth = {name: _trace_sizes(artifacts / name / "trace.jsonl") for name in SAMPLED}
+    (artifacts / "trace-growth.json").write_text(json.dumps(growth, indent=2) + "\n")
+    short, long = growth["sampled_2s"], growth["sampled_8s"]
+    assert results["sampled_2s"]["status"] == results["sampled_8s"]["status"] == "succeeded"
+    assert long["applied_max_bytes"] <= 1.05 * short["applied_max_bytes"], growth
+    assert long["applied_records"] >= 3.9 * short["applied_records"], growth
+    assert long["total_bytes"] <= 4.5 * short["total_bytes"], growth  # linear, not 16x
 
     chunk = results["chunk"]
     assert chunk["status"] == "succeeded"

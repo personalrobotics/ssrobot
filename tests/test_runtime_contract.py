@@ -139,7 +139,6 @@ def test_applied_commands_stay_within_ownership(artifacts: Path) -> None:
                 AppliedCommand(
                     execution=left.id,
                     stamp=runtime.stamp(),
-                    requested=left.command,
                     applied=applied,
                 )
             )
@@ -222,9 +221,10 @@ def _base_trace(path: Path) -> list[str]:
         JsonlTrace(path) as trace,
         RobotContext(robot, reference_runtime(robot), sinks=[trace]) as ctx,
     ):
-        execution = ctx.submit(_hold("left_arm", ("left_j1", "left_j2"), 0.0))
-        ctx.step()
-        assert execution.done
+        for value in (0.0, 0.1):
+            execution = ctx.submit(_hold("left_arm", ("left_j1", "left_j2"), value))
+            ctx.step()
+            assert execution.done
         ctx.step()
     return path.read_text().splitlines()
 
@@ -237,9 +237,19 @@ def _replaced(lines: list[str], index: int, **changes: Any) -> list[str]:
 
 
 def test_read_trace_enforces_whole_trace_invariants(artifacts: Path) -> None:
-    """#52: sequence, clock, and time across records, and nested stamps within one."""
+    """#52: sequence, clock, and time across records, and nested stamps within one.
+    #130: an applied record names exactly one earlier submission."""
     lines = _base_trace(artifacts / "base.jsonl")
     kinds = [json.loads(line)["kind"] for line in lines]
+    submits = [i for i, kind in enumerate(kinds) if kind == "submitted"]
+    applies = [i for i, kind in enumerate(kinds) if kind == "applied"]
+    assert submits[0] < applies[0] < submits[1] < applies[1]
+
+    def execution(index: int, name: str) -> list[str]:
+        record = json.loads(lines[index])
+        return _replaced(lines, index, payload={**record["payload"], "execution": name})
+
+    second = json.loads(lines[submits[1]])["payload"]["execution"]
     status = kinds.index("status")
     stepped = kinds.index("stepped")
     status_time = json.loads(lines[status])["time_ns"]
@@ -255,6 +265,12 @@ def test_read_trace_enforces_whole_trace_invariants(artifacts: Path) -> None:
             "trace_time",
         ),
         "negative_time": (_replaced(lines, 0, time_ns=-1), "negative_time"),
+        "applied_unknown_execution": (execution(applies[0], "missing"), "unknown_submission"),
+        "applied_before_its_submission": (execution(applies[0], second), "unknown_submission"),
+        "duplicate_submission": (
+            execution(submits[1], json.loads(lines[submits[0]])["payload"]["execution"]),
+            "duplicate_submission",
+        ),
     }
     report: dict[str, Any] = {}
     for name, (variant, expected) in variants.items():

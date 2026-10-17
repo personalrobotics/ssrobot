@@ -1064,8 +1064,6 @@ class RobotContext:
             if current.terminal:
                 raise self._breach(f"event for finished execution {execution.id} ({current})")
             if isinstance(event, AppliedCommand):
-                if event.requested != execution.command:
-                    raise self._breach(f"applied record for {execution.id} names another command")
                 try:
                     check_applied(self._description, execution.command, event.applied)
                 except SsrobotError as e:

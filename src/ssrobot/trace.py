@@ -180,12 +180,15 @@ def read_trace(path: str | os.PathLike[str]) -> list[TraceRecord]:
     """Strictly decode a JSONL trace written by ``JsonlTrace``.
 
     Beyond each record's own validity, the trace must number records 0, 1, 2, ... by
-    line, use one clock, and never go back in time. A trace cut short by an
+    line, use one clock, and never go back in time. Each submission's execution id is
+    unique, and each applied record names an execution submitted earlier in the trace,
+    since that submission holds the command it applied. A trace cut short by an
     interrupted run is accepted: it need not end with ``closed``.
     """
     path = Path(path)
     assets = AssetStore(path.parent)
     records: list[TraceRecord] = []
+    submitted: set[str] = set()
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         try:
             record = loads(line, TraceRecord, assets)
@@ -209,6 +212,21 @@ def read_trace(path: str | os.PathLike[str]) -> list[TraceRecord]:
                 "trace_time",
                 f"time went back from {records[-1].time_ns} to {record.time_ns} ns",
                 path=f"{where}: time_ns",
+            )
+        payload = record.payload
+        if isinstance(payload, Submission):
+            if payload.execution in submitted:
+                raise ValidationError(
+                    "duplicate_submission",
+                    f"execution {payload.execution!r} was already submitted",
+                    path=f"{where}: payload.execution",
+                )
+            submitted.add(payload.execution)
+        elif isinstance(payload, AppliedCommand) and payload.execution not in submitted:
+            raise ValidationError(
+                "unknown_submission",
+                f"applied for execution {payload.execution!r}, which no earlier record submits",
+                path=f"{where}: payload.execution",
             )
         records.append(record)
     return records

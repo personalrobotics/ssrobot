@@ -54,44 +54,21 @@
     },
     "AppliedCommand": {
       "type": "object",
-      "description": "What a runtime actually applied for a command, next to what was requested.",
+      "description": "What a runtime actually applied for one execution's command. The command as",
       "properties": {
         "schema": {
           "const": "ssrobot.AppliedCommand"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "execution": {
           "type": "string",
-          "description": "Execution identifier."
+          "description": "Execution identifier; its Submission holds the command."
         },
         "stamp": {
           "$ref": "#/$defs/Timestamp",
           "description": "When the command was applied."
-        },
-        "requested": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/JointCommand"
-            },
-            {
-              "$ref": "#/$defs/GripperCommand"
-            },
-            {
-              "$ref": "#/$defs/BaseTwistCommand"
-            },
-            {
-              "$ref": "#/$defs/JointTrajectory"
-            },
-            {
-              "$ref": "#/$defs/GuardedJointTrajectory"
-            },
-            {
-              "$ref": "#/$defs/ActionChunk"
-            }
-          ],
-          "description": "The command as submitted."
         },
         "applied": {
           "anyOf": [
@@ -112,7 +89,7 @@
           "items": {
             "$ref": "#/$defs/Modification"
           },
-          "description": "Every change between requested and applied; empty if none."
+          "description": "Every change between the submitted and applied command; empty if none."
         }
       },
       "required": [
@@ -120,7 +97,6 @@
         "version",
         "execution",
         "stamp",
-        "requested",
         "applied"
       ],
       "additionalProperties": false
