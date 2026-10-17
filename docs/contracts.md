@@ -964,7 +964,10 @@ Every event becomes one `TraceRecord`, passed synchronously to each sink in orde
 `Submission.prepared` is the compiled record's fingerprint.
 
 An `applied` record names its execution; the command it applied is a lowering of that
-execution's `submitted` command, earlier in the same trace. `AppliedCommand` v1, which
+execution's `submitted` command, earlier in the same trace. `read_trace` refuses an
+`applied` record whose execution no earlier `submitted` record defines, whether it is
+absent or only submitted later (`unknown_submission`), and a second submission of an
+execution id (`duplicate_submission`). `AppliedCommand` v1, which
 repeated the submitted command in every record, is no longer read: a trace written
 before v2 fails to decode with `version_mismatch` at its first `applied` record.
 
