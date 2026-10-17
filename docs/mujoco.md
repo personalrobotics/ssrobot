@@ -210,7 +210,8 @@ keeps the carried box within about 3 mm of its grasp over the whole evidence sce
 
 `snapshot()` reads every description joint's position and every object's body pose. Its
 `model` identity, also returned by `world()`, is the model signature and the scene's
-`scene_identity`. A snapshot from a different model or scene therefore fails to materialize, or
+`scene_identity`, computed without MuJoCo by the same code run bundles use. A snapshot
+from a different model or scene therefore fails to materialize, or
 to be submitted with, with `incompatible_snapshot`. A name the planning model cannot
 resolve fails with `invalid_snapshot` rather than indexing another entity.
 

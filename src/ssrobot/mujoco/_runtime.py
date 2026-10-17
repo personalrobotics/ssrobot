@@ -15,6 +15,7 @@ import mujoco
 import numpy as np
 
 from ssrobot._wire import ArrayValue, DType
+from ssrobot._world import model_signature, world_identity
 from ssrobot.commands import (
     ActionChunk,
     Command,
@@ -61,7 +62,6 @@ from ssrobot.mujoco._model import (
     force_torque_sensors,
     joint_actuators,
     load_profile,
-    model_signature,
     select_model,
     select_profile,
     ssrobot_version,
@@ -661,7 +661,7 @@ class MujocoRuntime:
         self._fixtures = {b: mujoco.mj_name2id(model, _BODY, b) for b in fixtures}
         self._sources = (package.root / entry.path, scene_source)
         scene_identity = None if scene_source is None else scene_source.identity
-        self._identity = f"{model_signature(package, entry.name)}:{scene_identity or ''}"
+        self._identity = world_identity(model_signature(package, entry.name), scene_identity)
         self._mapping = MujocoMapping(
             mujoco=MUJOCO_VERSION,
             description=fingerprint,

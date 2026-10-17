@@ -816,6 +816,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`Submission`](../schemas/ssrobot.Submission.v2.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
 | [`TraceRecord`](../schemas/ssrobot.TraceRecord.v1.json) | One event in a trace. |
+| [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`PortfolioReport`](../schemas/ssrobot.PortfolioReport.v1.json) | Every attempt of a planner portfolio and which was selected. See planning.md. |
 | [`ConformanceReport`](../schemas/ssrobot.ConformanceReport.v1.json) | The result of a conformance run. |
@@ -987,6 +988,51 @@ On a step, the runtime's events come first, then `stepped` at the new time, then
 timeouts. Because `applied` records carry the submitter, every applied command can be
 attributed to a planner, policy, or person.
 
+## Run bundles
+
+A run bundle holds everything needed to inspect a run on its own: its trace, the
+trace's array assets, and the exact robot and scene files it ran on, bound by a
+`RunBundle` manifest. It is a plain directory; archiving it is the caller's business.
+
+```
+<bundle>/
+  bundle.json                         RunBundle
+  trace/trace.jsonl, trace/assets/    the trace, and only the assets it references
+  robot/<package-relative paths>      every file the robot package resolves
+  scene/<scene-root-relative paths>   the scene's closure, if the run had one
+```
+
+The manifest records the description fingerprint, the compiled model entry and its
+signature, the scene's entry file and identity, the world identity snapshots name
+(`"<model signature>:<scene identity>"`), the trace's clock, and every other file by
+bundle-relative path and SHA-256. Every path is plain and relative, and every identity
+is computed from file contents, so a bundle verifies the same after it is moved or
+copied.
+
+`write_bundle(destination, trace=, package=, model=, scene=, scene_root=)` bundles a
+finished run directory. It copies the robot package's resolved files, the scene's
+closure, the trace, and the assets the trace references, writes them to a temporary
+directory beside `destination`, verifies that with `open_bundle`, and only then renames
+it into place; `destination` must not exist (`bundle_exists`). The same run gives the
+same bytes. A run whose package or scene reaches a file through a symlink cannot be
+rebuilt from its resolved files, so it fails that verification and nothing is left.
+
+`open_bundle(path)` verifies a bundle before handing anything out, and imports no
+MuJoCo. It checks, in order:
+
+| Check | Failure |
+| --- | --- |
+| The manifest decodes strictly, and every path in it is plain, relative, and inside `trace/`, `robot/`, or `scene/` | decode codes, `invalid_path` |
+| Nothing in the bundle is a symlink | `bundle_symlink` |
+| Every declared file exists, and nothing else does | `bundle_missing_file`, `bundle_undeclared_file` |
+| Every file has its declared hash | `bundle_hash_mismatch` |
+| The description fingerprint, model signature, scene identity, and world recomputed from the bundled files are the manifest's | `bundle_identity_mismatch` |
+| The trace reads strictly, and its runtime's description, its clock, and every snapshot's description and world are the manifest's | `bundle_trace_mismatch` |
+
+It returns a `Bundle`: the manifest, the package loaded from `robot/`, the scene file
+and root in `scene/`, and the trace's path and records. World identity is computed by
+the same code for a bundle as for `MujocoRuntime`.
+
 ## ReplayRuntime and conformance
 
 `ReplayRuntime(script)` is a manually clocked runtime with no dynamics, and the
@@ -1129,6 +1175,7 @@ on sscbirrt's native backend.
 | `artifacts/test_replay_starts_a_trajectory_from_a_joint_resting_past_its_stop/trace.jsonl` | A replay recorded 0.5 mrad past a stop: a trajectory starting there succeeds, and only its first applied setpoint is clamped, with a `clipped` modification on that joint. |
 | `artifacts/test_applied_commands_stay_within_ownership/` | Applied commands on another source's arm, and beyond limits, both causing a breach. Nothing misleading is published, and every execution fails and releases ownership. |
 | `artifacts/test_invalid_submit_answer_is_rolled_back/rollback-report.json` | A submit answered for the wrong execution: the runtime is told to cancel that exact execution first, nothing stays live, and nothing is committed. |
+| `artifacts/test_a_run_bundles_portably_and_verifiably/` | A bundle of the example arm in a scene with an include and a mesh, with snapshots every 50 ticks, and `bundle-report.json`: the same run bundled twice byte-identically, a moved copy verifying with the same manifest, tampered copies each refused with its code, a scene reached through a symlink refused with nothing left behind, only referenced trace assets bundled, and the bundle opened without importing MuJoCo. |
 | `artifacts/test_read_trace_enforces_whole_trace_invariants/` | Broken traces (gaps, repeats, reordering, time going back, a foreign clock, a mismatched payload stamp, negative time), each rejected with a code and line, and a truncated trace accepted. |
 | `artifacts/test_contexts_share_a_description_but_not_state/contexts-report.json` | Two contexts on one description diverging independently. A cross-clock chunk refused before reaching the runtime. Capability and clock-mode refusals on an externally clocked read-only runtime. Gripper openings at 0, 0.5, and 1 returned, while -0.01 and 1.01 are rejected. Cleanup after a stale open and after an exception. |
 

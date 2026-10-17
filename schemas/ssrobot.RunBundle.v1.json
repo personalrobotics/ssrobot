@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.RunBundle v1",
+  "$ref": "#/$defs/RunBundle",
+  "$defs": {
+    "BundleFile": {
+      "type": "object",
+      "description": "One file of a bundle.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Path relative to the bundle root, with '/' separators."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "SHA-256 of the file's bytes."
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "RunBundle": {
+      "type": "object",
+      "description": "A bundle's manifest: the identities of the run's robot and world, and every file.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.RunBundle"
+        },
+        "version": {
+          "const": 1
+        },
+        "description": {
+          "type": "string",
+          "description": "Fingerprint of the robot description."
+        },
+        "model": {
+          "type": "string",
+          "description": "The package model entry the runtime compiled."
+        },
+        "model_signature": {
+          "type": "string",
+          "description": "That model's signature, over its file closure."
+        },
+        "scene_entry": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The scene file, relative to the scene root, if any."
+        },
+        "scene_identity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The scene's identity, over its file closure, if any."
+        },
+        "world": {
+          "type": "string",
+          "description": "The world identity every snapshot names."
+        },
+        "clock": {
+          "type": "string",
+          "description": "The trace's clock."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BundleFile"
+          },
+          "description": "Every file in the bundle but this manifest, sorted by path."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "description",
+        "model",
+        "model_signature",
+        "world",
+        "clock",
+        "files"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
