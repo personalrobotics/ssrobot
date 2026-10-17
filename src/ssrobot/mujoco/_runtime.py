@@ -388,7 +388,6 @@ class MujocoRuntime:
                     AppliedCommand(
                         execution=execution,
                         stamp=applied_at,
-                        requested=running.command,
                         applied=applied,
                         modifications=modifications,
                     )
@@ -1155,7 +1154,6 @@ class MujocoRuntime:
             AppliedCommand(
                 execution=execution,
                 stamp=now,
-                requested=command,
                 applied=applied,
                 modifications=clamped + modifications,
             )

@@ -130,13 +130,9 @@ def _examples() -> dict[str, Record]:
             ),
         ),
     )
-    requested = JointCommand(
-        group="right_arm", joints=RIGHT, mode=JointMode.POSITION, values=(0.1, 0.2, 3.5)
-    )
     applied = AppliedCommand(
         execution="exec-7",
         stamp=t0,
-        requested=requested,
         applied=JointCommand(
             group="right_arm", joints=RIGHT, mode=JointMode.POSITION, values=(0.1, 0.2, math.pi)
         ),
@@ -370,7 +366,6 @@ def test_conventions_accept_valid_and_reject_ambiguous_input(artifacts: Path) ->
         return AppliedCommand(
             execution=execution,
             stamp=Timestamp(clock=SIM, time_ns=0),
-            requested=command,
             applied=command,
             modifications=(Modification(kind=ModificationKind.CLIPPED, target=target),),
         )
@@ -628,6 +623,11 @@ def test_conventions_accept_valid_and_reject_ambiguous_input(artifacts: Path) ->
                 applied_json.replace('"execution":"exec-7"', '"execution":""'), AppliedCommand
             ),
             "invalid_name",
+        ),
+        (
+            "decoded applied command of version 1, which repeated the submitted command",
+            lambda: loads(applied_json.replace('"version":2', '"version":1'), AppliedCommand),
+            "version_mismatch",
         ),
         (
             "decoded status with blank diagnostic component",

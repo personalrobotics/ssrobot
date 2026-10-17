@@ -238,7 +238,6 @@ class ReplayRuntime:
                     AppliedCommand(
                         execution=execution,
                         stamp=now,
-                        requested=running.command,
                         applied=command,
                         modifications=modifications,
                     )

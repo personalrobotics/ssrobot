@@ -155,17 +155,19 @@ class Modification(Value):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AppliedCommand(Record):
-    """What a runtime actually applied for a command, next to what was requested."""
+    """What a runtime actually applied for one execution's command. The command as
+    submitted is the execution's ``Submission``, recorded once; this names it by
+    ``execution`` instead of repeating it every tick."""
 
     SCHEMA = "ssrobot.AppliedCommand"
-    VERSION = 1
+    VERSION = 2
 
-    execution: str = field(metadata=meta("Execution identifier."))
+    execution: str = field(metadata=meta("Execution identifier; its Submission holds the command."))
     stamp: Timestamp = field(metadata=meta("When the command was applied."))
-    requested: Command = field(metadata=meta("The command as submitted."))
     applied: InstantCommand = field(metadata=meta("The instantaneous command actually applied."))
     modifications: tuple[Modification, ...] = field(
-        default=(), metadata=meta("Every change between requested and applied; empty if none.")
+        default=(),
+        metadata=meta("Every change between the submitted and applied command; empty if none."),
     )
 
     def _validate(self) -> None:

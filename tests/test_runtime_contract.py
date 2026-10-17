@@ -139,7 +139,6 @@ def test_applied_commands_stay_within_ownership(artifacts: Path) -> None:
                 AppliedCommand(
                     execution=left.id,
                     stamp=runtime.stamp(),
-                    requested=left.command,
                     applied=applied,
                 )
             )

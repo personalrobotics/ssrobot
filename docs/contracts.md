@@ -812,7 +812,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`ObservationRequest`](../schemas/ssrobot.ObservationRequest.v1.json) | Channel names to observe. |
 | [`Observation`](../schemas/ssrobot.Observation.v1.json) | Timestamped readings, one per requested channel. |
 | [`ExecutionStatus`](../schemas/ssrobot.ExecutionStatus.v2.json) | The state of a submitted command, and how a guarded trajectory ended. |
-| [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v1.json) | What was requested, what was applied, and every modification between them. |
+| [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
 | [`Submission`](../schemas/ssrobot.Submission.v2.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
 | [`TraceRecord`](../schemas/ssrobot.TraceRecord.v1.json) | One event in a trace. |
@@ -906,9 +906,11 @@ readings must carry a unit quaternion.
 | `rejected` | yes | required |
 | `failed` | yes | required |
 
-`AppliedCommand` keeps the requested command next to the instantaneous command a
-runtime actually applied. Every clip, rate limit, or safety override is listed as a
-`Modification`.
+`AppliedCommand` records the instantaneous command a runtime actually applied for an
+execution. It names the execution rather than repeating the command: the command as
+submitted is that execution's `Submission`, so a trace holds it once, and a trajectory's
+applied records stay the same size however long the trajectory is. Every clip, rate
+limit, or safety override is listed as a `Modification`.
 
 ### Guarded trajectories
 
@@ -960,6 +962,11 @@ Every event becomes one `TraceRecord`, passed synchronously to each sink in orde
 
 `ctx.execute` traces `compiled` immediately before its `submitted` record; that
 `Submission.prepared` is the compiled record's fingerprint.
+
+An `applied` record names its execution; the command it applied is a lowering of that
+execution's `submitted` command, earlier in the same trace. `AppliedCommand` v1, which
+repeated the submitted command in every record, is no longer read: a trace written
+before v2 fails to decode with `version_mismatch` at its first `applied` record.
 
 A context whose runtime has a scene traces its initial `SceneState` right after
 `opened`. A runtime without one adds no `scene` records.
