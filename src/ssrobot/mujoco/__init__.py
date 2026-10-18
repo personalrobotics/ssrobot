@@ -13,6 +13,12 @@ try:
 except ImportError as e:  # pragma: no cover - depends on the environment
     raise ImportError("ssrobot.mujoco needs the mujoco extra: install ssrobot[mujoco]") from e
 
+from ssrobot.mujoco._materialize import (
+    MaterializedWorld,
+    SnapshotMapping,
+    materialize_world,
+    materialize_world_from,
+)
 from ssrobot.mujoco._model import (
     MUJOCO_VERSION,
     ActuatorBinding,
@@ -45,6 +51,7 @@ __all__ = [
     "GripperOpening",
     "GripperProfile",
     "JointBinding",
+    "MaterializedWorld",
     "MujocoMapping",
     "MujocoObject",
     "MujocoProfile",
@@ -52,5 +59,8 @@ __all__ = [
     "RenderFrame",
     "RenderHandle",
     "SceneFile",
+    "SnapshotMapping",
+    "materialize_world",
+    "materialize_world_from",
     "render_handle",
 ]

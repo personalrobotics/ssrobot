@@ -17,6 +17,7 @@ from sscbirrt.backends import native_mujoco
 from ssrobot.conventions import Pose
 from ssrobot.description import RobotDescription
 from ssrobot.errors import CapabilityError, ValidationError
+from ssrobot.mujoco._compose import compile_world
 from ssrobot.mujoco._model import FrameBinding, MujocoObject
 from ssrobot.mujoco._runtime import relative, world_pose
 from ssrobot.mujoco._scene import SceneSource
@@ -50,16 +51,10 @@ def _pose(position: Any, quat: Any) -> Pose:
 def planning_model(
     model_path: Path, scene: SceneSource | None, excludes: Sequence[tuple[str, str]]
 ) -> Any:
-    """The runtime's model, rebuilt from the same sources, with ``excludes`` added: the
-    collision allowances that sscbirrt's native policy would not otherwise honour."""
-    spec = mujoco.MjSpec.from_file(str(model_path))
-    if scene is not None:
-        child = scene.spec()
-        spec.attach(child, frame=spec.worldbody.add_frame(), prefix="")
-    for first, second in excludes:
-        exclude = spec.add_exclude()
-        exclude.bodyname1, exclude.bodyname2 = first, second
-    return spec.compile()
+    """The runtime's model, rebuilt from the same sources by the same composition, with
+    ``excludes`` added: the collision allowances that sscbirrt's native policy would not
+    otherwise honour."""
+    return compile_world(model_path, scene, excludes=excludes)[0]
 
 
 class MujocoPlanningScene:
