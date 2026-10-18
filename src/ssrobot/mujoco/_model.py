@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import enum
-import hashlib
 import importlib.metadata
 import math
 import tomllib
@@ -13,12 +12,12 @@ from typing import Any
 import mujoco
 
 from ssrobot._wire import Record, Value, decode, meta
+from ssrobot._world import SceneFile
 from ssrobot.commands import CommandKind, JointMode
 from ssrobot.conventions import check_name
 from ssrobot.description import JointKind, RobotDescription
 from ssrobot.errors import CapabilityError, SsrobotError, ValidationError
 from ssrobot.execution import Diagnostic
-from ssrobot.mujoco._scene import SceneFile
 from ssrobot.observations import Quantity
 from ssrobot.package import ModelEntry, ModelFormat, ProfileEntry, RobotPackage, load_package
 
@@ -512,21 +511,6 @@ def force_torque_sensors(model: Any, site: int) -> tuple[int, int] | None:
     if len(forces) != 1 or len(torques) != 1:
         return None
     return forces[0], torques[0]
-
-
-def model_signature(package: RobotPackage, name: str) -> str:
-    """A model's identity: every file the package recorded for it, by role,
-    package-relative path, and hash. The same content in another directory gives the
-    same signature; a change to any included or referenced file changes it."""
-    records = sorted(
-        (f.role, f.path, f.sha256)
-        for f in package.files
-        if f.role == f"model:{name}" or f.role.startswith(f"model:{name}:")
-    )
-    digest = hashlib.sha256()
-    for record in records:
-        digest.update("\t".join(record).encode() + b"\n")
-    return digest.hexdigest()
 
 
 def select_model(

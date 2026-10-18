@@ -9,6 +9,7 @@ from ssrobot._wire import (
     dumps,
     loads,
 )
+from ssrobot.bundle import Bundle, BundleFile, RunBundle, open_bundle, write_bundle
 from ssrobot.commands import (
     ActionChunk,
     BaseTwistCommand,
@@ -158,6 +159,8 @@ __all__ = [
     "BasePoseGoal",
     "BaseTwistCommand",
     "BaseView",
+    "Bundle",
+    "BundleFile",
     "Candidate",
     "CandidateChoice",
     "CandidateKind",
@@ -249,6 +252,7 @@ __all__ = [
     "RobotContext",
     "RobotDescription",
     "RobotPackage",
+    "RunBundle",
     "Runtime",
     "RuntimeHealth",
     "RuntimeInfo",
@@ -283,7 +287,9 @@ __all__ = [
     "load_installed_package",
     "load_package",
     "loads",
+    "open_bundle",
     "plan_portfolio",
     "prepare",
     "read_trace",
+    "write_bundle",
 ]
