@@ -43,6 +43,7 @@ from ssrobot.execution import (
     Modification,
     ModificationKind,
 )
+from ssrobot.mujoco._compose import compile_world, require_version, select
 from ssrobot.mujoco._model import (
     MODE_ACTUATORS,
     MUJOCO_VERSION,
@@ -61,12 +62,8 @@ from ssrobot.mujoco._model import (
     driven_joints,
     force_torque_sensors,
     joint_actuators,
-    load_profile,
-    select_model,
-    select_profile,
     ssrobot_version,
     unchanged,
-    versions,
 )
 from ssrobot.mujoco._scene import SceneSource, load_scene
 from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
@@ -467,15 +464,21 @@ class MujocoRuntime:
     # -- Snapshots -------------------------------------------------------------------
 
     def snapshot(self, scene: SceneState) -> SceneSnapshot:
-        """Every description joint's position and every object's actual pose, now."""
-        data, d = self._open_data(), self._described()
+        """Every description joint's position and every object's actual pose, now.
+
+        Both come from ``qpos``, the state after the last step. An object's free joint
+        hangs from the world, so its ``qpos`` is the object's world pose at the same
+        instant as the joints; MuJoCo's ``xpos`` would be the pose before that step."""
+        model, data, d = self._model, self._open_data(), self._described()
         objects = []
         for name, body in sorted(self._objects.items()):
-            quat = np.array(data.xquat[body], dtype=float)
+            at = int(model.jnt_qposadr[int(model.body_jntadr[body])])
+            quat = np.array(data.qpos[at + 3 : at + 7], dtype=float)
             mujoco.mju_normalize4(quat)
-            position, orientation = relative(data.xpos[body], quat, np.zeros(3), _IDENTITY)
+            x, y, z = (float(v) for v in data.qpos[at : at + 3])
+            w, i, j, k = (float(v) for v in quat)
             objects.append(
-                ObjectState(name=name, pose=Pose(position=position, quat_wxyz=orientation))
+                ObjectState(name=name, pose=Pose(position=(x, y, z), quat_wxyz=(w, i, j, k)))
             )
         return SceneSnapshot(
             description=self.mapping.description,
@@ -531,32 +534,14 @@ class MujocoRuntime:
                 f"the package describes {package.description.fingerprint()[:12]}, "
                 f"not {fingerprint[:12]}",
             )
-        found = versions()
-        if set(found) != {MUJOCO_VERSION}:
-            installed, loaded, compiled = found
-            raise CapabilityError(
-                "unsupported_backend_version",
-                f"MuJoCo {MUJOCO_VERSION} is required; installed {installed}, "
-                f"loaded {loaded}, compiled {compiled}",
-            )
-        profile_entry = select_profile(package, self._profile)
+        require_version()
         # Compile only what was loaded and hashed: check before, and again after, in case
         # a file changed while MuJoCo or the profile was read.
         unchanged(package)
-        profile = MujocoProfile() if profile_entry is None else load_profile(package, profile_entry)
-        entry = select_model(package, profile, profile_entry)
-        objects: dict[str, str] = {}  # top-level scene body: "object" or "fixture"
-        scene_source: SceneSource | None = None
-        try:
-            if self._scene is None:
-                model = mujoco.MjModel.from_xml_path(str(package.root / entry.path))
-            else:
-                spec = mujoco.MjSpec.from_file(str(package.root / entry.path))
-        except ValueError as e:
-            raise ValidationError("model_compile_failed", str(e), path=entry.path) from None
-        if self._scene is not None:
-            scene_source = load_scene(self._scene, self._scene_root)
-            model, objects = _compose(spec, scene_source)
+        profile_entry, profile, entry = select(package, self._profile)
+        scene_source = None if self._scene is None else load_scene(self._scene, self._scene_root)
+        # objects: each top-level scene body, "object" or "fixture"
+        model, objects = compile_world(package.root / entry.path, scene_source, path=entry.path)
         unchanged(package)
         keyframe = self._keyframe if self._keyframe is not None else profile.keyframe
         timestep_ns = round(float(model.opt.timestep) * 1e9)
@@ -1167,41 +1152,6 @@ _BODY = mujoco.mjtObj.mjOBJ_BODY
 _FREE = mujoco.mjtJoint.mjJNT_FREE
 _HINGE = mujoco.mjtJoint.mjJNT_HINGE
 _SLIDE = mujoco.mjtJoint.mjJNT_SLIDE
-
-
-def _compose(spec: Any, scene: SceneSource) -> tuple[Any, dict[str, str]]:
-    """Compile the robot with a scene's bodies, from the scene's bytes read once. Return
-    the model and each top-level scene body's kind (``object``, one free joint;
-    ``fixture``, no joints)."""
-    try:
-        child = scene.spec()
-    except (ValueError, UnicodeDecodeError) as e:
-        raise ValidationError("invalid_scene", str(e), path="scene") from None
-    kinds = {}
-    for body in child.worldbody.bodies:
-        if not body.name:
-            raise ValidationError(
-                "invalid_scene", "every top-level scene body needs a name", path="scene"
-            )
-        joints = [j.type for j in body.joints]
-        if joints == [_FREE]:
-            kinds[body.name] = "object"
-        elif not joints:
-            kinds[body.name] = "fixture"
-        else:
-            raise ValidationError(
-                "invalid_scene",
-                f"{body.name!r} must have one free joint (an object) or none (a fixture)",
-                path=f"scene: {body.name}",
-            )
-    spec.attach(child, frame=spec.worldbody.add_frame(), prefix="")
-    try:
-        model = spec.compile()
-    except ValueError as e:
-        message = str(e).strip()
-        code = "scene_conflict" if "repeated name" in message else "invalid_scene"
-        raise ValidationError(code, message, path="scene") from None
-    return model, kinds
 
 
 def _check_aliases(description: RobotDescription, commands: tuple[CommandBinding, ...]) -> None:

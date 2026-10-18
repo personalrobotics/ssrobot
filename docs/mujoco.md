@@ -208,7 +208,9 @@ keeps the carried box within about 3 mm of its grasp over the whole evidence sce
 
 ## Planning scenes
 
-`snapshot()` reads every description joint's position and every object's body pose. Its
+`snapshot()` reads every description joint's position and every object's pose, both
+from `qpos` after the last step: an object's free joint hangs from the world, so it
+holds the object's world pose at the same instant as the joints. Its
 `model` identity, also returned by `world()`, is the model signature and the scene's
 `scene_identity`, computed without MuJoCo by the same code run bundles use. A snapshot
 from a different model or scene therefore fails to materialize, or
@@ -443,6 +445,33 @@ made to its own model stays in it. After the runtime reopens, `capture()` fails 
 `stale_render`, since the handle's model would no longer describe it; make a new handle.
 A context over any other runtime fails with `render_unavailable`.
 
+## Materializing a recorded world
+
+A recorded world can be rebuilt and shown without opening a runtime:
+- `materialize_world(bundle)` builds the world a verified run bundle (`open_bundle`)
+  recorded, from its bundled files;
+- `materialize_world_from(package, world=, scene=, scene_root=, profile=)` builds the
+  world of a package and scene, its model chosen as `MujocoRuntime` chooses it.
+
+Both select, compose, and compile with the same code `MujocoRuntime` and its planning
+scenes use, and require the same MuJoCo version. Each recomputes the world identity
+from the files it compiled, and refuses (`world_mismatch`) any world but the expected
+one, the bundle's or `world=`, before returning anything. A bundled file changed after
+`open_bundle` verified it is therefore still refused.
+
+The result is a `MaterializedWorld`, all the caller's own:
+- `model`, a new `MjModel`, and `data()`, a new `MjData` for it;
+- `world` and `description`, the identities its snapshots must name;
+- `mapping`, a `SnapshotMapping`: each description joint's qpos address, and each scene
+  object's free joint's.
+
+`mapping.apply(snapshot, data)` writes a snapshot's joint positions and object poses
+(position, then wxyz) into `data.qpos`, and nothing else; run `mujoco.mj_kinematics`
+for body poses. A snapshot of another description or world, or with other joints or
+objects, fails with `incompatible_snapshot`. Nothing else is created: no context, clock,
+controller, actuator binding, renderer, or thread, and physics never steps. Changing
+the returned model or data reaches no other materialization and no runtime.
+
 ## Evidence
 
 | Artifact | Shows |
@@ -462,6 +491,7 @@ A context over any other runtime fails with `render_unavailable`.
 | `artifacts/test_an_allowed_static_robot_frame_is_honoured/static_frame_allowance.json` | A puck resting on the example arm's fixed `base`, declared held by the hand. With only the hand's frames allowed, the planning scene refuses the state and names the `base`/`puck` contact; with `base` allowed too, the state is valid with no contact. |
 | `artifacts/test_a_profiled_joint_measures_the_opening/gripper_opening.json` | The example package with `opening` declared on `left_finger_joint` (closed 0, open 0.04). Closed on the box, open, and closed on nothing, the reported opening equals the calibrated map of the joint's position, read independently from a snapshot: 0.366, 0.999, and 0. A measuring joint of another component, and equal closed and open values, fail with `invalid_profile` at open. |
 | `artifacts/test_a_viewer_reads_runtime_state_and_cannot_change_it/render_state.json`, `{clean,vandalized}.trace.jsonl` | The example arm in `pedestal.xml` runs one script twice: capture, move above the box, declare the grasp, capture. In one run a viewer vandalizes its handle after each capture, scrambling positions, doubling every geom, and running its own physics. Both runs give byte-identical traces and the same observation. A second viewer's handle, made after the vandalism, holds the compiled model, compared by its geometry and mass contents. The vandal's handle keeps its own doubled model, though each capture restores the runtime's positions. Each capture names the context's time and revision (0, then 1 after the grasp) and the snapshot's world. A handle draws offscreen, refuses to capture after its runtime reopens (`stale_render`), and a context over `ReplayRuntime` fails with `render_unavailable`. A second run is byte-identical. |
+| `artifacts/test_a_recorded_world_materializes_without_a_runtime/materialized.json` | The example arm in the #111 scene tree, its cylinder dropped 5 cm so it moves, snapshotted every 10 ticks (52 snapshots, 5 mid-fall) with the runtime's own body poses from a render handle. The run is bundled and reopened; each snapshot record is applied to `materialize_world(bundle)` and followed by `mj_kinematics`, and every body's pose matches the runtime's (largest difference 0.0). The world equals the runtime's. A bundled scene edited after verification and a package of another world are refused with `world_mismatch`, and a snapshot of another world with `incompatible_snapshot`. Changing one materialization's model and data leaves another's poses unchanged, and materializing and applying never step or forward physics. A second run is byte-identical. The reference-robot check does the same for Geodude and ADA in their reference scenes. |
 | `artifacts/test_planning_refuses_what_does_not_apply/refusals.json`, `trace.jsonl` | Each refusal with its code: a snapshot of the same robot without the scene, materialized or submitted (`incompatible_snapshot`); decoded snapshots with a renamed joint, a missing object, or an unknown allow name (`incompatible_snapshot`); an unknown group or frame; a zero edge resolution; and short, non-finite, string, or boolean configurations. A snapshot with altered attachments at the current revision is `stale_snapshot` at submit. A configuration outside limits is invalid. A plan submitted with its snapshot runs and is linked to it in the trace. After a detach, the same snapshot is `stale_snapshot`. |
 | `installed-conformance` (CI) | The `[mujoco]` wheel, in a clean environment, builds a planning scene on sscbirrt's native checker. |
 | `reference-robots/<robot>/mujoco-startup.json` (CI) | Geodude and ADA opened from their installed wheels: mapping, runtime version, and exact time after 10 steps. |

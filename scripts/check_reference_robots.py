@@ -16,7 +16,9 @@ For each robot in references/robots.toml, this script:
 7. runs the two-robot planning proof on it (#24), ``scenario``: one function, given the
    robot's ``scenario`` data, plans to a task space region around an object and to a
    named configuration, prepares and executes each plan, and runs twice
-   to show its artifacts are byte-identical;
+   to show its artifacts are byte-identical. Every snapshot it takes is then applied to
+   the world rebuilt without a runtime (#155), which must put every body where the
+   runtime had it;
 8. runs the guarded-contact proof on it (#124), ``guarded``: one function, given the
    robot's ``scenario.guard`` data, moves a frame straight into the object under a
    force-torque guard, and the same command where there is nothing to touch, twice.
@@ -325,6 +327,7 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
     """
     from dataclasses import replace
 
+    import mujoco
     import numpy as np
 
     from ssrobot import (
@@ -332,13 +335,14 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
         Pose,
         PreparedTrajectory,
         RobotContext,
+        SceneSnapshot,
         SsrobotError,
         TraceKind,
         Tsr,
         prepare,
     )
     from ssrobot._wire import fingerprint
-    from ssrobot.mujoco import MujocoRuntime
+    from ssrobot.mujoco import MujocoRuntime, materialize_world_from, render_handle
     from ssrobot.planning import CBiRRT, SsikKinematics
 
     out.mkdir(parents=True, exist_ok=True)
@@ -352,11 +356,22 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
     links = (TraceKind.SNAPSHOT, TraceKind.COMPILED, TraceKind.SUBMITTED, TraceKind.STATUS)
     linked: list[Any] = []
 
+    # Each snapshot, with the runtime's own body poses at that tick (#155).
+    recorded: list[tuple[Any, list[list[float]]]] = []
+    handle: Any = None
+
+    def poses(model: Any, data: Any) -> list[list[float]]:
+        return [[*map(float, data.xpos[b]), *map(float, data.xquat[b])] for b in range(model.nbody)]
+
     def keep(r: Any) -> None:
         if r.kind in links:
             linked.append(r)
+        if handle is not None and isinstance(r.payload, SceneSnapshot):
+            handle.capture()
+            recorded.append((r.payload, poses(handle.model, handle.data)))
 
     with RobotContext(description, runtime, sinks=[keep]) as ctx:
+        handle = render_handle(ctx)
         arm = ctx.manipulator(spec["manipulator"])
         planner = CBiRRT(description, kinematics=SsikKinematics.from_package(package, arm.name))
         joints = description.group(arm.group).joints
@@ -537,6 +552,29 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
                     sum(r.kind is TraceKind.SUBMITTED for r in linked) - submitted
                 )
                 ctx.detach(spec["object"])
+        world = runtime.world()
+    # The recorded world, rebuilt without a runtime: every snapshot applied to it puts
+    # every body where the runtime had it.
+    materialized = materialize_world_from(package, world=world, scene=spec["scene"])
+    differences = []
+    for snapshot, expected in recorded:
+        data = materialized.data()
+        materialized.mapping.apply(snapshot, data)
+        mujoco.mj_kinematics(materialized.model, data)
+        found = poses(materialized.model, data)
+        differences.append(
+            max(
+                abs(a - b)
+                for e, f in zip(expected, found, strict=True)
+                for a, b in zip(e, f, strict=True)
+            )
+        )
+    record["materialized"] = {
+        "snapshots": len(recorded),
+        "bodies": int(materialized.model.nbody),
+        "world_matches_runtime": materialized.world == world,
+        "max_difference": max(differences, default=None),
+    }
     (out / "scenario.json").write_text(json.dumps(record, indent=2) + "\n")
     return record
 
@@ -1144,6 +1182,15 @@ def check(
                 "submitted_when_stale": 0,
             },
             refusals,
+        )
+        materialized = run.get("materialized", {})
+        add(
+            "materialized_world",
+            materialized.get("snapshots", 0) > 0
+            and materialized.get("world_matches_runtime") is True
+            and materialized.get("max_difference") is not None
+            and materialized["max_difference"] <= 1e-9,
+            f"the recorded world rebuilt without a runtime: {materialized}",
         )
         identical = startup_record["scenario_identical"]
         add(
