@@ -284,6 +284,9 @@ ACHIEVED_JOINT_ERROR = 0.01
 """How far, per joint, the robot may end from a configuration goal: MujocoRuntime's
 trajectory goal tolerance."""
 
+PLACEMENT_TOLERANCE = 1e-6
+"""How far the scene's object may be from its placement TSR: the scene file's rounding."""
+
 ACHIEVED_POSITION_M = 0.01
 ACHIEVED_ROTATION_RAD = 0.02
 """How far the selected frame may end from the planned goal pose: what the runtime's
@@ -303,6 +306,50 @@ def _matrix(pose: Any) -> Any:
     )
     T[:3, 3] = pose.position
     return T
+
+
+def placement_tsr(spec: dict[str, Any]) -> Any:
+    """Where the scenario's object may stand: the stable-placement TSR of an upright
+    cylinder on the declared surface (``[robots.scenario.placement]``)."""
+    import numpy as np
+    from tsr.placement.stable_placer import StablePlacer
+
+    placement = spec["placement"]
+    surface = np.eye(4)
+    surface[:3, 3] = placement["surface_position"]
+    x, y = placement["half_extents"]
+    template = StablePlacer(x, y).place_cylinder(
+        placement["radius"], placement["height"], subject=spec["object"]
+    )[0]  # standing on its base
+    return template.instantiate(surface)
+
+
+def region_origin(pose: Any, spec: dict[str, Any]) -> Any:
+    """A region's origin: ``pose`` moved by the spec's ``origin_position``, in its own
+    frame. Rotation bounds turn the tool about this point, so a region whose tool may
+    tilt keeps the tool's tip where it should be."""
+    import numpy as np
+
+    from ssrobot import Pose
+
+    offset = spec.get("origin_position", (0.0, 0.0, 0.0))
+    position = np.asarray(pose.position) + _matrix(pose)[:3, :3] @ np.asarray(offset, dtype=float)
+    x, y, z = (float(v) for v in position)
+    return Pose(position=(x, y, z), quat_wxyz=pose.quat_wxyz)
+
+
+def scene_pose(scene: str | Path, body: str) -> Any:
+    """A scene body's declared pose, as a 4x4 transform."""
+    import mujoco
+    import numpy as np
+
+    b = mujoco.MjSpec.from_file(str(scene)).body(body)
+    pose = np.eye(4)
+    rotation = np.zeros(9)
+    mujoco.mju_quat2Mat(rotation, np.asarray(b.quat, float))
+    pose[:3, :3] = rotation.reshape(3, 3)
+    pose[:3, 3] = b.pos
+    return pose
 
 
 def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path) -> dict[str, Any]:
@@ -350,6 +397,14 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
     named = description.configuration(spec["configuration"])
     named_joints = description.group(named.group).joints
     record: dict[str, Any] = {"plans": {}, "refusals": {}}
+    if "placement" in spec:
+        # The object stands where the placement TSR allows (scripts/place_reference_object.py).
+        record["placement"] = {
+            "distance": float(
+                placement_tsr(spec).distance(scene_pose(spec["scene"], spec["object"]))[0]
+            ),
+            "seed": spec["placement"]["seed"],
+        }
     runtime = MujocoRuntime(package, keyframe=keyframe, scene=spec["scene"])
     # Only the records that link a plan to its execution: a full trace repeats each
     # 2 ms trajectory in every applied record.
@@ -385,7 +440,9 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
             (a, b), (c, d), (e, f) = spec["position_bounds"]
             (g, h), (m, n), (o, p) = spec["rotation_bounds"]
             return Tsr(
-                origin=pose,  # the object's full pose: the region turns with it
+                origin=region_origin(
+                    pose, spec
+                ),  # the object's full pose: the region turns with it
                 offset=Pose(position=(x, y, z), quat_wxyz=(w, i, j, k)),
                 position_bounds=((a, b), (c, d), (e, f)),
                 rotation_bounds=((g, h), (m, n), (o, p)),
@@ -856,7 +913,7 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
         (a, b), (c, d), (e, f) = g["position_bounds"]
         (r0, r1), (p0, p1), (y0, y1) = g["rotation_bounds"]
         region = Tsr(
-            origin=Pose(position=pose.position, quat_wxyz=(1.0, 0.0, 0.0, 0.0)),
+            origin=region_origin(Pose(position=pose.position, quat_wxyz=(1.0, 0.0, 0.0, 0.0)), g),
             offset=Pose(position=(x, y, z), quat_wxyz=(w, i, j, k)),
             position_bounds=((a, b), (c, d), (e, f)),
             rotation_bounds=((r0, r1), (p0, p1), (y0, y1)),
@@ -875,8 +932,12 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
         settled = ctx.snapshot()
         scene = ctx.planning_scene(settled, manipulator.group)
         T0 = _matrix(scene.forward_kinematics(start, g["frame"]))
-        # The motion's direction: a unit vector in the guard frame, as world.
-        direction = T0[:3, :3] @ np.asarray(g["direction_in_frame"], dtype=float)
+        # The motion's direction: a unit vector in the guard frame, as world, or one
+        # declared in world (a tilted tool pressing straight down).
+        if "direction_in_world" in g:
+            direction = np.asarray(g["direction_in_world"], dtype=float)
+        else:
+            direction = T0[:3, :3] @ np.asarray(g["direction_in_frame"], dtype=float)
         period = ctx.trajectory_contract.period_ns
         steps = int(g["duration_ns"]) // period
         rows, previous = [start], np.array(start)
@@ -911,10 +972,35 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
         arm = ctx.manipulator(manipulator.name)
         snapshot = ctx.snapshot()
         move = arm.plan_to_configuration(setpoint, snapshot=snapshot, planner=planner)
-        ctx.run_until(ctx.execute(move, planner=planner), max_ticks=20_000)
-        hold(ctx, setpoint)
-        record["free_start_gap"] = max(abs(a - b) for a, b in zip(arm_q(ctx), start, strict=True))
-        record["no_surface"] = run(ctx, command)
+        record["no_surface_move"] = move.status.value
+        turns = [0.0] * len(joints)
+        if move.succeeded:
+            assert move.trajectory is not None
+            ctx.run_until(ctx.execute(move, planner=planner), max_ticks=20_000)
+            # A continuous joint may arrive whole turns from the setpoint: the same pose.
+            # Hold and descend from where it is, shifted by those turns.
+            continuous = {j.name for j in description.joints if j.kind is JointKind.CONTINUOUS}
+            turns = [
+                2 * math.pi * round((r - s) / (2 * math.pi)) if j in continuous else 0.0
+                for j, r, s in zip(joints, move.trajectory.goal, setpoint, strict=True)
+            ]
+        record["no_surface_turns"] = [round(t / (2 * math.pi)) for t in turns]
+        hold(ctx, tuple(s + t for s, t in zip(setpoint, turns, strict=True)))
+        free = GuardedJointTrajectory(
+            trajectory=JointTrajectory(
+                group=manipulator.group,
+                joints=joints,
+                time_from_start_ns=command.trajectory.time_from_start_ns,
+                positions=tuple(
+                    tuple(v + t for v, t in zip(row, turns, strict=True))
+                    for row in command.trajectory.positions
+                ),
+            ),
+            guard=guard,
+        )
+        shifted = tuple(s + t for s, t in zip(start, turns, strict=True))
+        record["free_start_gap"] = max(abs(a - b) for a, b in zip(arm_q(ctx), shifted, strict=True))
+        record["no_surface"] = run(ctx, free)
     return finish(record)
 
 
@@ -1183,6 +1269,13 @@ def check(
             },
             refusals,
         )
+        if "placement" in spec:
+            placed = run.get("placement", {})
+            add(
+                "object_placement",
+                placed.get("distance") is not None and placed["distance"] <= PLACEMENT_TOLERANCE,
+                f"the {spec['object']} stands within its placement TSR: {placed}",
+            )
         materialized = run.get("materialized", {})
         add(
             "materialized_world",

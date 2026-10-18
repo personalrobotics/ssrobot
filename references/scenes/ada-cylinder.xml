@@ -1,13 +1,31 @@
 <!-- The two-robot planning proof's scene for ada (#24): a cylinder 4 cm across and
-     12 cm tall, standing on a fixed stand within the arm's reach. MujocoRuntime(package,
-     scene=...) composes it with the robot: "cylinder" has a free joint, so it is an
-     object; "stand" has none, so it is a fixture. -->
+     12 cm tall, standing on the hospital over-bed table from the ADA feeding studies,
+     on a floor. Where on the table is a sample of its stable-placement TSR
+     ([robots.scenario.placement] in robots.toml, written by
+     scripts/place_reference_object.py). MujocoRuntime(package, scene=...) composes it
+     with the robot: "cylinder" has a free joint, so it is an object; "ada_table" has
+     none, so it is a fixture.
+
+     The table is prl_assets' ada_table (personalrobotics/prl_assets@59b6bcf,
+     objects/ada_table), placed as ada_mj's table scene places it, at (0.06, -0.48, 0).
+     Its mesh is visual only; five primitives are its collision shape. Top at z = 0.735. -->
 <mujoco model="ada-cylinder">
+  <asset>
+    <mesh name="ada_table_visual" file="assets/ada_table.stl"/>
+    <material name="ada_table_surface" rgba="0.85 0.82 0.78 1"/>
+  </asset>
   <worldbody>
-    <body name="stand" pos="0.3 0.0 0.300">
-      <geom type="box" size="0.05 0.05 0.300" rgba="0.6 0.4 0.2 1"/>
+    <geom name="floor" type="plane" size="3 3 0.05" rgba="0.9 0.9 0.9 1"/>
+    <light pos="0 0 3"/>
+    <body name="ada_table" pos="0.06 -0.48 0">
+      <geom type="mesh" mesh="ada_table_visual" material="ada_table_surface" contype="0" conaffinity="0" group="2" mass="0"/>
+      <geom name="ada_table_top" type="box" pos="0 0 0.714" size="0.926 0.371 0.021" group="3" friction="0.8 0.005 0.0001" mass="10"/>
+      <geom name="ada_table_base_left" type="box" pos="-0.614 0 0.0175" size="0.030 0.330 0.0175" group="3" mass="1.5"/>
+      <geom name="ada_table_base_right" type="box" pos="0.614 0 0.0175" size="0.030 0.330 0.0175" group="3" mass="1.5"/>
+      <geom name="ada_table_column_left" type="cylinder" pos="-0.614 0 0.364" size="0.025 0.329" group="3" mass="1.0"/>
+      <geom name="ada_table_column_right" type="cylinder" pos="0.614 0 0.364" size="0.025 0.329" group="3" mass="1.0"/>
     </body>
-    <body name="cylinder" pos="0.3 0.0 0.6605">
+    <body name="cylinder" pos="0.3082 -0.6416 0.7950" quat="0.270668 0.000000 0.000000 0.962673">
       <freejoint/>
       <geom type="cylinder" size="0.02 0.06" mass="0.1" rgba="0.2 0.4 0.8 1"/>
     </body>

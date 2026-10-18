@@ -92,26 +92,42 @@ scene = "references/scenes/ada-cylinder.xml"
 object = "cylinder"
 configuration = "above_plate"
 # ADA's package mounts the articutool in the hand, so its region constrains the fork
-# tip, not the hand: the tine pointing straight down, 5 cm above the cylinder's top, at
-# any angle around it, as for a skewering approach.
+# tip, not the hand: the tine pointing down, tilted up to 40° from vertical as in a
+# feeding approach, 5 cm above the cylinder's top, at any angle around it. Over the
+# table, a vertical fork is out of the arm's reach (no placement of 30 sampled plans).
 frame = "articutool/fork_tip"
-offset_position = [0.0, 0.0, 0.11]
+# Tilt turns the fork about its tip, 5 cm above the cylinder's top.
+origin_position = [0.0, 0.0, 0.11]
+offset_position = [0.0, 0.0, 0.0]
 offset_quat_wxyz = [0.0, 1.0, 0.0, 0.0]
 position_bounds = [[-0.01, 0.01], [-0.01, 0.01], [-0.02, 0.02]]
-rotation_bounds = [[0.0, 0.0], [0.0, 0.0], [-3.141592653589793, 3.141592653589793]]
+rotation_bounds = [[-0.6981317007977318, 0.6981317007977318], [-0.6981317007977318, 0.6981317007977318], [-3.141592653589793, 3.141592653589793]]
 
-# The guarded-contact proof (#124): the fork tip straight above the cylinder's top, as
-# for skewering, then a straight 10 cm descent onto it, guarded by the tool's
-# force-torque sensor. The descent is built by IK and is meant to make contact.
+# Where the cylinder stands: a sample of the stable-placement TSR of an upright cylinder
+# on the hospital table's top (scenes/ada-cylinder.xml), the first from this seed at
+# which the region above plans. scripts/place_reference_object.py chooses it;
+# check_reference_robots.py checks the scene's cylinder lies in the TSR.
+[robots.scenario.placement]
+surface_position = [0.06, -0.48, 0.735]
+half_extents = [0.926, 0.371]
+radius = 0.02
+height = 0.12
+seed = 0
+
+# The guarded-contact proof (#124): the fork tip above the cylinder's top, tilted as in
+# the region above, then a straight 10 cm descent, straight down onto it, guarded by
+# the tool's force-torque sensor. The descent is built by IK and is meant to make contact.
 [robots.scenario.guard]
 frame = "articutool/fork_tip"
 channel = "tool_wrench"
 part = "force"
 threshold = 10.0
-offset_position = [0.0, 0.0, 0.11]
+# Tilt turns the fork about its tip, 5 cm above the cylinder's top.
+origin_position = [0.0, 0.0, 0.11]
+offset_position = [0.0, 0.0, 0.0]
 offset_quat_wxyz = [0.0, 1.0, 0.0, 0.0]
 position_bounds = [[-0.005, 0.005], [-0.005, 0.005], [-0.005, 0.005]]
-rotation_bounds = [[0.0, 0.0], [0.0, 0.0], [-3.141592653589793, 3.141592653589793]]
-direction_in_frame = [0.0, 0.0, 1.0]
+rotation_bounds = [[-0.6981317007977318, 0.6981317007977318], [-0.6981317007977318, 0.6981317007977318], [-3.141592653589793, 3.141592653589793]]
+direction_in_world = [0.0, 0.0, -1.0]
 distance = 0.10
 duration_ns = 3_000_000_000
