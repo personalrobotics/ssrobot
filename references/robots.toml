@@ -51,7 +51,9 @@ rotation_bounds = [[0.0, 0.0], [0.0, 0.0], [-3.141592653589793, 3.14159265358979
 frame = "right_ur5e/gripper/grasp_site"
 channel = "right_wrist_wrench"
 part = "force"
-threshold = 10.0
+# Pushing the free cylinder across the worktable peaks near 9 N; the free run stays
+# near 0.1 N.
+threshold = 5.0
 offset_position = [-0.10, 0.0, 0.0]
 offset_quat_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
 position_bounds = [[0.0, 0.0], [0.0, 0.0], [-0.005, 0.005]]
