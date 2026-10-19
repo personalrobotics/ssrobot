@@ -233,8 +233,9 @@ setpoints, so an application can rehearse its fault handling in simulation.
 compiled, and whether sscbirrt's native MuJoCo adapter is usable.
 
 `python -m ssrobot.mujoco.conformance` runs the shared conformance scenario on the MuJoCo
-conformance robot beside the core runtimes; see *ReplayRuntime and conformance* in
-`docs/contracts.md`. MujocoRuntime passes every check but `external_clock`.
+conformance robot beside the core runtimes, adding its own `backend_versions` check;
+see *ReplayRuntime and conformance* in `docs/contracts.md`. MujocoRuntime passes every
+check but `external_clock`.
 
 ## Planning scenes
 

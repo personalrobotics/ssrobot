@@ -55,9 +55,9 @@ TERMINAL = {"succeeded", "canceled", "timed_out", "rejected", "failed"}
 
 
 def _schema(name: str) -> jsonschema.Draft202012Validator:
-    return jsonschema.Draft202012Validator(
-        json.loads((ROOT / "schemas" / f"{name}.v1.json").read_text())
-    )
+    """The checked-in schema for ``name``, at its current version."""
+    (path,) = (ROOT / "schemas").glob(f"{name}.v*.json")
+    return jsonschema.Draft202012Validator(json.loads(path.read_text()))
 
 
 SHARED = (
@@ -83,23 +83,21 @@ SHARED = (
 )
 """Every check, in run order."""
 
-MANUAL = set(SHARED) - {
-    "scene_observation",
-    "snapshot_and_attachment",
-    "external_clock",
-    "backend_versions",
-}
+CORE = tuple(name for name in SHARED if name != "backend_versions")
+"""Every core check; ``backend_versions`` is MuJoCo's own, added by its integration."""
+MANUAL = set(CORE) - {"scene_observation", "snapshot_and_attachment", "external_clock"}
 EXPECTED = {
     # Replay holds still on a manual clock, with no scene and no simulator.
-    "replay": {name: "passed" if name in MANUAL else "not_applicable" for name in SHARED},
+    "replay": {name: "passed" if name in MANUAL else "not_applicable" for name in CORE},
     # Standing in for hardware, it runs only what an external clock allows.
     "replay_external": {
         name: "passed"
         if name in ("open", "privileged_marking", "external_clock")
         else "not_applicable"
-        for name in SHARED
+        for name in CORE
     },
-    # MuJoCo runs everything a manually clocked simulator with a scene can.
+    # MuJoCo runs everything a manually clocked simulator with a scene can, and its own
+    # backend check.
     "mujoco": {name: "not_applicable" if name == "external_clock" else "passed" for name in SHARED},
 }
 
@@ -164,7 +162,7 @@ def test_every_runtime_passes_the_conformance_scenario(
         _schema("ssrobot.ConformanceReport").validate(json.loads(text))
         report = loads(text, ConformanceReport)
         assert {c.name: c.outcome.value for c in report.checks} == expected, name
-        assert [c.name for c in report.checks] == list(SHARED)
+        assert [c.name for c in report.checks] == list(expected)
         bundled = run / "bundle"
         reached = _coherent(
             bundled / "trace" / "trace.jsonl" if bundled.is_dir() else run / "trace.jsonl"
@@ -183,16 +181,28 @@ def test_every_runtime_passes_the_conformance_scenario(
     corrupted = tmp_path / "corrupted"
     shutil.copytree(committed, corrupted)
     (corrupted / "mujoco" / "bundle" / "robot" / "bimanual.xml").write_text("<mujoco/>")
+    swapped = tmp_path / "swapped"  # a valid trace, but of another run
+    shutil.copytree(committed, swapped)
+    shutil.copy(committed / "replay_external" / "trace.jsonl", swapped / "replay" / "trace.jsonl")
     flipped_problems = conformance_check(flipped, ALL)
     corrupted_problems = conformance_check(corrupted, ALL)
+    swapped_problems = conformance_check(swapped, ALL)
     (artifacts / "check-report.json").write_text(
         json.dumps(
-            {"committed": [], "flipped": flipped_problems, "corrupted": corrupted_problems},
+            {
+                "committed": [],
+                "flipped": flipped_problems,
+                "corrupted": corrupted_problems,
+                "swapped": swapped_problems,
+            },
             indent=2,
         )
         + "\n"
     )
     assert flipped_problems == ["replay: outcomes differ from the committed report"]
+    assert swapped_problems == [
+        "replay: committed: conformance_mismatch: the trace is not of the run the report describes"
+    ]
     assert corrupted_problems == [
         "mujoco: committed: bundle_hash_mismatch: robot/bimanual.xml has changed"
     ]

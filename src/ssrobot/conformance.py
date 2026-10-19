@@ -81,11 +81,13 @@ class ConformanceReport(Record):
     """The result of one conformance run."""
 
     SCHEMA = "ssrobot.ConformanceReport"
-    VERSION = 1
+    VERSION = 2
 
     runtime: str = field(metadata=meta("Runtime implementation name."))
     runtime_version: str = field(metadata=meta("Runtime implementation and backend versions."))
     description: str = field(metadata=meta("Fingerprint of the robot description used."))
+    clock: str = field(metadata=meta("The runtime's clock identity."))
+    clock_mode: ClockMode = field(metadata=meta("Who advanced the runtime's time."))
     checks: tuple[ConformanceCheck, ...] = field(metadata=meta("Every check, in run order."))
 
     @property
@@ -100,15 +102,17 @@ class FaultInjector(Protocol):
     def inject_fault(self, code: str, message: str, components: tuple[str, ...] = ()) -> None: ...
 
 
-@runtime_checkable
-class BackendVersions(Protocol):
-    """Optional runtime hook reporting the simulator backend it runs on."""
-
-    def backend_versions(self) -> dict[str, str]: ...
+ExtraCheck = Callable[[RobotContext, Runtime], str]
+"""A backend's own conformance check: raise ``ConformanceFailure`` (or an
+``SsrobotError``) to fail it, or return what it observed."""
 
 
 class _Failed(Exception):
     pass
+
+
+ConformanceFailure = _Failed
+"""Raised by an extra check that fails."""
 
 
 def _expect(condition: bool, message: str) -> None:
@@ -229,8 +233,11 @@ def run_conformance(
     make_runtime: Callable[[], Runtime],
     *,
     sinks: Sequence[TraceSink] = (),
+    extra_checks: Sequence[tuple[str, ExtraCheck]] = (),
 ) -> ConformanceReport:
-    """Run the scenario on one fresh runtime and return the report."""
+    """Run the scenario on one fresh runtime and return the report. ``extra_checks`` are
+    a backend's own checks, run by name after the shared ones that need no manual clock:
+    each is given the open context and the runtime, and returns what it observed."""
     checks: list[ConformanceCheck] = []
     runtime = make_runtime()
     counted = _CountedRuntime(runtime)
@@ -321,10 +328,8 @@ def run_conformance(
             skip("external_clock", "needs a joint group offering position commands")
         else:
             record("external_clock", functools.partial(_check_external_clock, context, arms))
-        if isinstance(runtime, BackendVersions):
-            record("backend_versions", functools.partial(_check_backend_versions, runtime))
-        else:
-            skip("backend_versions", "the runtime reports no simulator backend")
+        for name, extra in extra_checks:
+            record(name, functools.partial(extra, context, runtime))
         if applicable:
             record(
                 "terminal_short_circuit",
@@ -346,16 +351,18 @@ def run_conformance(
             )
         else:
             skip("close", why)
-    return _report(info.runtime, info.runtime_version, description, checks)
+    return _report(info, description, checks)
 
 
 def _report(
-    runtime: str, version: str, description: RobotDescription, checks: list[ConformanceCheck]
+    info: RuntimeInfo, description: RobotDescription, checks: list[ConformanceCheck]
 ) -> ConformanceReport:
     return ConformanceReport(
-        runtime=runtime,
-        runtime_version=version,
+        runtime=info.runtime,
+        runtime_version=info.runtime_version,
         description=description.fingerprint(),
+        clock=info.clock,
+        clock_mode=info.clock_mode,
         checks=tuple(checks),
     )
 
@@ -705,11 +712,23 @@ def _check_snapshot_and_attachment(context: RobotContext, arms: list[_Arm]) -> s
         _expect(e.code == "stale_snapshot", e.code)
     else:
         raise _Failed("a command planned before the attachment was accepted")
+    attached = context.snapshot()
+    _expect(
+        attached.revision == context.scene.revision
+        and attached.attachments == context.scene.attachments,
+        "a snapshot after attaching does not carry the scene's revision and attachment",
+    )
     context.detach(obj)
     _expect(context.scene.attachment(obj) is None, "detaching left the attachment")
+    detached = context.snapshot()
+    _expect(
+        detached.revision == context.scene.revision and detached.attachments == (),
+        "a snapshot after detaching still carries the attachment",
+    )
     return (
-        f"attached {obj!r} to {effector!r} at revision {revision + 1}; the earlier snapshot "
-        "was refused as stale; detached"
+        f"attached {obj!r} to {effector!r} at revision {revision + 1}, and the next snapshot "
+        "carried it; the earlier snapshot was refused as stale; detached, and the next "
+        "snapshot was clear"
     )
 
 
@@ -728,19 +747,6 @@ def _check_external_clock(context: RobotContext, arms: list[_Arm]) -> str:
     else:
         raise _Failed("an externally clocked runtime was stepped")
     return "a command succeeded through updates alone; stepping was refused"
-
-
-def _check_backend_versions(runtime: BackendVersions) -> str:
-    """The simulator backend is exactly the version required, installed, loaded, and
-    compiled alike, and any planner built against it agrees."""
-    v = runtime.backend_versions()
-    found = {v.get("installed"), v.get("loaded"), v.get("compiled")}
-    _expect(found == {v.get("required")}, f"required {v.get('required')}, found {found}")
-    native = v.get("sscbirrt_native_mujoco", "not installed")
-    _expect(native in ("usable", "not installed"), f"sscbirrt's native MuJoCo is {native}")
-    return (
-        f"MuJoCo {v['required']} installed, loaded, and compiled; sscbirrt native MuJoCo {native}"
-    )
 
 
 def _composite_over(context: RobotContext, arms: list[_Arm]) -> str | None:
@@ -866,13 +872,45 @@ def _files(root: Path) -> dict[str, bytes]:
     }
 
 
-def _verify(root: Path) -> None:
-    """Read a run's artifacts strictly: a run bundle verifies, or a trace reads."""
+def _identity(report: ConformanceReport) -> tuple[str, str, str, str, ClockMode]:
+    return (
+        report.runtime,
+        report.runtime_version,
+        report.description,
+        report.clock,
+        report.clock_mode,
+    )
+
+
+def _verify(root: Path) -> ConformanceReport:
+    """Read a run's artifacts strictly, and bind its report to them: the trace's opening
+    record names the same runtime, version, description, clock, and clock mode, and a
+    run bundle's manifest the same description and clock."""
+    report = loads((root / "conformance-report.json").read_text(), ConformanceReport)
     if (root / "bundle").is_dir():
-        open_bundle(root / "bundle")
+        bundle = open_bundle(root / "bundle")
+        records = list(bundle.records)
+        if (bundle.manifest.description, bundle.manifest.clock) != (
+            report.description,
+            report.clock,
+        ):
+            raise ValidationError(
+                "conformance_mismatch", "the bundle is not of the run the report describes"
+            )
     else:
-        read_trace(root / "trace.jsonl")
-    loads((root / "conformance-report.json").read_text(), ConformanceReport)
+        records = read_trace(root / "trace.jsonl")
+    opened = records[0].payload if records else None
+    if not isinstance(opened, RuntimeInfo) or (
+        opened.runtime,
+        opened.runtime_version,
+        opened.description,
+        opened.clock,
+        opened.clock_mode,
+    ) != _identity(report):
+        raise ValidationError(
+            "conformance_mismatch", "the trace is not of the run the report describes"
+        )
+    return report
 
 
 def check(committed: Path, runners: dict[str, Runner]) -> list[str]:
@@ -905,6 +943,8 @@ def check(committed: Path, runners: dict[str, Runner]) -> list[str]:
                 problems.append(f"{name}: outcomes differ from the committed report")
             if not report.passed:
                 problems.append(f"{name}: a check failed")
+            if _identity(report) != _identity(expected):
+                problems.append(f"{name}: the regenerated run is of another runtime or robot")
             if _files(first) != _files(second):
                 problems.append(f"{name}: two regenerations here differ")
             for which, root in (("committed", committed / name), ("regenerated", first)):

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.ConformanceReport v1",
+  "title": "ssrobot.ConformanceReport v2",
   "$ref": "#/$defs/ConformanceReport",
   "$defs": {
     "ConformanceCheck": {
@@ -40,7 +40,7 @@
           "const": "ssrobot.ConformanceReport"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "runtime": {
           "type": "string",
@@ -53,6 +53,18 @@
         "description": {
           "type": "string",
           "description": "Fingerprint of the robot description used."
+        },
+        "clock": {
+          "type": "string",
+          "description": "The runtime's clock identity."
+        },
+        "clock_mode": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "external"
+          ],
+          "description": "Who advanced the runtime's time."
         },
         "checks": {
           "type": "array",
@@ -68,6 +80,8 @@
         "runtime",
         "runtime_version",
         "description",
+        "clock",
+        "clock_mode",
         "checks"
       ],
       "additionalProperties": false
