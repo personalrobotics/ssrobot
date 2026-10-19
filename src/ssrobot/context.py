@@ -949,12 +949,27 @@ class RobotContext:
         entities = (
             set(info.objects) | set(info.fixtures) | {f.name for f in self._description.frames}
         )
+        scene_entities = set(info.objects) | set(info.fixtures)
+        frames = {f.name for f in self._description.frames}
         for name, spec in scene.items():
-            references = (spec.source, spec.counterpart, spec.frame)
-            if name in robot or not all(r is None or r in entities for r in references):
+            # Only what the description cannot declare: a scene entity's pose, or a
+            # contact between two known entities. Anything else would let a runtime offer
+            # robot channels the description never declared.
+            if spec.quantity is Quantity.POSE:
+                allowed = spec.source in scene_entities and spec.frame in frames
+            elif spec.quantity is Quantity.CONTACT:
+                allowed = (
+                    spec.source in entities
+                    and spec.counterpart in entities
+                    and spec.source != spec.counterpart
+                )
+            else:
+                allowed = False
+            if name in robot or not allowed:
                 raise CapabilityError(
                     "undeclared_capability",
-                    f"scene channel {name!r} reuses a robot channel or names an unknown entity",
+                    f"scene channel {name!r} is not a scene entity's pose or a contact between "
+                    "known entities, or reuses a robot channel's name",
                 )
         for name in info.channels:
             if name not in robot and name not in scene:

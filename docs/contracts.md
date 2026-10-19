@@ -884,8 +884,8 @@ inspected before any runtime opens. The runtime confirms which are available in
 Vector quantities are read as tuples of floats. Images are read as `ArrayValue`. A
 `contact` reading is 1 and the sum of the normal forces at every contact point joining
 the two entities, or 0 and 0 when none does; `RobotContext.observe` refuses any other
-`touching` and a negative force (`out_of_limits`). In a description, both entities of a
-contact are frames.
+`touching` and a negative force (`out_of_limits`). A contact is between two distinct
+entities (`invalid_argument` otherwise); in a description, both are frames.
 
 ### Scene channels and privilege
 
@@ -899,10 +899,14 @@ A runtime with a scene declares channels for it, since the robot description kno
 nothing of the scene. `RuntimeInfo.scene_channels` holds their `ChannelSpec`s, and their
 names are among `channels`; a client requests them by name like any other.
 `RuntimeInfo.privileged` names every confirmed channel, the robot's or the scene's, that
-is privileged, so the `opened` record of a trace carries the marking. The context
-refuses a scene channel that reuses a robot channel's name or names an entity that is
-not a scene object, fixture, or robot frame, and a `privileged` list that disagrees
-with the declarations (`undeclared_capability`).
+is privileged, so the `opened` record of a trace carries the marking. A scene channel
+is only what the description cannot declare: a scene object's or fixture's `pose`, in a
+robot frame, or a `contact` between two distinct known entities (scene objects,
+fixtures, or robot frames). The context refuses any other scene channel, one that reuses
+a robot channel's name, and a `privileged` list that disagrees with the declarations
+(`undeclared_capability`), so a runtime cannot pass off an undeclared robot channel as a
+scene one. Every runtime reports the description's own privileged channels it confirms,
+`ReplayRuntime` included.
 
 An `ObservationRequest` (version 2) with `portable_only` refuses any privileged channel
 (`privileged_channel`) before the runtime is asked, so a policy can be checked against

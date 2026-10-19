@@ -83,6 +83,10 @@ class ChannelSpec(Value):
             )
         if self.counterpart is not None:
             check_name(self.counterpart, path="counterpart")
+            if self.counterpart == self.source:
+                raise ValidationError(
+                    "invalid_argument", "a contact is between two entities", path="counterpart"
+                )
         if (q is Quantity.POSE) != (self.frame is not None):
             raise ValidationError(
                 "frame_required",

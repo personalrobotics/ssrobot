@@ -14,8 +14,12 @@ reading is checked against a scene computed independently of MuJoCo:
 - the marking is in ``RuntimeInfo`` and the trace's ``opened`` record, a package can mark
   one of its own channels privileged, and a portable-only request refuses any
   privileged channel;
+- observing every scene channel each tick changes nothing: the same fall, observed and
+  never observed, passes through identical states;
+- ReplayRuntime reports a package's own privileged channel exactly as MuJoCo does;
 - unknown or self contact pairs, and a scene channel reusing a robot channel's name, fail
-  at open.
+  at open; a runtime cannot pass off an undeclared robot channel, or a robot frame's
+  pose, as a scene channel; and a declared contact needs two distinct entities.
 The evidence is ``scene_observations.json``, written twice and byte-identical.
 
 Reproduce with ``pytest tests/test_scene_observations.py``.
@@ -26,14 +30,21 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from ssrobot import (
+    ChannelSpec,
+    DType,
     JsonlTrace,
     ObservationRequest,
+    Quantity,
+    ReplayRuntime,
+    ReplayScript,
     RobotContext,
     SsrobotError,
+    dumps,
     load_package,
     read_trace,
 )
@@ -82,6 +93,26 @@ def _privileged_package(root: Path, rename: str | None = None) -> Path:
     return root
 
 
+def _states(work: Path, *, observe: bool) -> list[str]:
+    """The same seeded fall, every tick's full snapshot, observing every scene channel
+    each tick or never: observing must not change the simulation."""
+    scene = work / "scene.xml"
+    scene.parent.mkdir(parents=True, exist_ok=True)
+    scene.write_text(SCENE)
+    package = load_package(PACKAGE)
+    runtime = MujocoRuntime(package, scene=scene, contacts=CONTACTS)
+    request = ObservationRequest(channels=("ball.pose", "contact.ball.table", "contact.ball.tcp"))
+    states = []
+    with RobotContext(package.description, runtime) as ctx:
+        for _ in range(700):
+            ctx.step()
+            if observe:
+                ctx.observe(request)
+            snapshot = ctx.snapshot()
+            states.append(dumps(snapshot))
+    return states
+
+
 def _fall(work: Path) -> dict[str, Any]:
     scene = work / "scene.xml"
     scene.parent.mkdir(parents=True, exist_ok=True)
@@ -124,7 +155,13 @@ def _fall(work: Path) -> dict[str, Any]:
     first_touch = next(t["n"] for t in ticks if t["table"][0] == 1.0)
     predicted_touch = next(n for n in range(1, 10_000) if G * DT * DT * n * (n + 1) / 2 >= landing)
     rest = ticks[-100:]
+    observed = _states(work / "observed", observe=True)
+    unobserved = _states(work / "unobserved", observe=False)
     return {
+        "observing_changes_nothing": {
+            "ticks": len(observed),
+            "identical_states": observed == unobserved,
+        },
         "scene_channels": [
             {
                 "name": c.name,
@@ -185,16 +222,78 @@ def _marking(work: Path) -> dict[str, Any]:
 
         return _refused(run)
 
+    script = ReplayScript.hold(package.description, clock="sim:replay", tick_ns=1_000_000, ticks=3)
+    with RobotContext(package.description, ReplayRuntime(script)) as ctx:
+        replay_marked = list(ctx.info.privileged)
+        replay_refused = _refused(
+            lambda: ctx.observe(ObservationRequest(channels=("arm_qf",), portable_only=True))
+        )
+
     original = load_package(PACKAGE)
     clashing = load_package(_privileged_package(work / "clashing", rename="ball.pose"))
+
+    def smuggled(spec: ChannelSpec) -> str:
+        """A runtime offering ``spec`` as a scene channel."""
+
+        class Smuggling(MujocoRuntime):
+            def open(self, description: Any) -> Any:
+                info = super().open(description)
+                return replace(
+                    info,
+                    channels=(*info.channels, spec.name),
+                    scene_channels=(*info.scene_channels, spec),
+                    privileged=tuple(sorted((*info.privileged, spec.name))),
+                )
+
+        def run() -> None:
+            with RobotContext(original.description, Smuggling(original, scene=scene)):
+                pass
+
+        return _refused(run)
+
     return {
         "package_marks_its_own": marked,
         "portable_only_refuses_it": refused,
+        "replay_marks_it_too": replay_marked,
+        "replay_portable_only_refuses_it": replay_refused,
         "open_refusals": {
             "unknown_entity": opened(original, [("ball", "nothing")]),
             "same_body": opened(original, [("ball", "ball")]),
             "reuses_a_robot_channel": opened(clashing, []),
         },
+        "scene_channels_cannot_smuggle": {
+            "an_undeclared_joint_channel": smuggled(
+                ChannelSpec(
+                    name="invented_q",
+                    quantity=Quantity.JOINT_POSITION,
+                    source="base",
+                    shape=(1,),
+                    dtype=DType.FLOAT64,
+                    privileged=True,
+                )
+            ),
+            "a_robot_frame_as_a_scene_pose": smuggled(
+                ChannelSpec(
+                    name="tcp.scene_pose",
+                    quantity=Quantity.POSE,
+                    source="tcp",
+                    frame="world",
+                    shape=(7,),
+                    dtype=DType.FLOAT64,
+                    privileged=True,
+                )
+            ),
+        },
+        "a_declared_self_contact": _refused(
+            lambda: ChannelSpec(
+                name="c",
+                quantity=Quantity.CONTACT,
+                source="tcp",
+                counterpart="tcp",
+                shape=(2,),
+                dtype=DType.FLOAT64,
+            )
+        ),
     }
 
 
@@ -235,9 +334,17 @@ def test_scene_objects_and_contacts_are_observed_and_marked(
     assert marking == {
         "package_marks_its_own": ["arm_qf", "ball.pose"],  # its own, beside the scene's
         "portable_only_refuses_it": "privileged_channel",
+        "replay_marks_it_too": ["arm_qf"],
+        "replay_portable_only_refuses_it": "privileged_channel",
         "open_refusals": {
             "unknown_entity": "unknown_reference",
             "same_body": "invalid_argument",
             "reuses_a_robot_channel": "duplicate_name",
         },
+        "scene_channels_cannot_smuggle": {
+            "an_undeclared_joint_channel": "undeclared_capability",
+            "a_robot_frame_as_a_scene_pose": "undeclared_capability",
+        },
+        "a_declared_self_contact": "invalid_argument",
     }
+    assert fall["observing_changes_nothing"] == {"ticks": 700, "identical_states": True}
