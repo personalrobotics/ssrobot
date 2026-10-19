@@ -30,6 +30,7 @@ from ssrobot.commands import (
     JointTrajectory,
     TrajectoryContract,
     TrajectoryInterpolation,
+    command_components,
 )
 from ssrobot.conventions import ClockMode, Pose, Timestamp
 from ssrobot.description import CommandCapability, RobotDescription
@@ -41,8 +42,10 @@ from ssrobot.execution import (
     ExecutionStatus,
     GuardCause,
     GuardOutcome,
+    HealthState,
     Modification,
     ModificationKind,
+    RuntimeHealth,
 )
 from ssrobot.mujoco._compose import compile_world, require_version, select
 from ssrobot.mujoco._model import (
@@ -65,6 +68,7 @@ from ssrobot.mujoco._model import (
     joint_actuators,
     ssrobot_version,
     unchanged,
+    versions,
 )
 from ssrobot.mujoco._scene import SceneSource, load_scene
 from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
@@ -294,6 +298,7 @@ class MujocoRuntime:
         self._scene_specs: dict[str, ChannelSpec] = {}  # scene channel: its declaration
         self._contacts: dict[str, tuple[int, int]] = {}  # contact channel: its two bodies
         self._scratch: Any = None  # an MjData evaluated at the current state, for contacts
+        self._fault: RuntimeHealth | None = None  # set by inject_fault until recover
 
     @property
     def mapping(self) -> MujocoMapping:
@@ -322,6 +327,7 @@ class MujocoRuntime:
         self._events.clear()
         self._attached.clear()
         self._scene_specs, self._contacts, self._scratch = {}, {}, None
+        self._fault = None
 
     def observe(self, request: ObservationRequest) -> Observation:
         data, d = self._open_data(), self._described()
@@ -365,6 +371,13 @@ class MujocoRuntime:
         return Observation(stamp=now, readings=tuple(readings))
 
     def submit(self, execution: str, command: Command) -> ExecutionStatus:
+        if self._fault is not None:
+            return ExecutionStatus(
+                execution=execution,
+                state=ExecutionState.REJECTED,
+                stamp=self._now(),
+                diagnostic=Diagnostic(code="faulted", message="the runtime is faulted"),
+            )
         trajectory = _trajectory(command)
         if trajectory is not None:
             data = self._open_data()
@@ -454,7 +467,50 @@ class MujocoRuntime:
         return RuntimeUpdate(stamp=self._now(), events=events)
 
     def recover(self) -> None:
-        """MujocoRuntime never faults yet, so there is nothing to clear."""
+        """Clear an injected fault and report the runtime healthy again."""
+        if self._fault is None:
+            return
+        self._fault = None
+        self._events.append(RuntimeHealth(state=HealthState.OK, stamp=self._now()))
+
+    def backend_versions(self) -> dict[str, str]:
+        """The MuJoCo this runtime runs on, installed, loaded, and compiled, the version it
+        requires, and whether sscbirrt's native MuJoCo adapter, built against that same
+        version, is usable here."""
+        installed, loaded, compiled = versions()
+        try:
+            from sscbirrt.backends import native_mujoco
+        except ImportError:
+            native = "not installed"
+        else:
+            reason = native_mujoco.unavailable_reason()
+            native = "usable" if reason is None else f"unusable: {reason}"
+        return {
+            "required": MUJOCO_VERSION,
+            "installed": installed,
+            "loaded": loaded,
+            "compiled": compiled,
+            "sscbirrt_native_mujoco": native,
+        }
+
+    def inject_fault(self, code: str, message: str, components: tuple[str, ...] = ()) -> None:
+        """Fault the runtime as a hardware controller would: stop the executions touching
+        ``components`` (every one, if empty), report the fault at the next poll, and refuse
+        commands until ``recover()``. Physics goes on; the stopped joints' actuators keep
+        their last setpoints. For rehearsing fault handling in simulation."""
+        description = self._described()
+        held = description.resources(components) if components else None
+        for execution, running in list(self._running.items()):
+            occupied = description.resources(command_components(running.command))
+            if held is None or held & occupied:
+                del self._running[execution]
+        self._fault = RuntimeHealth(
+            state=HealthState.FAULTED,
+            stamp=self._now(),
+            diagnostic=Diagnostic(code=code, message=message),
+            components=components,
+        )
+        self._events.append(self._fault)
 
     # -- Scene -----------------------------------------------------------------------
 

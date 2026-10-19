@@ -1,0 +1,38 @@
+<!-- The MuJoCo conformance robot: two independent two-joint arms, as the conformance
+     scenario's reference robot has, built from primitive geoms. Zero gravity and stiff,
+     damped position actuators let a commanded trajectory settle well inside the
+     scenario's tick budgets. -->
+<mujoco model="conformance_bimanual">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.005" gravity="0 0 0" integrator="implicitfast"/>
+  <default>
+    <joint damping="2" range="-3.141592653589793 3.141592653589793"/>
+    <geom contype="0" conaffinity="0" density="200"/>
+    <position kp="200" kv="20" ctrlrange="-3.141592653589793 3.141592653589793"/>
+  </default>
+  <worldbody>
+    <light pos="0 0 2"/>
+    <body name="left_link1" pos="0 0.3 0">
+      <joint name="left_j1" axis="0 0 1"/>
+      <geom type="capsule" fromto="0 0 0 0 0 0.15" size="0.03"/>
+      <body name="left_link2" pos="0 0 0.15">
+        <joint name="left_j2" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0.15 0 0" size="0.025"/>
+      </body>
+    </body>
+    <body name="right_link1" pos="0 -0.3 0">
+      <joint name="right_j1" axis="0 0 1"/>
+      <geom type="capsule" fromto="0 0 0 0 0 0.15" size="0.03"/>
+      <body name="right_link2" pos="0 0 0.15">
+        <joint name="right_j2" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0.15 0 0" size="0.025"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="left_j1" joint="left_j1"/>
+    <position name="left_j2" joint="left_j2"/>
+    <position name="right_j1" joint="right_j1"/>
+    <position name="right_j2" joint="right_j2"/>
+  </actuator>
+</mujoco>
