@@ -297,7 +297,9 @@ class MujocoRuntime:
         self._contact_pairs: tuple[tuple[str, str], ...] = tuple(pairs)
         self._scene_specs: dict[str, ChannelSpec] = {}  # scene channel: its declaration
         self._contacts: dict[str, tuple[int, int]] = {}  # contact channel: its two bodies
-        self._scratch: Any = None  # an MjData evaluated at the current state, for contacts
+        # Whether MuJoCo's derived quantities (body and site poses, sensors, contacts)
+        # describe the current state; a step leaves them describing the state before it.
+        self._derived_current = False
         self._fault: RuntimeHealth | None = None  # set by inject_fault until recover
 
     @property
@@ -326,7 +328,8 @@ class MujocoRuntime:
         self._running.clear()
         self._events.clear()
         self._attached.clear()
-        self._scene_specs, self._contacts, self._scratch = {}, {}, None
+        self._scene_specs, self._contacts = {}, {}
+        self._derived_current = False
         self._fault = None
 
     def observe(self, request: ObservationRequest) -> Observation:
@@ -432,6 +435,7 @@ class MujocoRuntime:
                 finished.append(execution)
         for _ in range(self._substeps):
             mujoco.mj_step(model, data)
+        self._derived_current = False  # mj_step's poses and sensors are from before it
         self._ticks += 1
         now = self._now()
         for execution in finished:
@@ -714,6 +718,7 @@ class MujocoRuntime:
                     q = min(q, limits.upper)
                 data.ctrl[drive.id] = drive.clip(drive.ctrl_for(q))[0]
         mujoco.mj_forward(model, data)
+        self._derived_current = True
         self._model, self._data, self._description = model, data, description
         self._timestep_ns, self._ticks = timestep_ns, 0
         self._running.clear()
@@ -757,7 +762,6 @@ class MujocoRuntime:
         )
         guarded = sorted({c.component for c in confirmed if c.kind is CommandKind.JOINT_TRAJECTORY})
         scene = self._scene_channels(description)
-        self._scratch = mujoco.MjData(model)
         robot = tuple(b.name for b in channels if b.unavailable is None)
         privileged = sorted(
             {c.name for c in description.channels if c.privileged and c.name in robot}
@@ -1110,9 +1114,23 @@ class MujocoRuntime:
                 ),
             )
 
+    def _current(self) -> Any:
+        """The live data with its derived quantities (body, site, and camera poses,
+        sensors, and contacts) evaluated at the current state: the positions and velocities
+        after the last step, under the controls in effect over that step, as a real sensor
+        reads the motion those controls produced and not a command sent since. ``mj_step``
+        leaves them describing the state before its integration, so they are recomputed
+        with ``mj_forward`` once after each step, when first read. That writes nothing a
+        step reads, so it never changes the simulation."""
+        data = self._open_data()
+        if not self._derived_current:
+            mujoco.mj_forward(self._model, data)
+            self._derived_current = True
+        return data
+
     def _world(self, frame: str) -> tuple[Any, Any]:
-        """A frame's world position and orientation quaternion (wxyz)."""
-        return world_pose(self._open_data(), self._frames[frame])
+        """A frame's world position and orientation quaternion (wxyz), now."""
+        return world_pose(self._current(), self._frames[frame])
 
     def _scene_channels(self, description: RobotDescription) -> tuple[ChannelSpec, ...]:
         """Declare the scene's channels: each object's pose in the world, and each contact
@@ -1186,23 +1204,18 @@ class MujocoRuntime:
         return (*(float(v) for v in data.qpos[at : at + 3]), *(float(v) for v in quat))
 
     def _touching(self) -> dict[tuple[int, int], tuple[float, float]]:
-        """Every touching body pair now, with its summed normal force. Contacts are
-        evaluated at the current state on a private copy: after a step, MuJoCo's own
-        contacts are from before it, and evaluating the live data would change the next
-        step's solver warm start."""
-        model, scratch = self._model, self._scratch
-        mujoco.mj_copyData(scratch, model, self._open_data())
-        mujoco.mj_forward(model, scratch)
+        """Every touching body pair now, with its summed normal force."""
+        model, data = self._model, self._current()
         force = np.zeros(6)
         found: dict[tuple[int, int], tuple[float, float]] = {}
-        for i in range(scratch.ncon):
-            contact = scratch.contact[i]
+        for i in range(data.ncon):
+            contact = data.contact[i]
             if contact.exclude != 0:
                 continue
             first = int(model.geom_bodyid[contact.geom1])
             second = int(model.geom_bodyid[contact.geom2])
             key = (min(first, second), max(first, second))
-            mujoco.mj_contactForce(model, scratch, i, force)
+            mujoco.mj_contactForce(model, data, i, force)
             total = found.get(key, (1.0, 0.0))[1] + float(force[0])
             found[key] = (1.0, total)
         return found
@@ -1214,7 +1227,7 @@ class MujocoRuntime:
 
     def _held_pose(self, attachment: Attachment) -> Pose:
         """Where an attachment's object is now, in its end effector's frame."""
-        data = self._open_data()
+        data = self._current()
         body = self._objects[attachment.object]
         frame = self._described().end_effector(attachment.end_effector).frame
         position, quat = relative(data.xpos[body], data.xquat[body], *self._world(frame))
@@ -1227,7 +1240,7 @@ class MujocoRuntime:
         depth = spec.quantity is Quantity.DEPTH_IMAGE
         if depth:
             renderer.enable_depth_rendering()
-        renderer.update_scene(self._open_data(), camera=self._cameras[spec.name])
+        renderer.update_scene(self._current(), camera=self._cameras[spec.name])
         pixels = renderer.render()
         if depth:
             renderer.disable_depth_rendering()
@@ -1283,8 +1296,9 @@ class MujocoRuntime:
         )
 
     def _wrench(self, channel: str) -> tuple[float, ...]:
-        """A bound wrench channel's reading: force, then torque, in the sensor's site."""
-        data = self._open_data()
+        """A bound wrench channel's reading now: force, then torque, in the sensor's site,
+        evaluated at the current state and controls."""
+        data = self._current()
         force, torque = self._wrenches[channel]
         return tuple(float(v) for v in data.sensordata[force : force + 3]) + tuple(
             float(v) for v in data.sensordata[torque : torque + 3]
