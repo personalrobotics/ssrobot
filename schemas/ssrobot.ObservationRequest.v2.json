@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.ObservationRequest v1",
+  "title": "ssrobot.ObservationRequest v2",
   "$ref": "#/$defs/ObservationRequest",
   "$defs": {
     "ObservationRequest": {
@@ -11,7 +11,7 @@
           "const": "ssrobot.ObservationRequest"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "channels": {
           "type": "array",
@@ -19,6 +19,10 @@
             "type": "string"
           },
           "description": "Requested channel names."
+        },
+        "portable_only": {
+          "type": "boolean",
+          "description": "Refuse privileged channels: ask only for what a real robot supplies."
         }
       },
       "required": [

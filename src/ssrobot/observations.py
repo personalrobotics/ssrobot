@@ -24,6 +24,7 @@ class Quantity(enum.StrEnum):
     WRENCH = "wrench"
     RGB_IMAGE = "rgb_image"
     DEPTH_IMAGE = "depth_image"
+    CONTACT = "contact"
 
 
 VECTOR_QUANTITIES = frozenset(
@@ -34,6 +35,7 @@ VECTOR_QUANTITIES = frozenset(
         Quantity.GRIPPER_OPENING,
         Quantity.POSE,
         Quantity.WRENCH,
+        Quantity.CONTACT,
     }
 )
 """Quantities whose readings are tuples of float64; the rest are ``ArrayValue``."""
@@ -48,7 +50,8 @@ class ChannelSpec(Value):
     source: str = field(
         metadata=meta(
             "Observed entity: a joint group (joint quantities), a gripper (opening), "
-            "a frame (pose), a force-torque sensor (wrench), or a camera (images)."
+            "a frame (pose), a force-torque sensor (wrench), a camera (images), or, for a "
+            "runtime's scene channels, a scene object (pose) or one entity of a contact."
         )
     )
     frame: str | None = field(
@@ -56,11 +59,34 @@ class ChannelSpec(Value):
     )
     shape: tuple[int, ...] = field(metadata=meta("Reading shape.", unit="count"))
     dtype: DType = field(metadata=meta("Element type."))
+    privileged: bool = field(
+        default=False,
+        metadata=meta(
+            "Simulator truth a real robot could not supply, such as an object's true pose; "
+            "false for what a robot's own sensors provide."
+        ),
+    )
+    counterpart: str | None = field(
+        default=None,
+        metadata=meta("The second entity of a contact channel; contact only."),
+    )
 
     def _validate(self) -> None:
         check_name(self.name, path="name")
         check_name(self.source, path="source")
         q, shape = self.quantity, self.shape
+        if (q is Quantity.CONTACT) != (self.counterpart is not None):
+            raise ValidationError(
+                "counterpart_required",
+                "contact channels, and only contact channels, need a counterpart",
+                path="counterpart",
+            )
+        if self.counterpart is not None:
+            check_name(self.counterpart, path="counterpart")
+            if self.counterpart == self.source:
+                raise ValidationError(
+                    "invalid_argument", "a contact is between two entities", path="counterpart"
+                )
         if (q is Quantity.POSE) != (self.frame is not None):
             raise ValidationError(
                 "frame_required",
@@ -76,6 +102,7 @@ class ChannelSpec(Value):
             Quantity.GRIPPER_OPENING: shape == (1,),
             Quantity.POSE: shape == (7,),
             Quantity.WRENCH: shape == (6,),
+            Quantity.CONTACT: shape == (2,),
             Quantity.RGB_IMAGE: len(shape) == 3 and shape[2] == 3,
             Quantity.DEPTH_IMAGE: len(shape) == 2,
         }.get(q, len(shape) == 1)
@@ -90,9 +117,13 @@ class ObservationRequest(Record):
     """Channels a client wants in each observation."""
 
     SCHEMA = "ssrobot.ObservationRequest"
-    VERSION = 1
+    VERSION = 2
 
     channels: tuple[str, ...] = field(metadata=meta("Requested channel names."))
+    portable_only: bool = field(
+        default=False,
+        metadata=meta("Refuse privileged channels: ask only for what a real robot supplies."),
+    )
 
     def _validate(self) -> None:
         if not self.channels:

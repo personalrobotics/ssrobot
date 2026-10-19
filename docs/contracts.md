@@ -153,7 +153,8 @@ or task logic.
   mode, clock identity, the fingerprint of the description it bound, and the command
   capabilities and channels it confirms are available now. The context rejects a
   different fingerprint (`stale_description`) and any capability or channel the
-  description does not declare (`undeclared_capability`). In `RuntimeInfo` (version 3),
+  description does not declare (`undeclared_capability`), except the runtime's own scene
+  channels (see *Scene channels and privilege*). In `RuntimeInfo` (version 4),
   `trajectory` is the runtime's trajectory-execution contract, or None when it cannot
   declare one (see *Runtime commands*). `guards` lists, per component, a
   `GuardCapability`: the wrench channels it evaluates force-torque guards on, whether
@@ -802,14 +803,14 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`KinematicModel`](../schemas/ssrobot.KinematicModel.v1.json) | A robot's frames and joints, as a model loader produces them. |
 | [`ssrobot.package`](../schemas/ssrobot.package.v1.json) | A package manifest, `ssrobot.toml`. See [packages.md](packages.md). |
 | [`PackageReport`](../schemas/ssrobot.PackageReport.v1.json) | What loading a package resolved. |
-| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v3.json) | What an opened runtime binds and confirms. |
+| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v4.json) | What an opened runtime binds and confirms, including its scene channels and which channels are privileged. |
 | [`JointCommand`](../schemas/ssrobot.JointCommand.v1.json) | Instantaneous position, velocity, or effort targets for a group. |
 | [`GripperCommand`](../schemas/ssrobot.GripperCommand.v1.json) | Target opening. |
 | [`BaseTwistCommand`](../schemas/ssrobot.BaseTwistCommand.v1.json) | Planar base velocity. |
 | [`JointTrajectory`](../schemas/ssrobot.JointTrajectory.v1.json) | Timed waypoints from t = 0, strictly increasing. |
 | [`GuardedJointTrajectory`](../schemas/ssrobot.GuardedJointTrajectory.v1.json) | A joint trajectory and the force-torque guard that stops it. |
 | [`ActionChunk`](../schemas/ssrobot.ActionChunk.v1.json) | Fixed-period steps of instantaneous commands from a start time. Every step addresses the same components, joints, and modes. |
-| [`ObservationRequest`](../schemas/ssrobot.ObservationRequest.v1.json) | Channel names to observe. |
+| [`ObservationRequest`](../schemas/ssrobot.ObservationRequest.v2.json) | Channel names to observe, and whether only portable channels may be. |
 | [`Observation`](../schemas/ssrobot.Observation.v1.json) | Timestamped readings, one per requested channel. |
 | [`ExecutionStatus`](../schemas/ssrobot.ExecutionStatus.v2.json) | The state of a submitted command, and how a guarded trajectory ended. |
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
@@ -878,8 +879,38 @@ inspected before any runtime opens. The runtime confirms which are available in
 | `wrench` | `force_torque` sensor, in its frame | (6,) | float64 | N (force), then N·m (torque) |
 | `rgb_image` | `camera` sensor | (h, w, 3) | uint8 | — |
 | `depth_image` | `camera` sensor | (h, w) | float32 | m along optical z |
+| `contact` | two entities: `source` and `counterpart` | (2,) | float64 | touching (1 or 0), then summed normal force in N |
 
-Vector quantities are read as tuples of floats. Images are read as `ArrayValue`.
+Vector quantities are read as tuples of floats. Images are read as `ArrayValue`. A
+`contact` reading is 1 and the sum of the normal forces at every contact point joining
+the two entities, or 0 and 0 when none does; `RobotContext.observe` refuses any other
+`touching` and a negative force (`out_of_limits`). A contact is between two distinct
+entities (`invalid_argument` otherwise); in a description, both are frames.
+
+### Scene channels and privilege
+
+Privilege is a property of an observation at its source. Every `ChannelSpec` says
+whether it is `privileged`: simulator truth a real robot could not supply, such as an
+object's true pose, as opposed to what the robot's own sensors provide. A package may
+mark one of its own channels privileged. A learner adapter reads the marking; it never
+infers it.
+
+A runtime with a scene declares channels for it, since the robot description knows
+nothing of the scene. `RuntimeInfo.scene_channels` holds their `ChannelSpec`s, and their
+names are among `channels`; a client requests them by name like any other.
+`RuntimeInfo.privileged` names every confirmed channel, the robot's or the scene's, that
+is privileged, so the `opened` record of a trace carries the marking. A scene channel
+is only what the description cannot declare: a scene object's or fixture's `pose`, in a
+robot frame, or a `contact` between two distinct known entities (scene objects,
+fixtures, or robot frames). The context refuses any other scene channel, one that reuses
+a robot channel's name, and a `privileged` list that disagrees with the declarations
+(`undeclared_capability`), so a runtime cannot pass off an undeclared robot channel as a
+scene one. Every runtime reports the description's own privileged channels it confirms,
+`ReplayRuntime` included.
+
+An `ObservationRequest` (version 2) with `portable_only` refuses any privileged channel
+(`privileged_channel`) before the runtime is asked, so a policy can be checked against
+what hardware can supply.
 
 - **Wrench sign.** A `wrench` is the force, then the torque, that the sensor's parent
   side exerts on its child side, expressed in the sensor frame. A wrist sensor at rest

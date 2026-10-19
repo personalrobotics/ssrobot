@@ -158,6 +158,7 @@ class ReplayRuntime:
             description.channel(reading.channel)
         self._description = description
         offered = description.commands if self._offered is None else self._offered
+        channels = tuple(r.channel for r in self.script.ticks[0].readings)
         return RuntimeInfo(
             runtime="replay",
             runtime_version="1",
@@ -165,8 +166,11 @@ class ReplayRuntime:
             clock=self.script.clock,
             description=description.fingerprint(),
             commands=tuple(c for c in offered if c in description.commands),
-            channels=tuple(r.channel for r in self.script.ticks[0].readings),
+            channels=channels,
             trajectory=self._contract(),
+            privileged=tuple(
+                sorted(c.name for c in description.channels if c.privileged and c.name in channels)
+            ),
         )
 
     def _contract(self) -> TrajectoryContract | None:

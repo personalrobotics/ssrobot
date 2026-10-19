@@ -406,6 +406,7 @@ _SOURCE_FOR_QUANTITY: dict[Quantity, type[Value] | SensorKind | None] = {
     Quantity.JOINT_EFFORT: JointGroup,
     Quantity.GRIPPER_OPENING: Gripper,
     Quantity.POSE: None,  # a frame
+    Quantity.CONTACT: None,  # a frame, and a frame as the counterpart
     Quantity.WRENCH: SensorKind.FORCE_TORQUE,
     Quantity.RGB_IMAGE: SensorKind.CAMERA,
     Quantity.DEPTH_IMAGE: SensorKind.CAMERA,
@@ -770,6 +771,8 @@ class RobotDescription(Record):
             needed = _SOURCE_FOR_QUANTITY[ch.quantity]
             if needed is None:
                 self._require_frame(ch.source, f"{path}.source")
+                if ch.counterpart is not None:
+                    self._require_frame(ch.counterpart, f"{path}.counterpart")
             elif isinstance(needed, SensorKind):
                 sensor = sensors.get(ch.source)
                 if sensor is None or sensor.kind is not needed:
