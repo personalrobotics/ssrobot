@@ -65,7 +65,7 @@ duration_ns = 4_000_000_000
 [[robots]]
 name = "ada"
 repository = "personalrobotics/ada_assets"
-commit = "66b2d12ffb70fe217c64c45691166fc43d1b203b"
+commit = "b9880d45457dde90ae11f3704b6d8b1b6e99d00d"
 module = "ada_assets"
 package_root = "src/ada_assets"
 # No keyframe: the package's MuJoCo profile starts it at "resting" (#95,
