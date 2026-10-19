@@ -60,9 +60,10 @@ from tests.test_mujoco_scene import ABOVE, ARM, OPTIONS, PACKAGE, SCENE, _arm, _
 CHANNEL = "wrist_wrench"
 GUARD = WrenchGuard(channel=CHANNEL, part=WrenchPart.FORCE, threshold=5.0, tare=True)
 """Tared force magnitude. Starting the descent moves the servo setpoints onto the sagging
-arm, a transient of about 2.2 N at the wrist; contact with the box on the pedestal
-exceeds 100 N."""
-TRANSIENT = 2.0
+arm, a transient at the wrist of 1.71 N on the first tick, read at the state that tick
+reached, decaying to 1.30 N on the second; contact with the box on the pedestal reads
+about 11 N on its first tick and rises past 100 N."""
+TRANSIENT = 1.5
 """Below the start transient's first reading and above its second: a single tick over."""
 TORQUE_THRESHOLD = 0.5
 SETTLE_TICKS = 500
