@@ -1,18 +1,29 @@
 <!-- The two-robot planning proof's scene for ada (#24): a cylinder 4 cm across and
      12 cm tall, standing on the hospital over-bed table from the ADA feeding studies,
-     on a floor. Where on the table is a sample of its stable-placement TSR
-     ([robots.scenario.placement] in robots.toml, written by
+     on a floor, with a seated user. Where on the table is a sample of its
+     stable-placement TSR ([robots.scenario.placement] in robots.toml, written by
      scripts/place_reference_object.py). MujocoRuntime(package, scene=...) composes it
-     with the robot: "cylinder" has a free joint, so it is an object; "ada_table" has
-     none, so it is a fixture.
+     with the robot: "cylinder" has a free joint, so it is an object; "ada_table",
+     "user_body", and "head" have none, so they are fixtures.
 
      The table is prl_assets' ada_table (personalrobotics/prl_assets@59b6bcf,
      objects/ada_table), placed as ada_mj's table scene places it, at (0.06, -0.48, 0).
-     Its mesh is visual only; five primitives are its collision shape. Top at z = 0.735. -->
+     Its mesh is visual only; five primitives are its collision shape. Top at z = 0.735.
+
+     The seated user is ada_assets' seated_user_fixtures.xml
+     (personalrobotics/ada_assets@b9880d4, src/ada_assets/models/seated_user_fixtures.xml,
+     MIT), copied as it is, with its meshes tom.stl and body_collision_in_wheelchair.stl.
+     head_collision collides; the mouth site lies 3 mm in front of it. face_wall_geom and
+     body_safety_envelope do not collide, as in the fixture: colliding, the wall would block
+     every feeding approach and the envelope would touch the arm's mount. -->
 <mujoco model="ada-cylinder">
   <asset>
     <mesh name="ada_table_visual" file="assets/ada_table.stl"/>
     <material name="ada_table_surface" rgba="0.85 0.82 0.78 1"/>
+    <material name="skin" specular="0.2" shininess="0.1" rgba="0.72 0.58 0.47 0.8"/>
+    <material name="body_safety" specular="0.1" shininess="0.05" rgba="0.72 0.58 0.47 0.15"/>
+    <mesh name="tom" file="assets/tom.stl"/>
+    <mesh name="body_collision" file="assets/body_collision_in_wheelchair.stl"/>
   </asset>
   <worldbody>
     <geom name="floor" type="plane" size="3 3 0.05" rgba="0.9 0.9 0.9 1"/>
@@ -28,6 +39,15 @@
     <body name="cylinder" pos="0.3082 -0.6416 0.7950" quat="0.270668 0.000000 0.000000 0.962673">
       <freejoint/>
       <geom type="cylinder" size="0.02 0.06" mass="0.1" rgba="0.2 0.4 0.8 1"/>
+    </body>
+    <body name="user_body" pos="0 0 0.4612">
+      <geom name="body_safety_envelope" type="mesh" contype="0" conaffinity="0" group="3" material="body_safety" mesh="body_collision"/>
+    </body>
+    <body name="head" pos="0.269 0.34 1.3112" quat="0.716409 -0.0626772 -0.0626772 -0.692027">
+      <geom name="head_visual" type="mesh" contype="0" conaffinity="0" group="2" material="skin" mesh="tom"/>
+      <geom name="head_collision" size="0.137 0.133 0.207" pos="-0.12 0 0.014" type="box" group="3" rgba="0.7 0.5 0.4 0.15"/>
+      <geom name="face_wall_geom" size="0.005 0.225 0.2" pos="0.15 0 0" type="box" contype="0" conaffinity="0" group="3" rgba="1 0.3 0.3 0.1"/>
+      <site name="mouth" size="0.001" pos="0.02 0 0"/>
     </body>
   </worldbody>
 </mujoco>
