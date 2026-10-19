@@ -1,8 +1,90 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.RuntimeInfo v3",
+  "title": "ssrobot.RuntimeInfo v4",
   "$ref": "#/$defs/RuntimeInfo",
   "$defs": {
+    "ChannelSpec": {
+      "type": "object",
+      "description": "A declared observation channel.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Channel name, unique within the robot."
+        },
+        "quantity": {
+          "type": "string",
+          "enum": [
+            "joint_position",
+            "joint_velocity",
+            "joint_effort",
+            "gripper_opening",
+            "pose",
+            "wrench",
+            "rgb_image",
+            "depth_image",
+            "contact"
+          ],
+          "description": "What the channel measures."
+        },
+        "source": {
+          "type": "string",
+          "description": "Observed entity: a joint group (joint quantities), a gripper (opening), a frame (pose), a force-torque sensor (wrench), a camera (images), or, for a runtime's scene channels, a scene object (pose) or one entity of a contact."
+        },
+        "frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reference frame a pose is expressed in; pose only."
+        },
+        "shape": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Reading shape.",
+          "x-unit": "count"
+        },
+        "dtype": {
+          "type": "string",
+          "enum": [
+            "uint8",
+            "uint16",
+            "int32",
+            "float32",
+            "float64"
+          ],
+          "description": "Element type."
+        },
+        "privileged": {
+          "type": "boolean",
+          "description": "Simulator truth a real robot could not supply, such as an object's true pose; false for what a robot's own sensors provide."
+        },
+        "counterpart": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The second entity of a contact channel; contact only."
+        }
+      },
+      "required": [
+        "name",
+        "quantity",
+        "source",
+        "shape",
+        "dtype"
+      ],
+      "additionalProperties": false
+    },
     "CommandCapability": {
       "type": "object",
       "description": "A command a component accepts.",
@@ -91,7 +173,7 @@
           "const": "ssrobot.RuntimeInfo"
         },
         "version": {
-          "const": 3
+          "const": 4
         },
         "runtime": {
           "type": "string",
@@ -162,6 +244,20 @@
             "$ref": "#/$defs/GuardCapability"
           },
           "description": "Per component, which force-torque guards it evaluates and how fast it stops, sorted by component; empty if it cannot execute a GuardedJointTrajectory."
+        },
+        "scene_channels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChannelSpec"
+          },
+          "description": "Channels the runtime declares for its scene, such as each object's pose and each contact pair asked for; their names are also in channels."
+        },
+        "privileged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every confirmed channel, the robot's or the scene's, that is privileged simulator truth, sorted."
         }
       },
       "required": [

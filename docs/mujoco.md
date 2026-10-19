@@ -47,7 +47,6 @@ Still to come:
 | Issue | Adds |
 | --- | --- |
 | #85 | Base twist commands, for Opendubs |
-| follow-up to #16 | Object state channels, contacts, and marking privileged simulator state |
 | #108 | A kinematic (no-dynamics) mode, where an attached object is carried by copying its pose |
 | #109 | Grasp and release helpers that decide when to attach, above the core |
 
@@ -205,6 +204,23 @@ changing any file changes it. It also records the objects and fixtures.
 A friction grasp in MuJoCo creeps under soft contacts. The example arm therefore uses
 elliptic friction cones with `impratio="10"`, as MuJoCo recommends for grasping. That
 keeps the carried box within about 3 mm of its grasp over the whole evidence scenario.
+
+## Scene channels
+
+With a scene, the runtime declares a privileged channel per object, `<object>.pose`:
+its world pose, from its free joint, at the same instant as the joints, as a snapshot
+reads it. `contacts=[(first, second), ...]` asks for a privileged contact channel per
+pair, `contact.<first>.<second>`. Each name is a scene object, a fixture, or a robot
+frame, and stands for exactly that one MuJoCo body, not the bodies below it, so naming
+the robot's base does not mean its whole arm. An unknown name fails at open with
+`unknown_reference`, a pair of one body with itself with `invalid_argument`, and a
+scene channel named like a description channel with `duplicate_name`. A contact
+channel the description declares between two frames is bound the same way.
+
+Contacts are evaluated at the current state on a private copy of the simulation: after
+a step, MuJoCo's own contact list is from before it, and evaluating the live state would
+change the solver's warm start for the next step. Observing therefore never changes
+the simulation.
 
 ## Planning scenes
 
@@ -491,6 +507,7 @@ the returned model or data reaches no other materialization and no runtime.
 | `artifacts/test_an_allowed_static_robot_frame_is_honoured/static_frame_allowance.json` | A puck resting on the example arm's fixed `base`, declared held by the hand. With only the hand's frames allowed, the planning scene refuses the state and names the `base`/`puck` contact; with `base` allowed too, the state is valid with no contact. |
 | `artifacts/test_a_profiled_joint_measures_the_opening/gripper_opening.json` | The example package with `opening` declared on `left_finger_joint` (closed 0, open 0.04). Closed on the box, open, and closed on nothing, the reported opening equals the calibrated map of the joint's position, read independently from a snapshot: 0.366, 0.999, and 0. A measuring joint of another component, and equal closed and open values, fail with `invalid_profile` at open. |
 | `artifacts/test_a_viewer_reads_runtime_state_and_cannot_change_it/render_state.json`, `{clean,vandalized}.trace.jsonl` | The example arm in `pedestal.xml` runs one script twice: capture, move above the box, declare the grasp, capture. In one run a viewer vandalizes its handle after each capture, scrambling positions, doubling every geom, and running its own physics. Both runs give byte-identical traces and the same observation. A second viewer's handle, made after the vandalism, holds the compiled model, compared by its geometry and mass contents. The vandal's handle keeps its own doubled model, though each capture restores the runtime's positions. Each capture names the context's time and revision (0, then 1 after the grasp) and the snapshot's world. A handle draws offscreen, refuses to capture after its runtime reopens (`stale_render`), and a context over `ReplayRuntime` fails with `render_unavailable`. A second run is byte-identical. |
+| `artifacts/test_scene_objects_and_contacts_are_observed_and_marked/scene_observations.json` | A 100 g ball dropped onto a fixed table beside the example arm, observed every tick. Its pose channel follows free fall: the integrator's own update to 1.7e-16 m, and the continuous fall within one step's discrepancy. It equals the snapshot's pose. The ball-table contact turns on at the predicted tick (119), and at rest pushes with its weight, 0.981 N. The ball never touches the tool frame. Scene channels are privileged in `RuntimeInfo` and the trace's `opened` record, a package marks one of its own channels privileged, and a portable-only request refuses privileged channels. An unknown or self contact pair, and a scene channel named like a robot channel, fail at open. A second run is byte-identical. |
 | `artifacts/test_a_recorded_world_materializes_without_a_runtime/materialized.json` | The example arm in the #111 scene tree, its cylinder dropped 5 cm so it moves, snapshotted every 10 ticks (52 snapshots, 5 mid-fall) with the runtime's own body poses from a render handle. The run is bundled and reopened; each snapshot record is applied to `materialize_world(bundle)` and followed by `mj_kinematics`, and every body's pose matches the runtime's (largest difference 0.0). The world equals the runtime's. A bundled scene edited after verification and a package of another world are refused with `world_mismatch`, and a snapshot of another world with `incompatible_snapshot`. Changing one materialization's model and data leaves another's poses unchanged, and materializing and applying never step or forward physics. A second run is byte-identical. The reference-robot check does the same for Geodude and ADA in their reference scenes. |
 | `artifacts/test_planning_refuses_what_does_not_apply/refusals.json`, `trace.jsonl` | Each refusal with its code: a snapshot of the same robot without the scene, materialized or submitted (`incompatible_snapshot`); decoded snapshots with a renamed joint, a missing object, or an unknown allow name (`incompatible_snapshot`); an unknown group or frame; a zero edge resolution; and short, non-finite, string, or boolean configurations. A snapshot with altered attachments at the current revision is `stale_snapshot` at submit. A configuration outside limits is invalid. A plan submitted with its snapshot runs and is linked to it in the trace. After a detach, the same snapshot is `stale_snapshot`. |
 | `installed-conformance` (CI) | The `[mujoco]` wheel, in a clean environment, builds a planning scene on sscbirrt's native checker. |

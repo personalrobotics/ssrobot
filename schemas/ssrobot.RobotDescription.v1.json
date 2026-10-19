@@ -21,13 +21,14 @@
             "pose",
             "wrench",
             "rgb_image",
-            "depth_image"
+            "depth_image",
+            "contact"
           ],
           "description": "What the channel measures."
         },
         "source": {
           "type": "string",
-          "description": "Observed entity: a joint group (joint quantities), a gripper (opening), a frame (pose), a force-torque sensor (wrench), or a camera (images)."
+          "description": "Observed entity: a joint group (joint quantities), a gripper (opening), a frame (pose), a force-torque sensor (wrench), a camera (images), or, for a runtime's scene channels, a scene object (pose) or one entity of a contact."
         },
         "frame": {
           "anyOf": [
@@ -58,6 +59,21 @@
             "float64"
           ],
           "description": "Element type."
+        },
+        "privileged": {
+          "type": "boolean",
+          "description": "Simulator truth a real robot could not supply, such as an object's true pose; false for what a robot's own sensors provide."
+        },
+        "counterpart": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The second entity of a contact channel; contact only."
         }
       },
       "required": [

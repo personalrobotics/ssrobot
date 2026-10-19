@@ -7,6 +7,7 @@ import itertools
 import math
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -233,6 +234,7 @@ class MujocoRuntime:
         scene_root: str | os.PathLike[str] | None = None,
         attach_tolerance_m: float = 0.01,
         attach_tolerance_rad: float = 0.1,
+        contacts: Sequence[tuple[str, str]] = (),
     ) -> None:
         if not _is_int(substeps) or substeps < 1:
             raise ValidationError(
@@ -277,6 +279,21 @@ class MujocoRuntime:
         self._sources: tuple[Path, SceneSource | None] | None = None  # model file, scene
         self._identity = ""  # the simulated world, for snapshot compatibility
         self._attached: dict[str, _Tracked] = {}
+        pairs = []
+        for i, pair in enumerate(contacts):
+            if (
+                not isinstance(pair, tuple)
+                or len(pair) != 2
+                or not all(isinstance(n, str) and n for n in pair)
+            ):
+                raise ValidationError(
+                    "invalid_argument", "a contact pair is two names", path=f"contacts[{i}]"
+                )
+            pairs.append(pair)
+        self._contact_pairs: tuple[tuple[str, str], ...] = tuple(pairs)
+        self._scene_specs: dict[str, ChannelSpec] = {}  # scene channel: its declaration
+        self._contacts: dict[str, tuple[int, int]] = {}  # contact channel: its two bodies
+        self._scratch: Any = None  # an MjData evaluated at the current state, for contacts
 
     @property
     def mapping(self) -> MujocoMapping:
@@ -304,15 +321,24 @@ class MujocoRuntime:
         self._running.clear()
         self._events.clear()
         self._attached.clear()
+        self._scene_specs, self._contacts, self._scratch = {}, {}, None
 
     def observe(self, request: ObservationRequest) -> Observation:
         data, d = self._open_data(), self._described()
         now = self._now()
         readings = []
+        contacts: dict[tuple[int, int], tuple[float, float]] | None = None
         for channel in request.channels:
-            spec = d.channel(channel)
+            spec = self._scene_specs.get(channel) or d.channel(channel)
             value: tuple[float, ...]
-            if spec.quantity is Quantity.JOINT_POSITION:
+            if channel in self._contacts:
+                if contacts is None:
+                    contacts = self._touching()
+                first, second = self._contacts[channel]
+                value = contacts.get((min(first, second), max(first, second)), (0.0, 0.0))
+            elif channel in self._scene_specs:  # an object's pose, from its free joint
+                value = self._object_pose(self._objects[spec.source])
+            elif spec.quantity is Quantity.JOINT_POSITION:
                 joints = d.group(spec.source).joints
                 value = tuple(float(data.qpos[self._joints[j].qpos_address]) for j in joints)
             elif spec.quantity is Quantity.JOINT_VELOCITY:
@@ -570,7 +596,7 @@ class MujocoRuntime:
         commands = tuple(self._bind_command(c, by_joint, actuators) for c in description.commands)
         _check_aliases(description, commands)
         self._frames = {f.name: f for f in frames}
-        self._wrenches, self._cameras = {}, {}
+        self._wrenches, self._cameras, self._contacts = {}, {}, {}
         channels = tuple(self._bind_channel(model, description, c) for c in description.channels)
 
         data = mujoco.MjData(model)
@@ -674,6 +700,13 @@ class MujocoRuntime:
             c for c, b in zip(description.commands, commands, strict=True) if b.unavailable is None
         )
         guarded = sorted({c.component for c in confirmed if c.kind is CommandKind.JOINT_TRAJECTORY})
+        scene = self._scene_channels(description)
+        self._scratch = mujoco.MjData(model)
+        robot = tuple(b.name for b in channels if b.unavailable is None)
+        privileged = sorted(
+            {c.name for c in description.channels if c.privileged and c.name in robot}
+            | {c.name for c in scene}
+        )
         return RuntimeInfo(
             runtime="mujoco",
             runtime_version=f"ssrobot {ssrobot_version()}; mujoco {MUJOCO_VERSION}",
@@ -681,7 +714,9 @@ class MujocoRuntime:
             clock=self._clock,
             description=fingerprint,
             commands=confirmed,
-            channels=tuple(b.name for b in channels if b.unavailable is None),
+            channels=(*robot, *(c.name for c in scene)),
+            scene_channels=scene,
+            privileged=tuple(privileged),
             objects=tuple(sorted(self._objects)),
             fixtures=fixtures,
             # One waypoint per control tick, interpolated linearly (see _interpolate).
@@ -883,12 +918,22 @@ class MujocoRuntime:
                 self._wrenches[spec.name] = found
         elif quantity in (Quantity.RGB_IMAGE, Quantity.DEPTH_IMAGE):
             unavailable = self._bind_camera(model, description, spec)
+        elif quantity is Quantity.CONTACT:
+            assert spec.counterpart is not None
+            first, second = self._frames[source].body, self._frames[spec.counterpart].body
+            if first == second:
+                unavailable = _unavailable(
+                    "same_body", "both frames are on one MuJoCo body", source
+                )
+            else:
+                self._contacts[spec.name] = (first, second)
         elif quantity not in (
             Quantity.JOINT_POSITION,
             Quantity.JOINT_VELOCITY,
             Quantity.JOINT_EFFORT,
             Quantity.GRIPPER_OPENING,
             Quantity.POSE,
+            Quantity.CONTACT,
         ):
             unavailable = _unavailable(  # pragma: no cover - every quantity is handled
                 "unsupported_quantity", f"{quantity.value} is not supported in MuJoCo", source
@@ -1012,6 +1057,99 @@ class MujocoRuntime:
     def _world(self, frame: str) -> tuple[Any, Any]:
         """A frame's world position and orientation quaternion (wxyz)."""
         return world_pose(self._open_data(), self._frames[frame])
+
+    def _scene_channels(self, description: RobotDescription) -> tuple[ChannelSpec, ...]:
+        """Declare the scene's channels: each object's pose in the world, and each contact
+        pair asked for. All are privileged: simulator truth, not a robot's own sensing."""
+        root = next(f.name for f in description.frames if f.parent is None)
+        specs = [
+            ChannelSpec(
+                name=f"{name}.pose",
+                quantity=Quantity.POSE,
+                source=name,
+                frame=root,
+                shape=(7,),
+                dtype=DType.FLOAT64,
+                privileged=True,
+            )
+            for name in sorted(self._objects)
+        ]
+
+        def body(name: str, path: str) -> int:
+            if name in self._objects:
+                return self._objects[name]
+            if name in self._fixtures:
+                return self._fixtures[name]
+            if name in self._frames:
+                return self._frames[name].body
+            raise ValidationError(
+                "unknown_reference",
+                f"{name!r} is neither a scene object, a fixture, nor a robot frame",
+                path=path,
+            )
+
+        for i, (first, second) in enumerate(self._contact_pairs):
+            bodies = (body(first, f"contacts[{i}][0]"), body(second, f"contacts[{i}][1]"))
+            if bodies[0] == bodies[1]:
+                raise ValidationError(
+                    "invalid_argument",
+                    f"{first!r} and {second!r} are one MuJoCo body",
+                    path=f"contacts[{i}]",
+                )
+            name = f"contact.{first}.{second}"
+            self._contacts[name] = bodies
+            specs.append(
+                ChannelSpec(
+                    name=name,
+                    quantity=Quantity.CONTACT,
+                    source=first,
+                    counterpart=second,
+                    shape=(2,),
+                    dtype=DType.FLOAT64,
+                    privileged=True,
+                )
+            )
+        names = [c.name for c in specs]
+        clash = sorted(set(names) & {c.name for c in description.channels})
+        if clash or len(set(names)) != len(names):
+            raise ValidationError(
+                "duplicate_name",
+                f"scene channels repeat, or reuse a description channel: {clash or names}",
+                path="contacts",
+            )
+        self._scene_specs = {c.name: c for c in specs}
+        return tuple(specs)
+
+    def _object_pose(self, body: int) -> tuple[float, ...]:
+        """An object's world pose now: its free joint's position and unit wxyz, the state
+        after the last step, as a snapshot reads it."""
+        model, data = self._model, self._open_data()
+        at = int(model.jnt_qposadr[int(model.body_jntadr[body])])
+        quat = np.array(data.qpos[at + 3 : at + 7], dtype=float)
+        mujoco.mju_normalize4(quat)
+        return (*(float(v) for v in data.qpos[at : at + 3]), *(float(v) for v in quat))
+
+    def _touching(self) -> dict[tuple[int, int], tuple[float, float]]:
+        """Every touching body pair now, with its summed normal force. Contacts are
+        evaluated at the current state on a private copy: after a step, MuJoCo's own
+        contacts are from before it, and evaluating the live data would change the next
+        step's solver warm start."""
+        model, scratch = self._model, self._scratch
+        mujoco.mj_copyData(scratch, model, self._open_data())
+        mujoco.mj_forward(model, scratch)
+        force = np.zeros(6)
+        found: dict[tuple[int, int], tuple[float, float]] = {}
+        for i in range(scratch.ncon):
+            contact = scratch.contact[i]
+            if contact.exclude != 0:
+                continue
+            first = int(model.geom_bodyid[contact.geom1])
+            second = int(model.geom_bodyid[contact.geom2])
+            key = (min(first, second), max(first, second))
+            mujoco.mj_contactForce(model, scratch, i, force)
+            total = found.get(key, (1.0, 0.0))[1] + float(force[0])
+            found[key] = (1.0, total)
+        return found
 
     def _pose(self, source: str, frame: str) -> tuple[float, ...]:
         """``source``'s pose expressed in ``frame``: position, then unit quaternion wxyz."""

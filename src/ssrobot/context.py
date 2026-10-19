@@ -944,12 +944,30 @@ class RobotContext:
                     "undeclared_capability",
                     f"runtime offers undeclared {cap.kind} on {cap.component!r}",
                 )
-        declared = {c.name for c in self._description.channels}
+        robot = {c.name: c for c in self._description.channels}
+        scene = {c.name: c for c in info.scene_channels}
+        entities = (
+            set(info.objects) | set(info.fixtures) | {f.name for f in self._description.frames}
+        )
+        for name, spec in scene.items():
+            references = (spec.source, spec.counterpart, spec.frame)
+            if name in robot or not all(r is None or r in entities for r in references):
+                raise CapabilityError(
+                    "undeclared_capability",
+                    f"scene channel {name!r} reuses a robot channel or names an unknown entity",
+                )
         for name in info.channels:
-            if name not in declared:
+            if name not in robot and name not in scene:
                 raise CapabilityError(
                     "undeclared_capability", f"runtime offers undeclared channel {name!r}"
                 )
+        marked = {n for n in info.channels if (robot.get(n) or scene[n]).privileged}
+        if set(info.privileged) != marked:
+            raise CapabilityError(
+                "undeclared_capability",
+                f"runtime marks {sorted(info.privileged)} privileged; the declarations mark "
+                f"{sorted(marked)}",
+            )
         wrenches = {c.name for c in self._description.channels if c.quantity is Quantity.WRENCH}
         trajectories = {
             c.component for c in info.commands if c.kind is CommandKind.JOINT_TRAJECTORY

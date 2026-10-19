@@ -17,7 +17,7 @@ from ssrobot.conventions import ClockMode, Timestamp, check_name
 from ssrobot.description import CommandCapability, RobotDescription
 from ssrobot.errors import ValidationError
 from ssrobot.execution import AppliedCommand, ExecutionStatus, RuntimeHealth
-from ssrobot.observations import Observation, ObservationRequest
+from ssrobot.observations import ChannelSpec, Observation, ObservationRequest
 from ssrobot.scene import (
     Attachment,
     AttachmentViolation,
@@ -35,7 +35,7 @@ class RuntimeInfo(Record):
     """What an opened runtime reports about itself."""
 
     SCHEMA = "ssrobot.RuntimeInfo"
-    VERSION = 3
+    VERSION = 4
 
     runtime: str = field(metadata=meta("Runtime implementation name."))
     runtime_version: str = field(metadata=meta("Runtime implementation and backend versions."))
@@ -68,6 +68,20 @@ class RuntimeInfo(Record):
             "sorted by component; empty if it cannot execute a GuardedJointTrajectory."
         ),
     )
+    scene_channels: tuple[ChannelSpec, ...] = field(
+        default=(),
+        metadata=meta(
+            "Channels the runtime declares for its scene, such as each object's pose and "
+            "each contact pair asked for; their names are also in channels."
+        ),
+    )
+    privileged: tuple[str, ...] = field(
+        default=(),
+        metadata=meta(
+            "Every confirmed channel, the robot's or the scene's, that is privileged "
+            "simulator truth, sorted."
+        ),
+    )
 
     def _validate(self) -> None:
         check_name(self.runtime, path="runtime")
@@ -87,6 +101,21 @@ class RuntimeInfo(Record):
         if components != sorted(set(components)):
             raise ValidationError(
                 "noncanonical_order", "guards must be sorted by unique component", path="guards"
+            )
+        scene = [c.name for c in self.scene_channels]
+        if len(set(scene)) != len(scene) or not set(scene) <= set(self.channels):
+            raise ValidationError(
+                "unknown_reference",
+                "scene channels must be unique and confirmed in channels",
+                path="scene_channels",
+            )
+        if list(self.privileged) != sorted(set(self.privileged)) or not set(self.privileged) <= set(
+            self.channels
+        ):
+            raise ValidationError(
+                "noncanonical_order",
+                "privileged must be sorted, unique, and confirmed in channels",
+                path="privileged",
             )
         if not _FINGERPRINT.fullmatch(self.description):
             raise ValidationError(

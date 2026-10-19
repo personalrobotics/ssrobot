@@ -31,7 +31,13 @@ from ssrobot.conventions import Pose
 from ssrobot.description import CommandCapability, JointGroup, RobotDescription
 from ssrobot.errors import CapabilityError, ValidationError
 from ssrobot.execution import GuardCause, GuardOutcome, Modification, ModificationKind
-from ssrobot.observations import VECTOR_QUANTITIES, Observation, ObservationRequest, Quantity
+from ssrobot.observations import (
+    VECTOR_QUANTITIES,
+    ChannelSpec,
+    Observation,
+    ObservationRequest,
+    Quantity,
+)
 from ssrobot.runtime import RuntimeInfo
 
 START_TOLERANCE = 1e-3
@@ -380,16 +386,35 @@ def check_applied(description: RobotDescription, command: Command, applied: Inst
         _check_limits(description, group, applied.mode, applied.values, "applied.values")
 
 
+def channel_spec(
+    description: RobotDescription, name: str, info: RuntimeInfo | None = None
+) -> ChannelSpec:
+    """A channel's declaration: the robot description's, or, given ``info``, one of the
+    runtime's scene channels."""
+    if info is not None:
+        for spec in info.scene_channels:
+            if spec.name == name:
+                return spec
+    return description.channel(name)
+
+
 def check_request(
     description: RobotDescription, request: ObservationRequest, info: RuntimeInfo | None = None
 ) -> None:
-    """Raise unless every requested channel is declared and, given ``info``, available."""
+    """Raise unless every requested channel is declared and, given ``info``, available,
+    and, for a portable-only request, none is privileged."""
     for name in request.channels:
-        description.channel(name)
+        spec = channel_spec(description, name, info)
         if info is not None and name not in info.channels:
             raise CapabilityError(
                 "unavailable_channel",
                 f"runtime does not provide channel {name!r}",
+                path="channels",
+            )
+        if request.portable_only and spec.privileged:
+            raise CapabilityError(
+                "privileged_channel",
+                f"{name!r} is privileged simulator state; the request asks for portable only",
                 path="channels",
             )
 
@@ -411,7 +436,7 @@ def check_observation(
             "observation_mismatch", f"expected channels {sorted(request.channels)}, got {got}"
         )
     for r in observation.readings:
-        spec = description.channel(r.channel)
+        spec = channel_spec(description, r.channel, info)
         path = f"readings.{r.channel}"
         if spec.quantity in VECTOR_QUANTITIES:
             if not isinstance(r.value, tuple) or len(r.value) != math.prod(spec.shape):
@@ -419,6 +444,14 @@ def check_observation(
             if spec.quantity is Quantity.GRIPPER_OPENING and not 0.0 <= r.value[0] <= 1.0:
                 raise ValidationError(
                     "out_of_limits", f"opening {r.value[0]} is outside [0, 1]", path=path
+                )
+            if spec.quantity is Quantity.CONTACT and (
+                r.value[0] not in (0.0, 1.0) or not r.value[1] >= 0.0
+            ):
+                raise ValidationError(
+                    "out_of_limits",
+                    f"contact {r.value} needs touching 0 or 1 and a non-negative force",
+                    path=path,
                 )
             if spec.quantity is Quantity.POSE:
                 try:
