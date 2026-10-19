@@ -137,12 +137,21 @@ class ReplayRuntime:
 
     Its trajectory contract is one waypoint per tick, interpolated linearly, when the
     recording's ticks are evenly spaced; with uneven ticks it declares none.
+
+    With ``clock_mode=ClockMode.EXTERNAL`` it stands in for hardware: time is not the
+    client's to advance, and each ``poll()`` finds the next recorded tick, with whatever
+    status updates it brings.
     """
 
     def __init__(
-        self, script: ReplayScript, *, commands: tuple[CommandCapability, ...] | None = None
+        self,
+        script: ReplayScript,
+        *,
+        commands: tuple[CommandCapability, ...] | None = None,
+        clock_mode: ClockMode = ClockMode.MANUAL,
     ) -> None:
         self.script = script
+        self._clock_mode = clock_mode
         self._offered = commands
         self._description: RobotDescription | None = None
         self._tick = 0
@@ -162,7 +171,7 @@ class ReplayRuntime:
         return RuntimeInfo(
             runtime="replay",
             runtime_version="1",
-            clock_mode=ClockMode.MANUAL,
+            clock_mode=self._clock_mode,
             clock=self.script.clock,
             description=description.fingerprint(),
             commands=tuple(c for c in offered if c in description.commands),
@@ -259,6 +268,9 @@ class ReplayRuntime:
             )
 
     def poll(self) -> RuntimeUpdate:
+        if self._clock_mode is ClockMode.EXTERNAL:
+            # Time moves on its own, as on hardware: each poll finds one more recorded tick.
+            self.step()
         events, self._events = tuple(self._events), []
         return RuntimeUpdate(stamp=self._now(), events=events)
 

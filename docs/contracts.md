@@ -820,7 +820,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`PortfolioReport`](../schemas/ssrobot.PortfolioReport.v1.json) | Every attempt of a planner portfolio and which was selected. See planning.md. |
-| [`ConformanceReport`](../schemas/ssrobot.ConformanceReport.v1.json) | The result of a conformance run. |
+| [`ConformanceReport`](../schemas/ssrobot.ConformanceReport.v2.json) | The result of a conformance run, with the runtime, description, and clock it ran on. |
 | [`SceneState`](../schemas/ssrobot.SceneState.v1.json) | A context's scene: its objects and fixtures, what it holds, and its revision. |
 | [`AttachmentViolation`](../schemas/ssrobot.AttachmentViolation.v1.json) | A runtime's report that an attached object left its declared transform. |
 | [`SceneSnapshot`](../schemas/ssrobot.SceneSnapshot.v1.json) | An immutable copy of everything a geometric query reads, from which planning scenes are built. |
@@ -1088,12 +1088,18 @@ reference implementation of the runtime contract.
   runtime faults with `replay_divergence`. Stepping past the last tick faults with
   `replay_exhausted`, which cannot be recovered. `inject_fault(code, message,
   components)` faults it on demand.
+- **External clock.** `ReplayRuntime(script, clock_mode=ClockMode.EXTERNAL)` stands in
+  for hardware: time is not the client's to advance, and each `poll()` finds the next
+  recorded tick, with whatever status updates it brings.
 
 `ssrobot.conformance.run_conformance(description, make_runtime, sinks=...)` runs one
-scenario through the public API. It is reusable for any runtime that offers a manual
-clock and two joint groups with position and trajectory commands and joint-position
-channels. It produces a `ConformanceReport` (`ssrobot.ConformanceReport`) with checks
-in this order:
+scenario through the public API, on any runtime. Each check runs where the runtime
+offers what it needs, and is otherwise `not_applicable` with the reason: most need a
+manual clock and two joint groups with position and trajectory commands and
+joint-position channels. Before each of those, the scenario observes where the arms
+are, and each trajectory starts from where its arm is when it is built, so a runtime
+with dynamics, whose arms move and settle, runs the same checks as a replay. The scenario
+produces a `ConformanceReport` (`ssrobot.ConformanceReport`) with checks in this order:
 
 - `open`
 - `trajectory_contract`: three steps each advance time by exactly the declared period.
@@ -1107,14 +1113,48 @@ in this order:
 - `timeout`
 - `runtime_rejection`
 - `stale_command`
-- `fault`
+- `fault`, `composite_fault`: need the `inject_fault` hook.
+- `privileged_marking`: every privileged channel is refused to a portable-only request,
+  and a portable one is not.
+- `scene_observation`: every scene channel reads, privileged, and each object's pose
+  equals the snapshot's. Needs scene channels.
+- `snapshot_and_attachment`: attaching raises the scene's revision, and the next
+  snapshot carries that revision and the attachment, so a command submitted with the
+  earlier snapshot is `stale_snapshot`; detaching restores it, and the next snapshot is
+  clear. Needs a scene object and an end effector.
+- `external_clock`: a command succeeds through `update()` alone, and stepping is
+  `manual_clock_required`. Needs an external clock.
+- a backend's own checks, if its integration passes them as `extra_checks`: each gets
+  the open context and the runtime. MuJoCo's is `backend_versions`: MuJoCo is exactly the
+  version required, installed, loaded, and compiled alike, and sscbirrt's native MuJoCo
+  adapter, which the `mujoco` extra installs, is usable.
 - `terminal_short_circuit`
 - `close`
 
 Together they reach every terminal execution state. `terminal_short_circuit`
 counts calls through a wrapper around the runtime, and shows that `run_until` on
-finished executions makes none. A check a runtime cannot support
-is reported as `not_applicable`, with the reason; `fault` needs the `inject_fault` hook.
+finished executions makes none.
+
+`python -m ssrobot.conformance --out DIR` runs the core runtimes, `replay` and
+`replay_external`, each into `DIR/<runtime>/` (`trace.jsonl`, `conformance-report.json`).
+With the `mujoco` extra, `python -m ssrobot.mujoco.conformance` adds `mujoco`: the
+MuJoCo conformance robot (`ssrobot/mujoco/conformance_robot/`, `reference_robot`'s two
+arms as a package, with a tool on each and a table and block as its scene), written as
+a run bundle (`DIR/mujoco/bundle/`). Either command's `--check DIR` regenerates every run
+`DIR` holds, twice, and requires the same checks and outcomes as the committed report,
+none failed, and the two regenerations byte-identical. It binds each report
+(`ConformanceReport` version 2) to its artifacts: the trace reads strictly and its
+`opened` record names the report's runtime, version, description, clock, and clock mode,
+and a run bundle verifies and its manifest names the same description and clock
+(`conformance_mismatch` otherwise), so a valid trace of another run is refused. It
+does not compare bytes with the committed run, since a simulator's last bits may differ
+across platforms. The milestone's committed run is `conformance/`:
+
+| runtime | passed | not applicable, and why |
+| --- | --- | --- |
+| `replay` | the 13 manual-clock checks, `fault`, `composite_fault`, `privileged_marking` | no scene, no external clock, no simulator backend |
+| `replay_external` | `open`, `privileged_marking`, `external_clock` | everything that needs a manual clock |
+| `mujoco` | everything else, and its own `backend_versions` | `external_clock`: it is manually clocked |
 
 ## Errors
 
@@ -1129,7 +1169,7 @@ code, not on the message.
 uv sync --locked
 uv run pytest                                    # writes artifacts/<test>/...
 uv run python scripts/generate_schemas.py --check
-uv run python -m ssrobot.conformance --out out/  # trace.jsonl, conformance-report.json
+uv run python -m ssrobot.mujoco.conformance --check conformance/  # every runtime, verified
 uv run python scripts/check_core_imports.py      # core dependency gate
 ```
 
@@ -1150,7 +1190,8 @@ gate makes four checks:
   return values, fields, and properties, must itself be public (see *Public surface*).
 
 CI also builds the wheel, installs only that wheel in an empty environment, and runs
-the dependency gate with `--installed` and the conformance scenario from it. That
+the dependency gate with `--installed` and the core conformance runs from it, and, with
+the `mujoco` extra, verifies the committed `conformance/` from the installed wheel. That
 conformance trace and report, and the gate's `imports.json` import report, are uploaded
 as the `installed-conformance` artifact. The import report lists the distribution's
 requirements, every non-standard-library module that importing `ssrobot` and its
@@ -1166,7 +1207,7 @@ on sscbirrt's native backend.
 | `artifacts/test_records_round_trip_through_json_and_checked_in_schemas/` | Joint commands in all three modes, runtime info, trajectory, action chunk, multimodal observation, applied command, scene state with an attachment, attachment violation, scene snapshot, and description, each in wire form with its out-of-line image and depth assets. Each validates against `schemas/` and decodes to an equal value. |
 | `artifacts/test_joint_command_schema_fixes_the_unit_of_values_by_mode/joint-command-units.json` | For position, velocity, and effort commands: the mode, the single unit the schema resolves for `values`, and the unit after decoding. |
 | `artifacts/test_conventions_accept_valid_and_reject_ambiguous_input/conventions-report.json` | Every valid and invalid convention case with its expected and actual diagnostic code and path. Covers the MuJoCo, URDF, and ROS timestamp conversions, chunk clocks against manual and external runtimes, and execution-record identifiers. |
-| `artifacts/test_replay_runtime_passes_the_conformance_scenario/run/` | The ReplayRuntime conformance `trace.jsonl` and `conformance-report.json`. The test re-reads them and checks every line against the schema, contiguous sequence numbers, time that never decreases, legal transitions, all five terminal states, and that each applied command is attributed to its submitter. A second run in `rerun/` is byte-identical. |
+| `artifacts/test_every_runtime_passes_the_conformance_scenario/{run,rerun}/{replay,replay_external,mujoco}/`, `check-report.json` | The conformance scenario on ReplayRuntime, ReplayRuntime on an external clock, and MujocoRuntime on its conformance robot (a run bundle), each run twice, byte-identically. Each report has exactly the expected outcomes, with every `not_applicable` explained. Every trace is schema-valid, contiguous, never goes back in time, makes only legal transitions, and attributes each applied command to its submitter; both manual-clock runs reach all five terminal states. Manual clocks run with `time.sleep` made to fail, so `run_until` never sleeps on them. The committed `conformance/` verifies with `--check`, while a copy with one flipped outcome, one with a changed bundled model, and one whose replay trace is another run's valid trace, are refused. |
 | `artifacts/test_guarded_descent_stops_on_contact_and_completes_without_it/` | The example arm's guarded descent onto the box on its pedestal under force magnitude, signed force projection toward and away from the contact, torque magnitude, and a low threshold with and without three-sample debouncing; and the same command without a scene. Each has its `*.command.json`, a compact `*.events.json` of statuses and applied setpoints, and its entry in `guarded.json`. Every trigger ends on exactly the tick the test predicts from its own wrench readings by the guard's rule, with the hold as the last setpoint. Away from the contact never triggers, and the run fails with `goal_not_reached`. The debounced guard ignores the one-tick start transient that the undebounced one stops on. Without a scene the command completes. A canceled guarded trajectory has no outcome. Unknown, non-wrench, unguarded-channel, untarable, and guardless-runtime cases are refused before motion. A second run is byte-identical. |
 | `artifacts/test_runtimes_declare_the_trajectory_contract_they_execute/contracts.json` | For MuJoCo, an evenly and an unevenly ticked replay, and an externally clocked runtime: the contract declared in the `opened` trace record, what `ctx.trajectory_contract` answered, how far three steps advanced the clock, and conformance's `trajectory_contract` outcome. A second run is byte-identical. |
 | `artifacts/test_scene_runtimes_that_break_their_contract/scene-breach-report.json`, `external-attach-trace.jsonl` | An external runtime that measures the object at 100 ns advances the context to 100 ns, and the `scene` record is stamped then. An attach answer stamped before the context's time, or at a later tick of a manual clock, is a contract breach. So is a scene runtime that changes the transform or allow set it was given, or reports a violation for an object that is not attached. Nothing is committed and the runtime is told to detach. A runtime that lists objects without implementing `SceneRuntime` is refused at open. |

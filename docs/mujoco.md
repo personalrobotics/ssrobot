@@ -222,6 +222,21 @@ a step, MuJoCo's own contact list is from before it, and evaluating the live sta
 change the solver's warm start for the next step. Observing therefore never changes
 the simulation.
 
+## Faults and conformance
+
+`inject_fault(code, message, components)` faults the runtime as a hardware controller
+would: the executions touching `components` (every one, if empty) stop, a `faulted`
+`RuntimeHealth` arrives at the next poll, and commands are rejected (`faulted`) until
+`recover()`. Physics goes on, and the stopped joints' actuators keep their last
+setpoints, so an application can rehearse its fault handling in simulation.
+`backend_versions()` reports the MuJoCo version required, installed, loaded, and
+compiled, and whether sscbirrt's native MuJoCo adapter is usable.
+
+`python -m ssrobot.mujoco.conformance` runs the shared conformance scenario on the MuJoCo
+conformance robot beside the core runtimes, adding its own `backend_versions` check;
+see *ReplayRuntime and conformance* in `docs/contracts.md`. MujocoRuntime passes every
+check but `external_clock`.
+
 ## Planning scenes
 
 `snapshot()` reads every description joint's position and every object's pose, both

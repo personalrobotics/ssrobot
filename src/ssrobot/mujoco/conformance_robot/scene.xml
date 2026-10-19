@@ -1,0 +1,13 @@
+<!-- The conformance scene: a fixed table and a free block resting on it, well clear of
+     the arms. Gravity is off, so the block stays put unless something moves it. -->
+<mujoco>
+  <worldbody>
+    <body name="table" pos="0.8 0 0">
+      <geom type="box" size="0.1 0.1 0.05" contype="1" conaffinity="1"/>
+    </body>
+    <body name="block" pos="0.8 0 0.0699">
+      <freejoint/>
+      <geom type="box" size="0.02 0.02 0.02" mass="0.1" contype="1" conaffinity="1"/>
+    </body>
+  </worldbody>
+</mujoco>

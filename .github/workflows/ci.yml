@@ -105,6 +105,9 @@ jobs:
       - name: Conformance from the installed wheel
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/clean/bin/python -m ssrobot.conformance --out $GITHUB_WORKSPACE/artifacts/installed-conformance
+      - name: The committed conformance artifacts verify from the installed wheel, MuJoCo included
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/clean-mujoco/bin/python -m ssrobot.mujoco.conformance --check $GITHUB_WORKSPACE/conformance
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

@@ -1,0 +1,89 @@
+# The MuJoCo conformance robot: the scenario's reference robot (ssrobot.conformance's
+# reference_robot), as a package MujocoRuntime simulates. See bimanual.xml.
+schema = "ssrobot.package"
+version = 1
+robot = "conformance_bimanual"
+canonical_model = "mjcf"
+
+[[models]]
+name = "mjcf"
+format = "mjcf"
+path = "bimanual.xml"
+
+[[semantics.groups]]
+name = "left_arm"
+joints = ["left_j1", "left_j2"]
+
+[[semantics.groups]]
+name = "right_arm"
+joints = ["right_j1", "right_j2"]
+
+[[semantics.groups]]
+name = "both_arms"
+joints = ["left_j1", "left_j2", "right_j1", "right_j2"]
+subgroups = ["left_arm", "right_arm"]
+
+# A tool on each arm's last link, with no gripper: what an object can be attached to.
+[[semantics.end_effectors]]
+name = "left_tool"
+frame = "left_link2"
+
+[[semantics.end_effectors]]
+name = "right_tool"
+frame = "right_link2"
+
+[[semantics.joint_limits]]
+joint = "left_j1"
+velocity = 2.0
+effort = 50.0
+
+[[semantics.joint_limits]]
+joint = "left_j2"
+velocity = 2.0
+effort = 50.0
+
+[[semantics.joint_limits]]
+joint = "right_j1"
+velocity = 2.0
+effort = 50.0
+
+[[semantics.joint_limits]]
+joint = "right_j2"
+velocity = 2.0
+effort = 50.0
+
+[[semantics.commands]]
+component = "left_arm"
+kind = "joint"
+mode = "position"
+
+[[semantics.commands]]
+component = "left_arm"
+kind = "joint_trajectory"
+
+[[semantics.commands]]
+component = "right_arm"
+kind = "joint"
+mode = "position"
+
+[[semantics.commands]]
+component = "right_arm"
+kind = "joint_trajectory"
+
+[[semantics.commands]]
+component = "both_arms"
+kind = "joint_trajectory"
+
+[[semantics.channels]]
+name = "left_arm_q"
+quantity = "joint_position"
+source = "left_arm"
+shape = [2]
+dtype = "float64"
+
+[[semantics.channels]]
+name = "right_arm_q"
+quantity = "joint_position"
+source = "right_arm"
+shape = [2]
+dtype = "float64"
