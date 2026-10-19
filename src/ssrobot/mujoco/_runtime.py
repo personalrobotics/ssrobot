@@ -333,7 +333,10 @@ class MujocoRuntime:
         self._fault = None
 
     def observe(self, request: ObservationRequest) -> Observation:
-        data, d = self._open_data(), self._described()
+        # Every reading of one instant: derived quantities (actuator forces and lengths,
+        # poses, sensors, contacts) are brought to the current state before any is read,
+        # so no reading depends on which channels were asked for, or in what order.
+        data, d = self._current(), self._described()
         now = self._now()
         readings = []
         contacts: dict[tuple[int, int], tuple[float, float]] | None = None
@@ -1250,8 +1253,8 @@ class MujocoRuntime:
 
     def _opening(self, gripper: str) -> float:
         """The gripper's opening in [0, 1]: from its profiled measuring joint, or else the
-        mean over its actuators, from their lengths."""
-        data = self._open_data()
+        mean over its actuators, from their lengths, now."""
+        data = self._current()
         measure = self._grippers[gripper].measure
         if measure is not None:
             address, closed, open_ = measure
