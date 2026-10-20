@@ -281,6 +281,7 @@ class MujocoRuntime:
         self._objects: dict[str, int] = {}  # scene object: MuJoCo body id
         self._fixtures: dict[str, int] = {}  # scene fixture: MuJoCo body id
         self._sources: tuple[Path, SceneSource | None] | None = None  # model file, scene
+        self._planning_models: Any = None  # PlanningModels, made at the first planning scene
         self._identity = ""  # the simulated world, for snapshot compatibility
         self._attached: dict[str, _Tracked] = {}
         pairs = []
@@ -596,21 +597,22 @@ class MujocoRuntime:
                 path="snapshot.model",
             )
         assert self._sources is not None
-        from ssrobot.mujoco._planning import materialize  # loads sscbirrt only now
+        # loads sscbirrt only now
+        from ssrobot.mujoco._planning import PlanningModels, materialize
 
-        unchanged(self._package)
-        scene = materialize(
+        if self._planning_models is None:
+            package = self._package
+            self._planning_models = PlanningModels(self._sources, lambda: unchanged(package))
+        return materialize(
             description=self._described(),
             frames=self._frames,
             runtime_model=self._model,
-            sources=self._sources,
+            models=self._planning_models,
             objects=self._objects,
             fixtures=self._fixtures,
             snapshot=snapshot,
             group=group,
         )
-        unchanged(self._package)
-        return scene
 
     # -- Opening ---------------------------------------------------------------------
 
@@ -735,6 +737,7 @@ class MujocoRuntime:
         fixtures = tuple(sorted(b for b, kind in objects.items() if kind == "fixture"))
         self._fixtures = {b: mujoco.mj_name2id(model, _BODY, b) for b in fixtures}
         self._sources = (package.root / entry.path, scene_source)
+        self._planning_models = None
         scene_identity = None if scene_source is None else scene_source.identity
         self._identity = world_identity(model_signature(package, entry.name), scene_identity)
         self._mapping = MujocoMapping(

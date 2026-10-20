@@ -6,7 +6,9 @@ sscbirrt.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import threading
+from collections import OrderedDict
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -57,13 +59,55 @@ def planning_model(
     return compile_world(model_path, scene, excludes=excludes)[0]
 
 
+PLANNING_MODELS = 16
+"""How many compiled planning models a runtime keeps, least recently used dropped first:
+one per set of excludes and group, and a run sees few (one per distinct set of held
+objects' allowances)."""
+
+
+class PlanningModels:
+    """A runtime's compiled planning models and their native scenes, by excludes and group.
+
+    A planning model depends only on the runtime's sources and its excludes, so a model
+    compiled once serves every later snapshot with the same allowances. Each is compiled
+    from the runtime's sources with ``check`` (the package is unchanged) before and after,
+    as every compile is; a model taken from here is one such compile, read only, shared
+    like sscbirrt's native scene. A file changed after it was compiled is noticed only at
+    the next compile."""
+
+    def __init__(self, sources: tuple[Path, SceneSource | None], check: Callable[[], None]) -> None:
+        self._sources = sources
+        self._check = check
+        self._models: OrderedDict[tuple[Any, ...], tuple[Any, Any]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(
+        self, excludes: tuple[tuple[str, str], ...], joints: tuple[str, ...]
+    ) -> tuple[Any, Any]:
+        """The planning model with ``excludes`` and its native scene over ``joints``."""
+        key = (excludes, joints)
+        with self._lock:
+            found = self._models.get(key)
+            if found is not None:
+                self._models.move_to_end(key)
+                return found
+            self._check()
+            model = planning_model(self._sources[0], self._sources[1], excludes)
+            self._check()
+            found = (model, native_mujoco.NativeScene.from_model(model, joints))
+            self._models[key] = found
+            if len(self._models) > PLANNING_MODELS:
+                self._models.popitem(last=False)
+            return found
+
+
 class MujocoPlanningScene:
     """A ``PlanningScene`` over one joint group of a MuJoCo snapshot.
 
     Validity and contacts come from sscbirrt's native validator, which holds the
     snapshot and moves each held object with its end effector. Forward kinematics uses a
     private ``MjData``. Nothing is shared with the live runtime or with another scene
-    except sscbirrt's immutable native model.
+    except the planning model and sscbirrt's native scene, which nothing writes.
     """
 
     def __init__(
@@ -135,7 +179,7 @@ def materialize(
     description: RobotDescription,
     frames: dict[str, FrameBinding],
     runtime_model: Any,
-    sources: tuple[Path, SceneSource | None],
+    models: PlanningModels,
     objects: dict[str, int],
     fixtures: dict[str, int],
     snapshot: SceneSnapshot,
@@ -168,8 +212,9 @@ def materialize(
         for a in snapshot.attachments
         for name in a.allow
     ]
-    excludes = list(dict.fromkeys(excludes))  # one exclude per body pair
-    model = planning_model(sources[0], sources[1], excludes)
+    joints = description.group(group).joints
+    # one exclude per body pair
+    model, scene = models.get(tuple(dict.fromkeys(excludes)), joints)
 
     def resolve(kind: Any, name: str, path: str) -> int:
         """A name's id in the planning model; a snapshot naming what is not there would
@@ -208,8 +253,6 @@ def materialize(
             collision_geoms=binding.collision_geoms,
         )
 
-    joints = description.group(group).joints
-    scene = native_mujoco.NativeScene.from_model(model, joints)
     module = native_mujoco._load()
     lowered = []
     for attachment in snapshot.attachments:
