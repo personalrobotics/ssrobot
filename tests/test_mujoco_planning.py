@@ -283,23 +283,39 @@ def test_an_allowed_static_robot_frame_is_honoured(artifacts: Path, tmp_path: Pa
     not move. A puck rests on the example arm's fixed ``base``, and is declared held by
     the hand: the planning scene refuses the state unless ``base`` is allowed, and
     accepts it when it is. Before the fix, the allowance reached sscbirrt only for bodies
-    the arm moves, so a work surface that belongs to the robot was never allowed."""
+    the arm moves, so a work surface that belongs to the robot was never allowed.
+
+    Under ``one_runtime``, the allowance changes within one runtime, and back: hand only,
+    then with ``base``, then hand only again. A runtime keeps the planning models it
+    compiles, one per set of allowances, and each scene must still answer for its own
+    snapshot's."""
     scene = tmp_path / "on_base.xml"
     scene.write_text(ON_BASE)
     package = load_package(PACKAGE)
+    joints = package.description.group("arm").joints
+    cases = (("hand_only", HAND_FRAMES), ("with_base", (*HAND_FRAMES, "base")))
+
+    def answer(ctx: RobotContext, allow: tuple[str, ...]) -> dict[str, Any]:
+        if ctx.scene.attachment("puck") is not None:
+            ctx.detach("puck")
+        ctx.attach("puck", "hand", allow=allow)
+        snapshot = ctx.snapshot()
+        planning = ctx.planning_scene(snapshot, "arm")
+        q = tuple(snapshot.position(j) for j in joints)
+        return {
+            "allow": list(snapshot.attachments[0].allow),
+            "valid": planning.is_valid(q),
+            "contacts": sorted({(c.first, c.second) for c in planning.contacts(q)}),
+        }
+
     report: dict[str, Any] = {}
-    for name, allow in (("hand_only", HAND_FRAMES), ("with_base", (*HAND_FRAMES, "base"))):
+    for name, allow in cases:
         with RobotContext(package.description, MujocoRuntime(package, scene=scene)) as ctx:
-            ctx.attach("puck", "hand", allow=allow)
-            snapshot = ctx.snapshot()
-            planning = ctx.planning_scene(snapshot, "arm")
-            q = tuple(snapshot.position(j) for j in package.description.group("arm").joints)
-            report[name] = {
-                "allow": list(snapshot.attachments[0].allow),
-                "valid": planning.is_valid(q),
-                "contacts": sorted({(c.first, c.second) for c in planning.contacts(q)}),
-            }
+            report[name] = answer(ctx, allow)
+    with RobotContext(package.description, MujocoRuntime(package, scene=scene)) as ctx:
+        report["one_runtime"] = [answer(ctx, allow) for _, allow in (*cases, cases[0])]
     (artifacts / "static_frame_allowance.json").write_text(json.dumps(report, indent=2) + "\n")
     assert report["hand_only"]["valid"] is False
     assert ["base", "puck"] in [sorted(c) for c in report["hand_only"]["contacts"]]
     assert report["with_base"]["valid"] is True and report["with_base"]["contacts"] == []
+    assert report["one_runtime"] == [report["hand_only"], report["with_base"], report["hand_only"]]
