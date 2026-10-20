@@ -473,11 +473,12 @@ A viewer is application code: ssrobot creates no viewer, thread, or synchronizat
 
 `capture()` copies the runtime's current state into `data`, and returns the
 `RenderFrame` it now shows: the context's runtime `time`, scene `revision`, and `world`.
-Capture when you choose, typically after `step()`. For example, mj_viser's `LiveView`
-takes the handle: `view = LiveView(render_handle(ctx))`, `view.open()`, then
+Capture when you choose, typically after `step()`. For example, mj_viser's ssrobot
+integration adapts the handle: `view = LiveView(render_source(ctx))`, with
+`render_source` from `mj_viser.integrations.ssrobot`, then `view.open()` and
 `view.refresh()` after each `step()`. Each refresh captures and renders, at most
-`max_rate_hz` times a second, and after the runtime reopens the view goes stale
-instead of raising.
+`max_rate_hz` times a second; after the runtime reopens the view goes stale instead of
+raising, and a view opened onto a reopened runtime refuses to open.
 
 Each handle owns its copies, so a viewer may change anything it holds:
 - nothing reaches the runtime, whose next observation and command result are the same;
