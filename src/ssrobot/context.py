@@ -1123,10 +1123,10 @@ class RobotContext:
         self._now = update.stamp
         if stepped:
             self._emit(TraceKind.STEPPED, "context", None)
-        overdue = Diagnostic(code="deadline_exceeded", message="the deadline passed")
         for execution in self._active():
             deadline = execution.deadline
             if deadline is not None and deadline.time_ns <= self._now.time_ns:
+                overdue = Diagnostic(code="deadline_exceeded", message="the deadline passed")
                 self._finish(execution, ExecutionState.TIMED_OUT, overdue)
 
     def _apply_health(self, health: RuntimeHealth) -> None:
