@@ -894,7 +894,9 @@ class RobotContext:
             return refuse("rebase_failed", f"{e.code}: {e.message}")
         if not isinstance(rebased, PlanResult):
             raise ValidationError("planner_contract", f"the planner rebased into {rebased!r}")
-        account = "; ".join(d.message for d in rebased.diagnostics if d.code == "rebase")
+        account = "; ".join(
+            d.message for d in rebased.diagnostics if d.code in ("rebase", "rebase_failed")
+        )
         evidence["rebase"] = account
         if not rebased.succeeded:
             return refuse("rebase_failed", account or rebased.status.value)
