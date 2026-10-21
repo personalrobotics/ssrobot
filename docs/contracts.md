@@ -999,10 +999,10 @@ Every event becomes one `TraceRecord`, passed synchronously to each sink in orde
 | --- | --- |
 | `schema`, `version` | `ssrobot.TraceRecord`, 1 |
 | `sequence` | 0, 1, 2, … with no gaps |
-| `kind` | `opened`, `observed`, `compiled`, `submitted`, `status`, `applied`, `health`, `scene`, `violation`, `snapshot`, `stepped`, `closed` |
+| `kind` | `opened`, `observed`, `compiled`, `submitted`, `status`, `applied`, `health`, `scene`, `violation`, `snapshot`, `predicted`, `continued`, `stepped`, `closed` |
 | `clock`, `time_ns` | Runtime time of the event. Runtime events use their own stamps, and everything else uses the context's `now`. Never decreases along a trace. |
-| `source` | The submitter for `compiled`, `submitted`, and `applied` and for a client's `scene` change, `runtime:<name>` for what the runtime reported, and `context` for the context's own decisions |
-| `payload` | `RuntimeInfo`, `Observation`, `PreparedTrajectory`, `Submission`, `ExecutionStatus`, `AppliedCommand`, `RuntimeHealth`, `SceneState`, `AttachmentViolation`, or `SceneSnapshot` by kind; none for `stepped` and `closed` |
+| `source` | The submitter for `compiled`, `submitted`, `applied`, and `continued` and for a client's `scene` change, `runtime:<name>` for what the runtime reported, and `context` for the context's own decisions |
+| `payload` | `RuntimeInfo`, `Observation`, `PreparedTrajectory`, `Submission`, `ExecutionStatus`, `AppliedCommand`, `RuntimeHealth`, `SceneState`, `AttachmentViolation`, `SceneSnapshot`, `PredictedSnapshot`, or `ContinuationReport` by kind; none for `stepped` and `closed` |
 
 `ctx.execute` traces `compiled` immediately before its `submitted` record; that
 `Submission.prepared` is the compiled record's fingerprint.

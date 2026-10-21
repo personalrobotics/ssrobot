@@ -762,6 +762,7 @@ class RobotContext:
             lineage=(base_id,),
         )
         self._predicted[predicted_state.fingerprint()] = prediction
+        self._emit(TraceKind.PREDICTED, "context", prediction)
         return prediction
 
     def continuation(
@@ -843,6 +844,7 @@ class RobotContext:
                 detail=detail,
                 **{**evidence, **more},  # type: ignore[arg-type]
             )
+            self._emit(TraceKind.CONTINUED, source, report)
             return ContinuationResult(report=report, execution=None, rebased=None)
 
         source_execution = self._executions.get(prediction.source)
@@ -928,6 +930,7 @@ class RobotContext:
             execution=execution.id,
             **evidence,  # type: ignore[arg-type]
         )
+        self._emit(TraceKind.CONTINUED, source, report)
         return ContinuationResult(report=report, execution=execution, rebased=rebased)
 
     def _rest(

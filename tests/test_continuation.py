@@ -20,6 +20,7 @@ A prediction that names that falling block ``unsettled`` makes no claim about it
 so the same arrival continues.
 - ``rebase_unsupported``: the planner cannot rebase.
 
+The trace records each prediction (``predicted``) and each decision (``continued``).
 The evidence is ``continuation.json``: the prediction and its lineage, the accepted
 report (predicted and actual start, the rest reading, sscbirrt's account of its rebase,
 the rebased plan and compiled command), every refusal's report, and the timeline: how many
@@ -44,6 +45,8 @@ from ssrobot import (
     PlanResult,
     RobotContext,
     SsrobotError,
+    TraceKind,
+    TraceRecord,
     dumps,
     load_package,
 )
@@ -99,10 +102,20 @@ def _arm(ctx: RobotContext) -> list[float]:
 
 
 def _session(tmp: Path, run: Any, **fixture: Any) -> Any:
+    """``run`` in a fresh session; its outcome, with the trace's predictions and
+    continuation decisions (``refusal`` None when accepted), in order."""
     package_root, scene = colliding_bimanual(tmp, **fixture)
     package = load_package(package_root)
-    with RobotContext(package.description, MujocoRuntime(package, scene=scene)) as ctx:
-        return run(ctx, CBiRRT(package.description))
+    records: list[TraceRecord] = []
+    runtime = MujocoRuntime(package, scene=scene)
+    with RobotContext(package.description, runtime, sinks=[records.append]) as ctx:
+        outcome = run(ctx, CBiRRT(package.description))
+    outcome["traced"] = [
+        [r.kind.value, getattr(r.payload, "refusal", None), r.time_ns]
+        for r in records
+        if r.kind in (TraceKind.PREDICTED, TraceKind.CONTINUED)
+    ]
+    return outcome
 
 
 def _start_source(ctx: RobotContext, planner: CBiRRT, unsettled: tuple[str, ...] = ()) -> Any:
@@ -268,9 +281,15 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
     # The context stepped the source motion while the worker planned.
     assert accepted["timeline"]["ticks_stepped_while_planning"] > 0
 
+    # The trace records the prediction, then each decision: the accepted one last.
+    traced = accepted["traced"]
+    assert traced[0][0] == "predicted" and traced[-1][:2] == ["continued", None]
+    assert {kind for kind, _, _ in traced[1:]} == {"continued"}
     for code, outcome in refusals.items():
         assert outcome["report"]["refusal"] == code.removesuffix("_falling"), (code, outcome)
         assert not outcome["report"]["accepted"] and outcome["submitted_nothing"], code
+        assert [k for k, _, _ in outcome["traced"]] == ["predicted", "continued"], code
+        assert outcome["traced"][-1][1] == outcome["report"]["refusal"], code
     assert refusals["unpredicted_scene_change_falling"]["report"]["detail"] == "object block"
     assert unsettled["prediction_unsettled"] == ["block"]
     assert unsettled["report"]["accepted"], unsettled["report"]

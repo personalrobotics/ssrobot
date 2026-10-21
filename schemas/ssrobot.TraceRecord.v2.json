@@ -468,6 +468,141 @@
       ],
       "additionalProperties": false
     },
+    "ContinuationReport": {
+      "type": "object",
+      "description": "Whether a continuation ran, and the evidence for that decision.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.ContinuationReport"
+        },
+        "version": {
+          "const": 1
+        },
+        "prediction": {
+          "type": "string",
+          "description": "Fingerprint of the prediction it was planned on."
+        },
+        "source": {
+          "type": "string",
+          "description": "The source execution's identifier."
+        },
+        "plan": {
+          "type": "string",
+          "description": "Fingerprint of the plan made on the prediction."
+        },
+        "actual": {
+          "type": "string",
+          "description": "Fingerprint of the captured arrival state."
+        },
+        "accepted": {
+          "type": "boolean",
+          "description": "Whether the continuation was submitted."
+        },
+        "refusal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The refusal's code, if refused."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Why, in words."
+        },
+        "predicted_start": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The plan's start, from the prediction.",
+          "x-unit": "joint"
+        },
+        "actual_start": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The commanded joints at arrival.",
+          "x-unit": "joint"
+        },
+        "discrepancies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Discrepancy"
+          },
+          "description": "Every checked quantity outside its tolerance."
+        },
+        "max_start_gap": {
+          "type": "number",
+          "description": "The largest gap between the predicted and actual start.",
+          "x-unit": "joint"
+        },
+        "arrival_tolerance": {
+          "type": "number",
+          "description": "The arrival tolerance.",
+          "x-unit": "joint"
+        },
+        "rest": {
+          "type": "string",
+          "description": "How rest was established."
+        },
+        "rebase": {
+          "type": "string",
+          "description": "The planner's account of its rebase: any bridge or change."
+        },
+        "rebased_plan": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the rebased plan, if there is one."
+        },
+        "prepared": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the compiled PreparedTrajectory, if any."
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The continuation's execution identifier, if submitted."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "prediction",
+        "source",
+        "plan",
+        "actual",
+        "accepted",
+        "predicted_start",
+        "actual_start",
+        "max_start_gap",
+        "arrival_tolerance"
+      ],
+      "additionalProperties": false
+    },
     "Diagnostic": {
       "type": "object",
       "description": "Why something was rejected, failed, or modified.",
@@ -495,6 +630,38 @@
       "required": [
         "code",
         "message"
+      ],
+      "additionalProperties": false
+    },
+    "Discrepancy": {
+      "type": "object",
+      "description": "One way the actual state differs from the prediction.",
+      "properties": {
+        "what": {
+          "type": "string",
+          "description": "A joint, an object, or 'revision'."
+        },
+        "predicted": {
+          "type": "number",
+          "description": "The predicted value.",
+          "x-unit": "1"
+        },
+        "actual": {
+          "type": "number",
+          "description": "The actual value.",
+          "x-unit": "1"
+        },
+        "tolerance": {
+          "type": "number",
+          "description": "The tolerance it was held to.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "what",
+        "predicted",
+        "actual",
+        "tolerance"
       ],
       "additionalProperties": false
     },
@@ -1606,6 +1773,84 @@
       ],
       "additionalProperties": false
     },
+    "PredictedSnapshot": {
+      "type": "object",
+      "description": "The state expected if ``source`` succeeds and every recorded assumption holds.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.PredictedSnapshot"
+        },
+        "version": {
+          "const": 1
+        },
+        "state": {
+          "$ref": "#/$defs/SceneSnapshot",
+          "description": "The predicted state, as a snapshot value; never a captured one."
+        },
+        "base": {
+          "type": "string",
+          "description": "Fingerprint of the captured snapshot it extends."
+        },
+        "base_revision": {
+          "type": "integer",
+          "description": "The scene revision of that snapshot; a prediction adds no scene change.",
+          "x-unit": "count"
+        },
+        "source": {
+          "type": "string",
+          "description": "The source execution's identifier."
+        },
+        "command": {
+          "type": "string",
+          "description": "Fingerprint of the source execution's command."
+        },
+        "moved": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The joints the source commands, at its last waypoint in the state."
+        },
+        "held": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ObjectState"
+          },
+          "description": "Held objects whose predicted pose moves with the hand, as in the state."
+        },
+        "unsettled": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Free objects whose pose it makes no claim about, such as one just released and still falling: kept at their captured pose for planning, and not compared on arrival. The continuation is still validated whole in the actual scene."
+        },
+        "world": {
+          "type": "string",
+          "description": "The world identity (model and scene) it is a state of."
+        },
+        "lineage": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Fingerprints it was predicted from, oldest first: the captured base."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "state",
+        "base",
+        "base_revision",
+        "source",
+        "command",
+        "moved",
+        "world",
+        "lineage"
+      ],
+      "additionalProperties": false
+    },
     "PreparedTrajectory": {
       "type": "object",
       "description": "A runtime command compiled from a timed trajectory: the readiness checks it",
@@ -2136,6 +2381,8 @@
             "scene",
             "snapshot",
             "violation",
+            "predicted",
+            "continued",
             "stepped",
             "closed"
           ],
@@ -2185,6 +2432,12 @@
             },
             {
               "$ref": "#/$defs/PreparedTrajectory"
+            },
+            {
+              "$ref": "#/$defs/PredictedSnapshot"
+            },
+            {
+              "$ref": "#/$defs/ContinuationReport"
             },
             {
               "type": "null"
