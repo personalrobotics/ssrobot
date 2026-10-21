@@ -45,6 +45,7 @@ from ssrobot import (
     PlannerCapabilities,
     PlanningRequest,
     PlanResult,
+    Pose,
     RobotContext,
     SsrobotError,
     TraceKind,
@@ -216,7 +217,8 @@ def _releasing(ctx: RobotContext, planner: CBiRRT, *, release: bool) -> dict[str
     plan = ctx.plan(_request(ctx, A, snapshot), snapshot=snapshot, planner=planner)
     assert plan.succeeded, plan.status
     source = ctx.execute(plan, planner=planner)
-    prediction = ctx.predict(source, releases=("block",))
+    rest = Pose(position=(0.0, 0.8, 0.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0))  # where it lands
+    prediction = ctx.predict(source, releases={"block": rest})
     ahead = CBiRRT(ctx.description)
     after = ctx.plan(_request(ctx, B, prediction), snapshot=prediction, planner=ahead)
     assert after.succeeded, after.status
@@ -338,7 +340,7 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
     assert unsettled["prediction_unsettled"] == ["block"]
     assert unsettled["report"]["accepted"], unsettled["report"]
     assert released["released"]["prediction_releases"] == ["block"]
-    assert released["released"]["carried"] == ["block"]
+    assert released["released"]["carried"] == []  # released: not carried in the state
     assert released["released"]["report"]["accepted"], released["released"]["report"]
     kept = released["kept"]["report"]
     assert kept["refusal"] == "unpredicted_scene_change", kept

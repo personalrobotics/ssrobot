@@ -11,7 +11,7 @@ import enum
 import math
 import numbers
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from types import TracebackType
@@ -243,8 +243,7 @@ def _scene_changes(
                 what="revision", predicted=float(base), actual=float(actual.revision), tolerance=0.0
             )
         )
-    expected = tuple(a for a in predicted.attachments if a.object not in prediction.releases)
-    if actual.attachments != expected:
+    if actual.attachments != predicted.attachments:
         changes.append(Discrepancy(what="attachments", predicted=0.0, actual=1.0, tolerance=0.0))
     if actual.fixtures != predicted.fixtures:
         changes.append(Discrepancy(what="fixtures", predicted=0.0, actual=1.0, tolerance=0.0))
@@ -704,7 +703,7 @@ class RobotContext:
         execution: Execution,
         *,
         unsettled: Iterable[str] = (),
-        releases: Iterable[str] = (),
+        releases: Mapping[str, Pose] | None = None,
     ) -> PredictedSnapshot:
         """The state expected if ``execution`` succeeds: its joints at its last waypoint,
         every held object its hand moves carried with it, everything else as in the
@@ -717,9 +716,10 @@ class RobotContext:
         such as one just released and still falling; it is recorded in the prediction,
         and their poses are not compared on arrival. ``releases`` names held objects the
         robot is expected to release after ``execution`` and before a plan made on the
-        prediction runs, such as a can dropped where the motion ends: they stay attached
-        in the predicted state, and on arrival each must have been detached, the only
-        scene change allowed."""
+        prediction runs, such as a can dropped where the motion ends, each with the pose
+        it is expected to come to rest at. In the predicted state each is detached and at
+        that pose, for planning only; on arrival each must have been detached, the only
+        scene change allowed, and its pose is not compared."""
         self._require("predict")
         self._check_own(execution)
         command = execution.command
@@ -756,12 +756,25 @@ class RobotContext:
             after = scene.forward_kinematics(end_q, frame)
             if before != after:
                 moved[attachment.object] = _compose(after, attachment.transform)
+        releases = dict(releases or {})
+        held_now = {a.object for a in base.attachments}
+        for name in releases:
+            if name not in held_now:
+                raise ValidationError(
+                    "unknown_reference",
+                    f"{name!r} is not held, so it cannot be released",
+                    path="releases",
+                )
+        moved.update(releases)
         objects = tuple(
             replace(o, pose=moved[o.name]) if o.name in moved else o for o in base.objects
         )
+        attachments = tuple(a for a in base.attachments if a.object not in releases)
         duration = command.time_from_start_ns[-1]
         stamp = Timestamp(clock=base.stamp.clock, time_ns=base.stamp.time_ns + duration)
-        predicted_state = replace(base, positions=positions, objects=objects, stamp=stamp)
+        predicted_state = replace(
+            base, positions=positions, objects=objects, attachments=attachments, stamp=stamp
+        )
         prediction = PredictedSnapshot(
             state=predicted_state,
             base=base_id,
@@ -769,9 +782,9 @@ class RobotContext:
             source=execution.id,
             command=fingerprint(command),
             moved=tuple(command.joints),
-            held=tuple(o for o in objects if o.name in moved),
+            held=tuple(o for o in objects if o.name in moved and o.name not in releases),
             unsettled=tuple(sorted(set(unsettled))),
-            releases=tuple(sorted(set(releases))),
+            releases=tuple(sorted(releases)),
             world=base.model,
             lineage=(base_id,),
         )

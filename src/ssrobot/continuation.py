@@ -102,10 +102,10 @@ class PredictedSnapshot(Record):
     releases: tuple[str, ...] = field(
         default=(),
         metadata=meta(
-            "Held objects expected to be released after the source and before the plan "
-            "made on it runs: the one scene change the prediction expects. They stay "
-            "attached in the state, so planning carries them, conservatively; on arrival "
-            "each must be detached, and is not compared, as if unsettled."
+            "Objects held by the source, expected to be released after it and before the "
+            "plan made on it runs: the one scene change the prediction expects. In the "
+            "state they are detached, at the resting pose the caller expects, for planning "
+            "only; on arrival each must be detached, and is not compared by pose."
         ),
     )
     world: str = field(metadata=meta("The world identity (model and scene) it is a state of."))
@@ -145,11 +145,10 @@ class PredictedSnapshot(Record):
                 "unsettled names free scene objects, sorted, once each",
                 path="unsettled",
             )
-        attached = {a.object for a in self.state.attachments}
-        if list(self.releases) != sorted(set(self.releases)) or not set(self.releases) <= attached:
+        if list(self.releases) != sorted(set(self.releases)) or not set(self.releases) <= free:
             raise ValidationError(
                 "inconsistent_prediction",
-                "releases names attached objects, sorted, once each",
+                "releases names objects detached in the state, sorted, once each",
                 path="releases",
             )
 
