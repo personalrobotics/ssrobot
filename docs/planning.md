@@ -354,6 +354,11 @@ it when the robot arrives. Three pieces make that safe:
      `ctx.predict(execution, unsettled=...)`), such as one just released and still
      falling. They stay at their captured pose for planning and aren't compared on
      arrival; the continuation is still validated whole in the actual scene;
+   - held objects expected to be released after the source and before the plan runs
+     (`releases`, from `ctx.predict(execution, releases=...)`), such as a can dropped
+     where the motion ends. That release is the one scene change a prediction may
+     expect: the objects stay attached in the predicted state, so planning carries them
+     conservatively, and on arrival each must be detached, with nothing else changed;
    - the world identity, and its `lineage`.
 
    Only a joint trajectory submitted with a snapshot captured at the current revision is

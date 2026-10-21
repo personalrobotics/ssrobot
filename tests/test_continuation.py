@@ -17,7 +17,9 @@ Each refusal, from a fresh run, submits nothing and says why:
 - ``unpredicted_scene_change``: a block was attached after the prediction; or, under
   gravity, a free block fell during the source motion.
 A prediction that names that falling block ``unsettled`` makes no claim about its pose,
-so the same arrival continues.
+so the same arrival continues. A block carried through the source and predicted
+released (``releases``) continues once it is detached, and is refused, as an
+unpredicted scene change, when it was not.
 - ``rebase_unsupported``: the planner cannot rebase.
 
 The trace records each prediction (``predicted``) and each decision (``continued``).
@@ -206,6 +208,31 @@ def _refused(
     }
 
 
+def _releasing(ctx: RobotContext, planner: CBiRRT, *, release: bool) -> dict[str, Any]:
+    """The block held by the right arm through rest -> A, predicted released after it;
+    then detached (``release``) or not, before the continuation."""
+    ctx.attach("block", TOOL)
+    snapshot = ctx.snapshot()
+    plan = ctx.plan(_request(ctx, A, snapshot), snapshot=snapshot, planner=planner)
+    assert plan.succeeded, plan.status
+    source = ctx.execute(plan, planner=planner)
+    prediction = ctx.predict(source, releases=("block",))
+    ahead = CBiRRT(ctx.description)
+    after = ctx.plan(_request(ctx, B, prediction), snapshot=prediction, planner=ahead)
+    assert after.succeeded, after.status
+    ctx.run_until(source, max_ticks=MAX_TICKS)
+    if release:
+        ctx.detach("block")
+    result = ctx.execute_continuation(
+        ctx.continuation(after, planner=ahead, prediction=prediction), rest_tolerance=1.0
+    )
+    return {
+        "prediction_releases": list(prediction.releases),
+        "carried": [o.name for o in prediction.held],
+        "report": json.loads(dumps(result.report)),
+    }
+
+
 def _settle(ctx: RobotContext, source: Any) -> None:
     ctx.run_until(source, max_ticks=MAX_TICKS)
     for _ in range(400):
@@ -261,8 +288,25 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
         block=BLOCK,
         falling=True,
     )
+    # The block carried through the source and expected released after it.
+    released = {
+        "released": _session(
+            tmp_path / "released", lambda c, p: _releasing(c, p, release=True), block=BLOCK
+        ),
+        "kept": _session(
+            tmp_path / "kept", lambda c, p: _releasing(c, p, release=False), block=BLOCK
+        ),
+    }
     (artifacts / "continuation.json").write_text(
-        json.dumps({"accepted": accepted, "refused": refusals, "unsettled": unsettled}, indent=2)
+        json.dumps(
+            {
+                "accepted": accepted,
+                "refused": refusals,
+                "unsettled": unsettled,
+                "releases": released,
+            },
+            indent=2,
+        )
         + "\n"
     )
 
@@ -293,3 +337,9 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
     assert refusals["unpredicted_scene_change_falling"]["report"]["detail"] == "object block"
     assert unsettled["prediction_unsettled"] == ["block"]
     assert unsettled["report"]["accepted"], unsettled["report"]
+    assert released["released"]["prediction_releases"] == ["block"]
+    assert released["released"]["carried"] == ["block"]
+    assert released["released"]["report"]["accepted"], released["released"]["report"]
+    kept = released["kept"]["report"]
+    assert kept["refusal"] == "unpredicted_scene_change", kept
+    assert [d["what"] for d in kept["discrepancies"]] == ["attachments"]

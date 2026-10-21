@@ -8,8 +8,9 @@ only as a ``Continuation``, through ``RobotContext.execute_continuation``, which
 
 1. captures the actual state once the source has finished;
 2. checks that the source succeeded, that the commanded joints are at rest and within the
-   arrival tolerance of the plan's start, and that the scene changed only as predicted
-   (objects the prediction names ``unsettled`` excepted);
+   arrival tolerance of the plan's start, and that the scene changed only as predicted:
+   no change but the release of the objects it names in ``releases``, and no free object
+   moved but those and the ones it names ``unsettled``;
 3. asks the plan's planner to rebase it onto the actual state (``Planner.rebase``); a
    planner without it cannot continue;
 4. compiles the rebased motion with ``prepare``, validating it whole under the original
@@ -98,6 +99,15 @@ class PredictedSnapshot(Record):
             "arrival. The continuation is still validated whole in the actual scene."
         ),
     )
+    releases: tuple[str, ...] = field(
+        default=(),
+        metadata=meta(
+            "Held objects expected to be released after the source and before the plan "
+            "made on it runs: the one scene change the prediction expects. They stay "
+            "attached in the state, so planning carries them, conservatively; on arrival "
+            "each must be detached, and is not compared, as if unsettled."
+        ),
+    )
     world: str = field(metadata=meta("The world identity (model and scene) it is a state of."))
     lineage: tuple[str, ...] = field(
         metadata=meta("Fingerprints it was predicted from, oldest first: the captured base.")
@@ -110,7 +120,7 @@ class PredictedSnapshot(Record):
         if self.state.revision != self.base_revision:
             raise ValidationError(
                 "inconsistent_prediction",
-                "a prediction adds no scene change: its state keeps the base's revision",
+                "a prediction's state keeps the base's revision; releases are expected after it",
                 path="state.revision",
             )
         if self.state.model != self.world:
@@ -134,6 +144,13 @@ class PredictedSnapshot(Record):
                 "inconsistent_prediction",
                 "unsettled names free scene objects, sorted, once each",
                 path="unsettled",
+            )
+        attached = {a.object for a in self.state.attachments}
+        if list(self.releases) != sorted(set(self.releases)) or not set(self.releases) <= attached:
+            raise ValidationError(
+                "inconsistent_prediction",
+                "releases names attached objects, sorted, once each",
+                path="releases",
             )
 
 

@@ -1825,6 +1825,13 @@
           },
           "description": "Free objects whose pose it makes no claim about, such as one just released and still falling: kept at their captured pose for planning, and not compared on arrival. The continuation is still validated whole in the actual scene."
         },
+        "releases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Held objects expected to be released after the source and before the plan made on it runs: the one scene change the prediction expects. They stay attached in the state, so planning carries them, conservatively; on arrival each must be detached, and is not compared, as if unsettled."
+        },
         "world": {
           "type": "string",
           "description": "The world identity (model and scene) it is a state of."

@@ -229,24 +229,27 @@ def _scene_changes(
     """How ``actual`` differs from ``prediction`` beyond the joints: a scene change (a new
     revision, other attachments or fixtures), or a free object moved beyond tolerance.
     Held objects move with their hand, which the joints already account for; unsettled
-    ones are not compared."""
+    and released ones are not compared. The expected releases are the only allowed scene
+    change: with them, the scene is compared by content rather than by revision."""
     predicted = prediction.state
     changes = []
-    if actual.revision != prediction.base_revision:
+    # Without releases the scene must not have changed at all. With them it has, so it
+    # is compared by content instead: the attachments less the released ones, the same
+    # fixtures, every object.
+    base = prediction.base_revision
+    if actual.revision < base or (not prediction.releases and actual.revision != base):
         changes.append(
             Discrepancy(
-                what="revision",
-                predicted=float(prediction.base_revision),
-                actual=float(actual.revision),
-                tolerance=0.0,
+                what="revision", predicted=float(base), actual=float(actual.revision), tolerance=0.0
             )
         )
-    if actual.attachments != predicted.attachments:
+    expected = tuple(a for a in predicted.attachments if a.object not in prediction.releases)
+    if actual.attachments != expected:
         changes.append(Discrepancy(what="attachments", predicted=0.0, actual=1.0, tolerance=0.0))
     if actual.fixtures != predicted.fixtures:
         changes.append(Discrepancy(what="fixtures", predicted=0.0, actual=1.0, tolerance=0.0))
     held = {o.name for o in prediction.held} | {a.object for a in predicted.attachments}
-    held |= set(prediction.unsettled)
+    held |= set(prediction.unsettled) | set(prediction.releases)
     now = {o.name: o for o in actual.objects}
     for o in predicted.objects:
         if o.name in held:
@@ -696,7 +699,13 @@ class RobotContext:
 
     # -- Interleaving planning and execution -----------------------------------------
 
-    def predict(self, execution: Execution, *, unsettled: Iterable[str] = ()) -> PredictedSnapshot:
+    def predict(
+        self,
+        execution: Execution,
+        *,
+        unsettled: Iterable[str] = (),
+        releases: Iterable[str] = (),
+    ) -> PredictedSnapshot:
         """The state expected if ``execution`` succeeds: its joints at its last waypoint,
         every held object its hand moves carried with it, everything else as in the
         captured snapshot it was submitted with. One motion ahead: the execution must
@@ -706,7 +715,11 @@ class RobotContext:
 
         ``unsettled`` names free objects whose pose the prediction makes no claim about,
         such as one just released and still falling; it is recorded in the prediction,
-        and their poses are not compared on arrival."""
+        and their poses are not compared on arrival. ``releases`` names held objects the
+        robot is expected to release after ``execution`` and before a plan made on the
+        prediction runs, such as a can dropped where the motion ends: they stay attached
+        in the predicted state, and on arrival each must have been detached, the only
+        scene change allowed."""
         self._require("predict")
         self._check_own(execution)
         command = execution.command
@@ -758,6 +771,7 @@ class RobotContext:
             moved=tuple(command.joints),
             held=tuple(o for o in objects if o.name in moved),
             unsettled=tuple(sorted(set(unsettled))),
+            releases=tuple(sorted(set(releases))),
             world=base.model,
             lineage=(base_id,),
         )
