@@ -60,7 +60,12 @@ from ssrobot import (
     dumps,
     loads,
 )
-from ssrobot.validation import START_TOLERANCE, check_command, check_request
+from ssrobot.validation import (
+    START_TOLERANCE,
+    check_command,
+    check_request,
+    check_trajectory_rates,
+)
 from tests.conftest import ROOT
 from tests.support import KinematicRuntime, ObserveOnlyRuntime, bimanual_robot
 
@@ -326,6 +331,20 @@ def test_conventions_accept_valid_and_reject_ambiguous_input(artifacts: Path) ->
             ),
         )
 
+    def rates_of(change: float, *, acceleration: float) -> Callable[[], None]:
+        """``check_trajectory_rates`` on a one-second move of the third joint by
+        ``change`` from rest to rest, with only that joint's acceleration limited."""
+        return lambda: check_trajectory_rates(
+            JointTrajectory(
+                group="right_arm",
+                joints=RIGHT,
+                time_from_start_ns=(0, 1_000_000_000),
+                positions=((0.0, 0.0, 0.0), (0.0, 0.0, change)),
+            ),
+            (None, None, None),
+            (None, None, acceleration),
+        )
+
     def asset_path(d: dict[str, Any]) -> None:
         d["readings"][rgb_reading]["value"]["path"] = "../escape.bin"
 
@@ -500,6 +519,23 @@ def test_conventions_accept_valid_and_reject_ambiguous_input(artifacts: Path) ->
             "out_of_limits",
         ),
         ("trajectory at its velocity limit", trajectory_from(0.0, 2.0), None),
+        # The documented 1e-9 relative allowance, at half and twice its width.
+        ("trajectory within the velocity allowance", trajectory_from(0.0, 2.0 * (1 + 5e-10)), None),
+        (
+            "trajectory past the velocity allowance",
+            trajectory_from(0.0, 2.0 * (1 + 2e-9)),
+            "out_of_limits",
+        ),
+        (
+            "trajectory within the acceleration allowance",
+            rates_of(2.0 * (1 + 5e-10), acceleration=4.0),  # 2d rad/s^2 at each end
+            None,
+        ),
+        (
+            "trajectory past the acceleration allowance",
+            rates_of(2.0 * (1 + 2e-9), acceleration=4.0),
+            "out_of_limits",
+        ),
         (
             "trajectory with a duration too large for a float",
             lambda: check_command(
