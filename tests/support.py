@@ -384,13 +384,18 @@ class ScriptedRuntime:
 
 
 def colliding_bimanual(
-    root: Path, *, blocked: tuple[float, float, float] | None = None
+    root: Path,
+    *,
+    blocked: tuple[float, float, float] | None = None,
+    block: tuple[float, float, float] | None = None,
 ) -> tuple[Path, Path]:
     """A two-arm MuJoCo package and a scene, under ``root``: the MuJoCo conformance robot
-    (two independent two-joint arms, at y = +0.3 and y = -0.3) with its geoms colliding
-    and an acceleration limit on every joint, so plans can be timed. ``blocked`` places a
-    fixed 4 cm cube centred there, to make a configuration that reaches it infeasible.
-    Returns the package root and the scene file."""
+    (two independent two-joint arms, at y = +0.3 and y = -0.3) with its geoms colliding,
+    an acceleration limit on every joint, so plans can be timed, and a joint-velocity
+    channel per arm (``left_arm_qd``, ``right_arm_qd``). ``blocked`` places a fixed 4 cm
+    cube centred there, to make a configuration that reaches it infeasible; ``block``
+    places a free 4 cm cube (``block``) there. Returns the package root and the scene
+    file."""
     source = Path(str(resources.files("ssrobot.mujoco") / "conformance_robot"))
     package = root / "colliding_bimanual"
     shutil.copytree(source, package)
@@ -401,9 +406,15 @@ def colliding_bimanual(
             '<geom contype="1" conaffinity="1" density="200"/>',
         )
     )
+    channels = "".join(
+        f'\n[[semantics.channels]]\nname = "{arm}_qd"\nquantity = "joint_velocity"\n'
+        f'source = "{arm}"\nshape = [2]\ndtype = "float64"\n'
+        for arm in ("left_arm", "right_arm")
+    )
     manifest = package / "ssrobot.toml"
     manifest.write_text(
         manifest.read_text().replace("velocity = 2.0\n", "velocity = 2.0\nacceleration = 4.0\n")
+        + channels
     )
     obstacle = (
         ""
@@ -411,6 +422,12 @@ def colliding_bimanual(
         else f'<body name="obstacle" pos="{blocked[0]} {blocked[1]} {blocked[2]}">'
         '<geom type="box" size="0.02 0.02 0.02" contype="1" conaffinity="1"/></body>'
     )
+    free = (
+        ""
+        if block is None
+        else f'<body name="block" pos="{block[0]} {block[1]} {block[2]}"><freejoint/>'
+        '<geom type="box" size="0.02 0.02 0.02" mass="0.1" contype="1" conaffinity="1"/></body>'
+    )
     scene = root / "scene.xml"
-    scene.write_text(f"<mujoco><worldbody>{obstacle}</worldbody></mujoco>\n")
+    scene.write_text(f"<mujoco><worldbody>{obstacle}{free}</worldbody></mujoco>\n")
     return package, scene

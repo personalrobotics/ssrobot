@@ -43,6 +43,13 @@ from ssrobot.context import (
     Ownership,
     RobotContext,
 )
+from ssrobot.continuation import (
+    Continuation,
+    ContinuationReport,
+    ContinuationResult,
+    Discrepancy,
+    PredictedSnapshot,
+)
 from ssrobot.conventions import ClockMode, Pose, Timestamp
 from ssrobot.description import (
     CollisionAllowance,
@@ -192,8 +199,12 @@ __all__ = [
     "Contact",
     "ContactKind",
     "ContextState",
+    "Continuation",
+    "ContinuationReport",
+    "ContinuationResult",
     "DType",
     "Diagnostic",
+    "Discrepancy",
     "EffectiveLimits",
     "EndEffector",
     "Execution",
@@ -254,6 +265,7 @@ __all__ = [
     "PortfolioReport",
     "Pose",
     "PoseGoal",
+    "PredictedSnapshot",
     "PreparedTrajectory",
     "ProfileEntry",
     "Quantity",
