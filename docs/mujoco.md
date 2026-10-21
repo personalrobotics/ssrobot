@@ -303,8 +303,8 @@ validator's answer (see *Motion validation* in [contracts.md](contracts.md)).
 sscbirrt's native `Snapshot.capture` applies its own rule for which gripper bodies may
 touch a held object. The provider therefore constructs sscbirrt's native attachment
 and snapshot types directly, with the attachment's own allowed bodies, and the extra
-pins `sscbirrt[mujoco]` within one minor release (`>=3.5,<3.6`) until sscbirrt offers a public constructor
-(personalrobotics/sscbirrt#206).
+pins `sscbirrt[mujoco]` within one minor release (`>=3.9,<3.10`) until sscbirrt offers a
+public constructor (personalrobotics/sscbirrt#206).
 
 ## Mapping
 
