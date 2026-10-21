@@ -704,6 +704,7 @@ class RobotContext:
         *,
         unsettled: Iterable[str] = (),
         releases: Mapping[str, Pose] | None = None,
+        joints: Mapping[str, float] | None = None,
     ) -> PredictedSnapshot:
         """The state expected if ``execution`` succeeds: its joints at its last waypoint,
         every held object its hand moves carried with it, everything else as in the
@@ -719,7 +720,9 @@ class RobotContext:
         prediction runs, such as a can dropped where the motion ends, each with the pose
         it is expected to come to rest at. In the predicted state each is detached and at
         that pose, for planning only; on arrival each must have been detached, the only
-        scene change allowed, and its pose is not compared."""
+        scene change allowed, and its pose is not compared. ``joints`` sets joints the
+        motion does not move to the positions expected when the plan runs, such as a
+        gripper's, opened by that release; for planning only."""
         self._require("predict")
         self._check_own(execution)
         command = execution.command
@@ -744,6 +747,14 @@ class RobotContext:
                 path="execution",
             )
         end = dict(zip(command.joints, command.positions[-1], strict=True))
+        expected = {str(j): float(v) for j, v in (joints or {}).items()}
+        if set(expected) & set(end) or not set(expected) <= set(base.joints):
+            raise ValidationError(
+                "unknown_reference",
+                "joints names joints of the robot the motion does not move",
+                path="joints",
+            )
+        end.update(expected)
         positions = tuple(end.get(j, v) for j, v in zip(base.joints, base.positions, strict=True))
         # Held objects on an end effector this motion moves go with it.
         scene = self.planning_scene(base, command.group)
@@ -784,6 +795,7 @@ class RobotContext:
             moved=tuple(command.joints),
             held=tuple(o for o in objects if o.name in moved and o.name not in releases),
             unsettled=tuple(sorted(set(unsettled))),
+            expected=tuple(sorted(expected)),
             releases=tuple(sorted(releases)),
             world=base.model,
             lineage=(base_id,),

@@ -1825,6 +1825,13 @@
           },
           "description": "Free objects whose pose it makes no claim about, such as one just released and still falling: kept at their captured pose for planning, and not compared on arrival. The continuation is still validated whole in the actual scene."
         },
+        "expected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joints the source does not move whose positions in the state the caller expects when the plan runs, such as a gripper's, opened by a release; for planning only. Only the plan's own joints are compared on arrival."
+        },
         "releases": {
           "type": "array",
           "items": {

@@ -218,7 +218,10 @@ def _releasing(ctx: RobotContext, planner: CBiRRT, *, release: bool) -> dict[str
     assert plan.succeeded, plan.status
     source = ctx.execute(plan, planner=planner)
     rest = Pose(position=(0.0, 0.8, 0.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0))  # where it lands
-    prediction = ctx.predict(source, releases={"block": rest})
+    # The idle left arm is expected elsewhere: set for planning, never compared.
+    other = ctx.description.group("left_arm").joints[0]
+    moved_to = snapshot.position(other) + 0.1
+    prediction = ctx.predict(source, releases={"block": rest}, joints={other: moved_to})
     ahead = CBiRRT(ctx.description)
     after = ctx.plan(_request(ctx, B, prediction), snapshot=prediction, planner=ahead)
     assert after.succeeded, after.status
@@ -231,6 +234,8 @@ def _releasing(ctx: RobotContext, planner: CBiRRT, *, release: bool) -> dict[str
     return {
         "prediction_releases": list(prediction.releases),
         "carried": [o.name for o in prediction.held],
+        "expected": list(prediction.expected),
+        "expected_set": prediction.state.position(other) == moved_to,
         "report": json.loads(dumps(result.report)),
     }
 
@@ -341,6 +346,7 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
     assert unsettled["report"]["accepted"], unsettled["report"]
     assert released["released"]["prediction_releases"] == ["block"]
     assert released["released"]["carried"] == []  # released: not carried in the state
+    assert released["released"]["expected"] == ["left_j1"] and released["released"]["expected_set"]
     assert released["released"]["report"]["accepted"], released["released"]["report"]
     kept = released["kept"]["report"]
     assert kept["refusal"] == "unpredicted_scene_change", kept

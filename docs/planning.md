@@ -360,6 +360,9 @@ it when the robot arrives. Three pieces make that safe:
      release is the one scene change a prediction may expect: in the predicted state the
      objects are detached and at those poses, for planning only, and on arrival each
      must be detached, with nothing else changed; their poses aren't compared;
+   - joints the motion doesn't move, set to the positions the caller expects when the
+     plan runs (`expected`, from `ctx.predict(execution, joints=...)`), such as a
+     gripper's, opened by a release; for planning only;
    - the world identity, and its `lineage`.
 
    Only a joint trajectory submitted with a snapshot captured at the current revision is

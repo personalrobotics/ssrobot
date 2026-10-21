@@ -99,6 +99,14 @@ class PredictedSnapshot(Record):
             "arrival. The continuation is still validated whole in the actual scene."
         ),
     )
+    expected: tuple[str, ...] = field(
+        default=(),
+        metadata=meta(
+            "Joints the source does not move whose positions in the state the caller "
+            "expects when the plan runs, such as a gripper's, opened by a release; for "
+            "planning only. Only the plan's own joints are compared on arrival."
+        ),
+    )
     releases: tuple[str, ...] = field(
         default=(),
         metadata=meta(
@@ -133,7 +141,15 @@ class PredictedSnapshot(Record):
                 "one-motion lookahead: a prediction extends exactly its captured base",
                 path="lineage",
             )
-        missing = [j for j in self.moved if j not in self.state.joints]
+        if set(self.expected) & set(self.moved) or list(self.expected) != sorted(
+            set(self.expected)
+        ):
+            raise ValidationError(
+                "inconsistent_prediction",
+                "expected names joints the source does not move, sorted, once each",
+                path="expected",
+            )
+        missing = [j for j in (*self.moved, *self.expected) if j not in self.state.joints]
         if missing:
             raise ValidationError(
                 "inconsistent_prediction", f"unknown joints {missing}", path="moved"
