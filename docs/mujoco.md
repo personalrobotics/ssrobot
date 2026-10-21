@@ -264,34 +264,30 @@ resolve fails with `invalid_snapshot` rather than indexing another entity.
 scene, which the `mujoco` extra installs. sscbirrt is imported only then, so opening a
 runtime never loads it.
 1. **The planning model.** The runtime's model is rebuilt from the same sources (the
-   package's model and the scene bytes it compiled), after the package is checked for
-   changes. Two kinds of `<exclude>` pair are added: every description collision
-   allowance, and each attachment's allowed names against its object, a fixture by
-   name and a robot frame by its body. sscbirrt's native policy honours allowed bodies
-   only between moving parts, so a robot frame the group does not move, such as a work
-   surface that is part of the robot, needs the exclude. Making these
-   allowances excludes keeps the policy exact without filtering contacts in Python.
-
-   A runtime compiles the planning model once per set of excludes and group. As at
-   opening, the package is checked for changes before and after each compile. The
-   runtime keeps the last 16 it compiled, so a snapshot whose allowances it has seen
-   before reuses that model without reading the disk. Nothing writes to a planning
-   model. A file changed after a model was compiled is noticed at the next compile, not
-   by scenes built on the model already compiled.
-2. **The native scene.** `NativeScene.from_model(model, group joints)`, made once with its
-   planning model and shared, immutably, between planning scenes.
+   package's model and the scene bytes it compiled), with every description collision
+   allowance added as an `<exclude>` pair. Those never change, and a held object's
+   allowances belong to the snapshot (step 4), so a runtime compiles one planning model,
+   at its first planning scene. As at opening, the package is checked for changes before
+   and after that compile. Nothing writes to the planning model. A file changed after it
+   was compiled is not noticed by later planning scenes.
+2. **The native scene.** `NativeScene.from_model(model, group joints)`, made once per
+   group and shared, immutably, between planning scenes.
 3. **The snapshot.** An `MjData` with the snapshot's joints and object poses becomes
-   sscbirrt's native `Snapshot`.
+   sscbirrt's `Snapshot.from_state`.
 4. **Lowering attachments.** Each attachment whose end effector moves with the group is
-   lowered to sscbirrt's `Attachment`:
+   lowered to sscbirrt's public `Attachment`:
    - the object's body;
    - the end effector's body;
    - the object's transform in that body (the end effector frame's offset composed
      with the declared transform);
-   - the bodies of its allowed frames.
+   - its allowed bodies: each allowed name's exact MuJoCo body, a robot frame's whether
+     or not the group moves it, or a scene fixture's.
 
-   An attachment on an end effector the group does not move stays environment, at its
-   snapshot pose.
+   sscbirrt honours an attachment's allowed bodies against the arm and the environment
+   alike, and nothing else: the arm's own contacts with those bodies are still checked,
+   as are contacts between two held objects. Each allowance set is its own snapshot,
+   over the same native scene. An attachment on an end effector the group does not move
+   stays environment, at its snapshot pose, and its allowances do not apply.
 5. **The checker.** Each planning scene owns a `NativeCollisionChecker`, with its own
    validator and `MjData`. `native()` returns that checker, for a planner adapter.
 
@@ -300,11 +296,11 @@ description frame, object, or fixture of each body, and `world` for world geoms.
 planning scene answers state queries only: whether a motion is valid is the planner's
 validator's answer (see *Motion validation* in [contracts.md](contracts.md)).
 
-sscbirrt's native `Snapshot.capture` applies its own rule for which gripper bodies may
-touch a held object. The provider therefore constructs sscbirrt's native attachment
-and snapshot types directly, with the attachment's own allowed bodies, and the extra
-pins `sscbirrt[mujoco]` within one minor release (`>=3.9,<3.10`) until sscbirrt offers a
-public constructor (personalrobotics/sscbirrt#206).
+Attachments and snapshots are built with sscbirrt's public `Attachment` and
+`Snapshot.from_state` (personalrobotics/sscbirrt#206), with each attachment's own
+allowed bodies rather than sscbirrt's default gripper rule. The extra requires
+`sscbirrt[mujoco]>=3.11,<4`: 3.11 is the first release with that constructor and with
+allowances honoured against the environment (personalrobotics/sscbirrt#247).
 
 ## Mapping
 
@@ -538,7 +534,7 @@ the returned model or data reaches no other materialization and no runtime.
 | `artifacts/test_invalid_attachments_and_scenes_change_nothing/refusals.json` | Each refused `attach` and `detach`, with its code, leaving the scene unchanged: an unknown object, a fixture as object, an unknown end effector or allow name, a repeated allow name, a non-pose transform, a transform far from the box (`attachment_mismatch`), a stale revision (`StaleRevisionError`), a boolean or float revision (`wrong_type`) and a negative one (`out_of_limits`), already attached, and not attached. A fixture may be allowed. Scenes that reuse a robot name (`scene_conflict`), have an articulated or unnamed body, or include or reference a file that does not exist (`invalid_scene`) fail at open. |
 | `artifacts/test_scenes_include_files_and_assets_under_one_identity/scene_assets.json` | A scene that sets `meshdir`, includes a table fixture with a mesh visual, and has a free cylinder, opened with the example arm. The mapping lists `meshes/leg.stl`, `parts/table.xml`, and `scene.xml` with their hashes. A moved copy keeps the identity; editing the include or the mesh changes it. A declared `scene_root` lets the scene use a sibling directory's mesh, which it otherwise cannot reach (`scene_escape`). `..`, a symlink out of the root (`scene_escape`), an absolute path, and a `<model file>` reference (`invalid_scene`) are refused. A mesh rewritten after the closure was read does not reach the compiled model. A planning scene builds on the composed world. Two runs are byte-identical. |
 | `artifacts/test_planning_scenes_are_isolated_and_agree/isolation.json`, `trace.jsonl` | After the grasp, with the pedestal allowed, one snapshot and two planning scenes.<br>**Isolation:** the scenes start with equal answers (validity, contacts, `tcp` pose). Each is then queried at configurations the other never sees, and afterwards both answer exactly as before, while the snapshot's fingerprint and the live arm are unchanged.<br>**Accuracy:** forward kinematics matches an independently compiled model exactly.<br>**Semantics:** the grasp configuration is valid, raised and swung aside are valid, and the lift and the carry edges are valid. Swinging down puts the held box and the fingers into the floor, and driving the fingers into the pedestal names it; both are invalid.<br>**Round trip:** a snapshot decoded from JSON answers identically.<br>A second run is byte-identical. |
-| `artifacts/test_an_allowed_static_robot_frame_is_honoured/static_frame_allowance.json` | A puck resting on the example arm's fixed `base`, declared held by the hand. With only the hand's frames allowed, the planning scene refuses the state and names the `base`/`puck` contact; with `base` allowed too, the state is valid with no contact. Within one runtime, hand only, then with `base`, then hand only again answer exactly as those separate runtimes do, so a reused planning model never carries another snapshot's allowances. |
+| `artifacts/test_an_allowed_static_robot_frame_is_honoured/static_frame_allowance.json` | A puck resting on the example arm's fixed `base`, declared held by the hand. With only the hand's frames allowed, the planning scene refuses the state and names the `base`/`puck` contact; with `base` allowed too, the state is valid with no contact. Within one runtime, hand only, then with `base`, then hand only again answer exactly as those separate runtimes do, so a planning model and native scene shared between snapshots never carry one snapshot's allowances into another. |
 | `artifacts/test_a_profiled_joint_measures_the_opening/gripper_opening.json` | The example package with `opening` declared on `left_finger_joint` (closed 0, open 0.04). Closed on the box, open, and closed on nothing, the reported opening equals the calibrated map of the joint's position, read independently from a snapshot: 0.366, 0.999, and 0. A measuring joint of another component, and equal closed and open values, fail with `invalid_profile` at open. |
 | `artifacts/test_a_viewer_reads_runtime_state_and_cannot_change_it/render_state.json`, `{clean,vandalized}.trace.jsonl` | The example arm in `pedestal.xml` runs one script twice: capture, move above the box, declare the grasp, capture. In one run a viewer vandalizes its handle after each capture, scrambling positions, doubling every geom, and running its own physics. Both runs give byte-identical traces and the same observation. A second viewer's handle, made after the vandalism, holds the compiled model, compared by its geometry and mass contents. The vandal's handle keeps its own doubled model, though each capture restores the runtime's positions. Each capture names the context's time and revision (0, then 1 after the grasp) and the snapshot's world. A handle draws offscreen, refuses to capture after its runtime reopens (`stale_render`), and a context over `ReplayRuntime` fails with `render_unavailable`. A second run is byte-identical. |
 | `artifacts/test_every_reading_is_of_the_state_after_the_last_step/observation_instant.json` | The example arm moving through a trajectory, observed every tick. Its `tcp_pose` equals forward kinematics of the same tick's joints on a separately materialized world (largest difference 4.4e-16; a pose read one step stale would have been up to 0.86 mm off). Its `wrist_wrench` equals the sensors of a separate copy of the runtime's state evaluated there, exactly. The same motion observed every tick and never observed passes through identical MuJoCo integration states (all 86 values of `mjSTATE_INTEGRATION`, warm start included). Joint effort and the gripper's opening (which moves from 0.50 to 0.04) read the same whether a pose channel is asked for before them or not. A second run is byte-identical. |

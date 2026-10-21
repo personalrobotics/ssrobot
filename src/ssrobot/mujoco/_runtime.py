@@ -281,7 +281,7 @@ class MujocoRuntime:
         self._objects: dict[str, int] = {}  # scene object: MuJoCo body id
         self._fixtures: dict[str, int] = {}  # scene fixture: MuJoCo body id
         self._sources: tuple[Path, SceneSource | None] | None = None  # model file, scene
-        self._planning_models: Any = None  # PlanningModels, made at the first planning scene
+        self._planning_models: Any = None  # PlanningModel, made at the first planning scene
         self._identity = ""  # the simulated world, for snapshot compatibility
         self._attached: dict[str, _Tracked] = {}
         pairs = []
@@ -598,11 +598,11 @@ class MujocoRuntime:
             )
         assert self._sources is not None
         # loads sscbirrt only now
-        from ssrobot.mujoco._planning import PlanningModels, materialize
+        from ssrobot.mujoco._planning import PlanningModel, materialize
 
         if self._planning_models is None:
             package = self._package
-            self._planning_models = PlanningModels(self._sources, lambda: unchanged(package))
+            self._planning_models = PlanningModel(self._sources, lambda: unchanged(package))
         return materialize(
             description=self._described(),
             frames=self._frames,
