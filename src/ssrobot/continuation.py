@@ -8,7 +8,8 @@ only as a ``Continuation``, through ``RobotContext.execute_continuation``, which
 
 1. captures the actual state once the source has finished;
 2. checks that the source succeeded, that the commanded joints are at rest and within the
-   arrival tolerance of the plan's start, and that the scene changed only as predicted;
+   arrival tolerance of the plan's start, and that the scene changed only as predicted
+   (objects the prediction names ``unsettled`` excepted);
 3. asks the plan's planner to rebase it onto the actual state (``Planner.rebase``); a
    planner without it cannot continue;
 4. compiles the rebased motion with ``prepare``, validating it whole under the original
@@ -89,6 +90,14 @@ class PredictedSnapshot(Record):
         default=(),
         metadata=meta("Held objects whose predicted pose moves with the hand, as in the state."),
     )
+    unsettled: tuple[str, ...] = field(
+        default=(),
+        metadata=meta(
+            "Free objects whose pose it makes no claim about, such as one just released and "
+            "still falling: kept at their captured pose for planning, and not compared on "
+            "arrival. The continuation is still validated whole in the actual scene."
+        ),
+    )
     world: str = field(metadata=meta("The world identity (model and scene) it is a state of."))
     lineage: tuple[str, ...] = field(
         metadata=meta("Fingerprints it was predicted from, oldest first: the captured base.")
@@ -118,6 +127,13 @@ class PredictedSnapshot(Record):
         if missing:
             raise ValidationError(
                 "inconsistent_prediction", f"unknown joints {missing}", path="moved"
+            )
+        free = {o.name for o in self.state.objects} - {a.object for a in self.state.attachments}
+        if list(self.unsettled) != sorted(set(self.unsettled)) or not set(self.unsettled) <= free:
+            raise ValidationError(
+                "inconsistent_prediction",
+                "unsettled names free scene objects, sorted, once each",
+                path="unsettled",
             )
 
 

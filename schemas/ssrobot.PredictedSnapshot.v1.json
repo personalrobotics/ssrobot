@@ -155,6 +155,13 @@
           },
           "description": "Held objects whose predicted pose moves with the hand, as in the state."
         },
+        "unsettled": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Free objects whose pose it makes no claim about, such as one just released and still falling: kept at their captured pose for planning, and not compared on arrival. The continuation is still validated whole in the actual scene."
+        },
         "world": {
           "type": "string",
           "description": "The world identity (model and scene) it is a state of."

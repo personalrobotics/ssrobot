@@ -228,7 +228,8 @@ def _scene_changes(
 ) -> list[Discrepancy]:
     """How ``actual`` differs from ``prediction`` beyond the joints: a scene change (a new
     revision, other attachments or fixtures), or a free object moved beyond tolerance.
-    Held objects move with their hand, which the joints already account for."""
+    Held objects move with their hand, which the joints already account for; unsettled
+    ones are not compared."""
     predicted = prediction.state
     changes = []
     if actual.revision != prediction.base_revision:
@@ -245,6 +246,7 @@ def _scene_changes(
     if actual.fixtures != predicted.fixtures:
         changes.append(Discrepancy(what="fixtures", predicted=0.0, actual=1.0, tolerance=0.0))
     held = {o.name for o in prediction.held} | {a.object for a in predicted.attachments}
+    held |= set(prediction.unsettled)
     now = {o.name: o for o in actual.objects}
     for o in predicted.objects:
         if o.name in held:
@@ -694,13 +696,17 @@ class RobotContext:
 
     # -- Interleaving planning and execution -----------------------------------------
 
-    def predict(self, execution: Execution) -> PredictedSnapshot:
+    def predict(self, execution: Execution, *, unsettled: Iterable[str] = ()) -> PredictedSnapshot:
         """The state expected if ``execution`` succeeds: its joints at its last waypoint,
         every held object its hand moves carried with it, everything else as in the
         captured snapshot it was submitted with. One motion ahead: the execution must
         have been submitted with a snapshot this context captured, and be a joint
         trajectory; a guarded one stops where it meets contact, which is not known in
-        advance (``unpredictable_command``)."""
+        advance (``unpredictable_command``).
+
+        ``unsettled`` names free objects whose pose the prediction makes no claim about,
+        such as one just released and still falling; it is recorded in the prediction,
+        and their poses are not compared on arrival."""
         self._require("predict")
         self._check_own(execution)
         command = execution.command
@@ -751,6 +757,7 @@ class RobotContext:
             command=fingerprint(command),
             moved=tuple(command.joints),
             held=tuple(o for o in objects if o.name in moved),
+            unsettled=tuple(sorted(set(unsettled))),
             world=base.model,
             lineage=(base_id,),
         )

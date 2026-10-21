@@ -350,6 +350,10 @@ it when the robot arrives. Three pieces make that safe:
    - the joints the command moves (`moved`), set to its last waypoint in the predicted
      state;
    - held objects that move with the hand (`held`);
+   - free objects whose pose it makes no claim about (`unsettled`, from
+     `ctx.predict(execution, unsettled=...)`), such as one just released and still
+     falling. They stay at their captured pose for planning and aren't compared on
+     arrival; the continuation is still validated whole in the actual scene;
    - the world identity, and its `lineage`.
 
    Only a joint trajectory submitted with a snapshot captured at the current revision is

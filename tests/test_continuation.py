@@ -14,7 +14,10 @@ Each refusal, from a fresh run, submits nothing and says why:
 - ``source_not_succeeded``: the source motion was canceled;
 - ``not_at_rest``: the arm is still moving more than the rest tolerance;
 - ``arrival_out_of_tolerance``: the arrival is outside a (deliberately tight) tolerance;
-- ``unpredicted_scene_change``: a block was attached after the prediction;
+- ``unpredicted_scene_change``: a block was attached after the prediction; or, under
+  gravity, a free block fell during the source motion.
+A prediction that names that falling block ``unsettled`` makes no claim about its pose,
+so the same arrival continues.
 - ``rebase_unsupported``: the planner cannot rebase.
 
 The evidence is ``continuation.json``: the prediction and its lineage, the accepted
@@ -102,13 +105,13 @@ def _session(tmp: Path, run: Any, **fixture: Any) -> Any:
         return run(ctx, CBiRRT(package.description))
 
 
-def _start_source(ctx: RobotContext, planner: CBiRRT) -> Any:
+def _start_source(ctx: RobotContext, planner: CBiRRT, unsettled: tuple[str, ...] = ()) -> Any:
     """Plan and execute rest -> A; return the execution and its prediction."""
     snapshot = ctx.snapshot()
     plan = ctx.plan(_request(ctx, A, snapshot), snapshot=snapshot, planner=planner)
     assert plan.succeeded, plan.status
     source = ctx.execute(plan, planner=planner)
-    return source, ctx.predict(source)
+    return source, ctx.predict(source, unsettled=unsettled)
 
 
 def _accepted(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
@@ -169,9 +172,10 @@ def _refused(
     *,
     before: Any = None,
     plan_with: Any = None,
+    unsettled: tuple[str, ...] = (),
     **options: Any,
 ) -> dict[str, Any]:
-    source, prediction = _start_source(ctx, planner)
+    source, prediction = _start_source(ctx, planner, unsettled)
     ahead = plan_with or CBiRRT(ctx.description)
     plan = ctx.plan(_request(ctx, B, prediction), snapshot=prediction, planner=ahead)
     if before is not None:
@@ -183,6 +187,7 @@ def _refused(
         ctx.continuation(plan, planner=ahead, prediction=prediction), **options
     )
     return {
+        "prediction_unsettled": list(prediction.unsettled),
         "report": json.loads(dumps(result.report)),
         "submitted_nothing": result.execution is None and len(ctx.executions) == executions,
     }
@@ -223,6 +228,12 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
             ),
             block=BLOCK,
         ),
+        "unpredicted_scene_change_falling": _session(
+            tmp_path / "falling",
+            lambda c, p: _refused(c, p, before=_settle, rest_tolerance=1.0),
+            block=BLOCK,
+            falling=True,
+        ),
         "rebase_unsupported": _session(
             tmp_path / "unable",
             lambda c, p: _refused(
@@ -230,8 +241,16 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
             ),
         ),
     }
+    # The same falling block, named unsettled: not compared, so the continuation runs.
+    unsettled = _session(
+        tmp_path / "unsettled",
+        lambda c, p: _refused(c, p, before=_settle, unsettled=("block",), rest_tolerance=1.0),
+        block=BLOCK,
+        falling=True,
+    )
     (artifacts / "continuation.json").write_text(
-        json.dumps({"accepted": accepted, "refused": refusals}, indent=2) + "\n"
+        json.dumps({"accepted": accepted, "refused": refusals, "unsettled": unsettled}, indent=2)
+        + "\n"
     )
 
     report = accepted["report"]
@@ -250,5 +269,8 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
     assert accepted["timeline"]["ticks_stepped_while_planning"] > 0
 
     for code, outcome in refusals.items():
-        assert outcome["report"]["refusal"] == code, (code, outcome["report"])
+        assert outcome["report"]["refusal"] == code.removesuffix("_falling"), (code, outcome)
         assert not outcome["report"]["accepted"] and outcome["submitted_nothing"], code
+    assert refusals["unpredicted_scene_change_falling"]["report"]["detail"] == "object block"
+    assert unsettled["prediction_unsettled"] == ["block"]
+    assert unsettled["report"]["accepted"], unsettled["report"]
