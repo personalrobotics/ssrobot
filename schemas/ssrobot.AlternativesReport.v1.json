@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.AlternativesReport v1",
+  "$ref": "#/$defs/AlternativesReport",
+  "$defs": {
+    "AlternativeAttempt": {
+      "type": "object",
+      "description": "What one attempt at an alternative did, without wall-clock time.",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "description": "Position in its alternative's attempts.",
+          "x-unit": "count"
+        },
+        "planner": {
+          "type": "string",
+          "description": "The planner's name."
+        },
+        "processor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The processor's name, if any."
+        },
+        "seed": {
+          "type": "integer",
+          "description": "The seed it planned with.",
+          "x-unit": "1"
+        },
+        "priority": {
+          "type": "integer",
+          "description": "Its declared priority; higher is preferred.",
+          "x-unit": "1"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "refused",
+            "not_started",
+            "canceled_by_priority",
+            "failed",
+            "invalid",
+            "valid"
+          ],
+          "description": "How it ended."
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "succeeded",
+                "infeasible",
+                "timeout",
+                "cancelled",
+                "invalid_input",
+                "backend_failure"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The planner's status, if it returned a result."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Why it ended so: a code or a witness."
+        },
+        "duration_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its candidate's duration, if it is valid.",
+          "x-unit": "s"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the planner's PlanResult, if it returned one."
+        },
+        "validation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the fresh MotionValidation of its motion, if validated."
+        }
+      },
+      "required": [
+        "index",
+        "planner",
+        "seed",
+        "priority",
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    "AlternativeRecord": {
+      "type": "object",
+      "description": "One alternative and every attempt at it.",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "description": "Position in the declared alternatives.",
+          "x-unit": "count"
+        },
+        "label": {
+          "type": "string",
+          "description": "The caller's label, if any."
+        },
+        "request": {
+          "type": "string",
+          "description": "Fingerprint of its request, before per-attempt seeds."
+        },
+        "priority": {
+          "type": "integer",
+          "description": "Its declared priority; higher is preferred.",
+          "x-unit": "1"
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AlternativeAttempt"
+          },
+          "description": "Every attempt, in order."
+        }
+      },
+      "required": [
+        "index",
+        "request",
+        "priority",
+        "attempts"
+      ],
+      "additionalProperties": false
+    },
+    "AlternativesReport": {
+      "type": "object",
+      "description": "Every alternative, every attempt at it, and which was selected. Its selection is",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.AlternativesReport"
+        },
+        "version": {
+          "const": 1
+        },
+        "snapshot": {
+          "type": "string",
+          "description": "Fingerprint of the one snapshot every request used."
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AlternativeRecord"
+          },
+          "description": "Every alternative, in order."
+        },
+        "selected_alternative": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The selected alternative's index, if any.",
+          "x-unit": "count"
+        },
+        "selected_attempt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The selected attempt's index in it, if any.",
+          "x-unit": "count"
+        },
+        "selection": {
+          "type": "string",
+          "description": "The selection rule."
+        },
+        "cancel_lower": {
+          "type": "boolean",
+          "description": "Whether a valid attempt stops strictly lower priorities."
+        },
+        "stopped": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "timeout",
+                "aborted"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Aborted, if the caller's abort stopped the run."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "snapshot",
+        "alternatives"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

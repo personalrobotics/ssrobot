@@ -9,6 +9,15 @@ from ssrobot._wire import (
     dumps,
     loads,
 )
+from ssrobot.alternatives import (
+    Alternative,
+    AlternativeAttempt,
+    AlternativeOutcome,
+    AlternativeRecord,
+    Alternatives,
+    AlternativesReport,
+    plan_alternatives,
+)
 from ssrobot.bundle import Bundle, BundleFile, RunBundle, open_bundle, write_bundle
 from ssrobot.commands import (
     ActionChunk,
@@ -149,6 +158,12 @@ from ssrobot.trace import JsonlTrace, TraceKind, TraceRecord, read_trace
 
 __all__ = [
     "ActionChunk",
+    "Alternative",
+    "AlternativeAttempt",
+    "AlternativeOutcome",
+    "AlternativeRecord",
+    "Alternatives",
+    "AlternativesReport",
     "AppliedCommand",
     "ArrayValue",
     "AssetStore",
@@ -288,6 +303,7 @@ __all__ = [
     "load_package",
     "loads",
     "open_bundle",
+    "plan_alternatives",
     "plan_portfolio",
     "prepare",
     "read_trace",

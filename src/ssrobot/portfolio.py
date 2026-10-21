@@ -61,6 +61,9 @@ SELECTION = "highest priority, then shortest duration, then earliest attempt"
 
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 
+OUTRANKED = "a higher priority is valid"
+"""Why work was stopped because a strictly higher priority is valid."""
+
 
 @dataclass(frozen=True, slots=True)
 class PlanAttempt:
@@ -275,136 +278,262 @@ def plan_portfolio(
         raise ValidationError(
             "out_of_limits", f"between 1 and {MAX_ATTEMPTS} attempts", path="attempts"
         )
-    if not 1 <= workers <= len(attempts):
-        raise ValidationError(
-            "out_of_limits", "workers must be between 1 and the attempts", path="workers"
+    if timeout_s is not None and not (math.isfinite(timeout_s) and timeout_s > 0):
+        raise ValidationError("out_of_limits", "timeout_s must be positive", path="timeout_s")
+    jobs = [
+        _Job(0, i, 0, request if a.seed is None else replace(request, seed=a.seed), a)
+        for i, a in enumerate(attempts)
+    ]
+    run = _run_jobs(
+        ctx,
+        snapshot,
+        jobs,
+        workers=workers,
+        timeout_s=timeout_s,
+        abort=abort,
+        cutoff=False,
+        path="attempts",
+    )
+    outcomes = {
+        _Ended.REFUSED: AttemptOutcome.REFUSED,
+        _Ended.NOT_STARTED: AttemptOutcome.CANCELED,
+        _Ended.FAILED: AttemptOutcome.FAILED,
+        _Ended.INVALID: AttemptOutcome.INVALID,
+        _Ended.VALID: AttemptOutcome.VALID,
+    }
+    records = tuple(
+        AttemptRecord(
+            index=e.job.attempt,
+            planner=e.job.planner.name,
+            processor=None if e.job.processor is None else e.job.processor.name,
+            seed=e.job.request.seed,
+            priority=e.job.priority,
+            outcome=outcomes[e.ended],
+            status=e.status,
+            detail=e.detail,
+            duration_s=e.duration_s,
+            result=e.result,
+            validation=e.validation,
         )
-    if workers > 1 and len({id(a.planner) for a in attempts}) != len(attempts):
+        for e in run.ends
+    )
+    report = PortfolioReport(
+        snapshot=snapshot.fingerprint(),
+        request=fingerprint(request),
+        attempts=records,
+        selected=select(records),
+        stopped=run.stopped,
+    )
+    return Portfolio(
+        report=report,
+        attempts=attempts,
+        results=tuple(e.raw for e in run.ends),
+        candidates=tuple(e.candidate for e in run.ends),
+    )
+
+
+# ---------------------------------------------------------------------------
+# The engine portfolios and alternatives share: isolated attempts on a bounded pool,
+# each with its own planning scene built on the context's thread, each validated again
+# on a fresh scene as its result arrives.
+
+
+class _Ended(enum.Enum):
+    REFUSED = "refused"
+    NOT_STARTED = "not_started"
+    CANCELED_BY_PRIORITY = "canceled_by_priority"
+    FAILED = "failed"
+    INVALID = "invalid"
+    VALID = "valid"
+
+
+@dataclass(frozen=True, slots=True)
+class _Job:
+    alternative: int
+    attempt: int
+    rank: int
+    """The job's alternative priority: work of a strictly lower rank may be canceled
+    once a higher-ranked job is valid (with ``cutoff``)."""
+    request: PlanningRequest
+    plan_attempt: PlanAttempt
+
+    @property
+    def planner(self) -> Planner:
+        return self.plan_attempt.planner
+
+    @property
+    def processor(self) -> TrajectoryProcessor | None:
+        return self.plan_attempt.processor
+
+    @property
+    def priority(self) -> int:
+        return self.plan_attempt.priority
+
+
+@dataclass(slots=True)
+class _End:
+    job: _Job
+    ended: _Ended = _Ended.NOT_STARTED
+    status: PlanStatus | None = None
+    detail: str = ""
+    duration_s: float | None = None
+    result: str | None = None
+    validation: str | None = None
+    raw: PlanResult | None = None
+    candidate: PlanResult | None = None
+    interval_s: tuple[float, float] | None = None
+    """When it planned, in seconds from the start of the run: timing, never evidence."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Run:
+    ends: tuple[_End, ...]
+    stopped: StopReason | None
+
+
+def _run_jobs(
+    ctx: RobotContext,
+    snapshot: SceneSnapshot,
+    jobs: Sequence[_Job],
+    *,
+    workers: int,
+    timeout_s: float | None,
+    abort: Callable[[], bool] | None,
+    cutoff: bool,
+    path: str,
+) -> _Run:
+    """Run every job, each in its own scene of ``snapshot``, on at most ``workers``
+    threads, in the order given (the caller's scheduling order). Each success is
+    validated on a fresh scene as it arrives. With ``cutoff``, a valid job cancels work
+    of a strictly lower rank: not started, it never starts; running, it is told to stop."""
+    if not 1 <= workers <= len(jobs):
+        raise ValidationError(
+            "out_of_limits", f"workers must be between 1 and the {path}", path="workers"
+        )
+    if workers > 1 and len({id(j.planner) for j in jobs}) != len(jobs):
         raise ValidationError(
             "shared_planner",
             "attempts that may run at once need their own planner instances",
-            path="attempts",
+            path=path,
         )
-    if timeout_s is not None and not (math.isfinite(timeout_s) and timeout_s > 0):
-        raise ValidationError("out_of_limits", "timeout_s must be positive", path="timeout_s")
     if not isinstance(snapshot, SceneSnapshot):
         raise ValidationError("wrong_type", "snapshot must be a SceneSnapshot", path="snapshot")
-    check_planned_in(request, ctx.description, snapshot)
+    for job in jobs:
+        check_planned_in(job.request, ctx.description, snapshot)
 
-    records: list[AttemptRecord | None] = [None] * len(attempts)
-    results: list[PlanResult | None] = [None] * len(attempts)
-    candidates: list[PlanResult | None] = [None] * len(attempts)
-    requests = [request if a.seed is None else replace(request, seed=a.seed) for a in attempts]
-
-    def record(i: int, outcome: AttemptOutcome, **fields: object) -> None:
-        a = attempts[i]
-        records[i] = AttemptRecord(
-            index=i,
-            planner=a.planner.name,
-            processor=None if a.processor is None else a.processor.name,
-            seed=requests[i].seed,
-            priority=a.priority,
-            outcome=outcome,
-            **fields,  # type: ignore[arg-type]
-        )
-
+    ends = [_End(job) for job in jobs]
     # Negotiate, then build every scene here: the context is not shared with workers.
     scenes: dict[int, PlanningScene] = {}
-    for i, a in enumerate(attempts):
+    for k, job in enumerate(jobs):
         try:
-            negotiate(requests[i], a.planner.capabilities(requests[i]), a.processor)
+            negotiate(job.request, job.planner.capabilities(job.request), job.processor)
         except SsrobotError as e:
-            record(i, AttemptOutcome.REFUSED, detail=e.code)
+            ends[k].ended, ends[k].detail = _Ended.REFUSED, e.code
             continue
-        scenes[i] = ctx.planning_scene(
-            snapshot, requests[i].group, clearance_m=requests[i].clearance_m
+        scenes[k] = ctx.planning_scene(
+            snapshot, job.request.group, clearance_m=job.request.clearance_m
         )
 
-    stop = threading.Event()
-    deadline = None if timeout_s is None else time.monotonic() + timeout_s
+    everything = threading.Event()
+    stops = {k: threading.Event() for k in scenes}
+    told: set[int] = set()  # running jobs told to stop by a higher rank's success
+    started = time.monotonic()
+    deadline = None if timeout_s is None else started + timeout_s
+    intervals: dict[int, tuple[float, float]] = {}
 
-    def run(i: int) -> PlanResult:
-        result = attempts[i].planner.plan(requests[i], scenes[i], abort=stop.is_set)
-        if not isinstance(result, PlanResult):
-            raise ValidationError("planner_contract", f"the planner answered {result!r}")
-        check_result(requests[i], result)
-        return result
+    def run(k: int) -> PlanResult:
+        begin = time.monotonic() - started
+        try:
+            job = jobs[k]
+            result = job.planner.plan(
+                job.request,
+                scenes[k],
+                abort=lambda: everything.is_set() or stops[k].is_set(),
+            )
+            if not isinstance(result, PlanResult):
+                raise ValidationError("planner_contract", f"the planner answered {result!r}")
+            check_result(job.request, result)
+            return result
+        finally:
+            intervals[k] = (begin, time.monotonic() - started)
 
     stopped: StopReason | None = None
+    # Jobs are handed to the pool only as workers free up, and only after every finished
+    # job has been validated: a job that a higher rank outranks while it waits is never
+    # started, the same with one worker however fast the pool is.
+    queue = [k for k in range(len(jobs)) if k in scenes]
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ssrobot-portfolio")
+    running: dict[Future[PlanResult], int] = {}
     try:
-        futures: dict[Future[PlanResult], int] = {pool.submit(run, i): i for i in scenes}
-        pending = set(futures)
-        while pending:
-            done, pending = wait(pending, timeout=0.01, return_when=FIRST_COMPLETED)
+        while queue or running:
+            if stopped is None:
+                while queue and len(running) < workers:
+                    k = queue.pop(0)
+                    running[pool.submit(run, k)] = k
+            done, _ = wait(set(running), timeout=0.01, return_when=FIRST_COMPLETED)
             if stopped is None and deadline is not None and time.monotonic() >= deadline:
                 stopped = StopReason.TIMEOUT
             if stopped is None and abort is not None and abort():
                 stopped = StopReason.ABORTED
-            if stopped is not None and not stop.is_set():
-                stop.set()
-                for future in pending:
-                    future.cancel()
+            if stopped is not None and not everything.is_set():
+                everything.set()
+                for k in queue:
+                    ends[k].ended, ends[k].detail = _Ended.NOT_STARTED, stopped.value
+                queue.clear()
             for future in done:
-                i = futures[future]
-                if future.cancelled():
-                    continue
+                k = running.pop(future)
+                end = ends[k]
                 try:
-                    results[i] = future.result()
+                    end.raw = future.result()
                 except SsrobotError as e:
-                    record(i, AttemptOutcome.FAILED, detail=f"{e.code}: {e.message}")
-            pending = {f for f in pending if not f.cancelled()}
-        for future, i in futures.items():
-            if future.cancelled():
-                assert stopped is not None
-                record(i, AttemptOutcome.CANCELED, detail=stopped.value)
+                    end.ended, end.detail = _Ended.FAILED, f"{e.code}: {e.message}"
+                    continue
+                if k in told:
+                    end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, OUTRANKED
+                    end.status, end.result = end.raw.status, fingerprint(end.raw)
+                    continue
+                _validate(end, ctx, snapshot)
+                if cutoff and end.ended is _Ended.VALID:
+                    rank = jobs[k].rank
+                    for other in [q for q in queue if jobs[q].rank < rank]:
+                        queue.remove(other)
+                        ends[other].ended, ends[other].detail = _Ended.NOT_STARTED, OUTRANKED
+                    for other in running.values():
+                        if jobs[other].rank < rank:
+                            told.add(other)
+                            stops[other].set()
     finally:
-        stop.set()
+        everything.set()
         pool.shutdown(wait=True, cancel_futures=True)
         scenes.clear()
+    for k, interval in intervals.items():
+        ends[k].interval_s = interval
+    return _Run(ends=tuple(ends), stopped=stopped)
 
-    # Validate every success on a fresh scene of the same snapshot, then select.
-    for i, result in enumerate(results):
-        if result is None:
-            continue
-        ran = {"status": result.status, "result": fingerprint(result)}
-        if not result.succeeded:
-            record(i, AttemptOutcome.FAILED, detail=result.status.value, **ran)
-            continue
-        try:
-            candidate, fresh = _candidate(attempts[i], requests[i], result, ctx, snapshot)
-        except SsrobotError as e:
-            record(i, AttemptOutcome.FAILED, detail=f"{e.code}: {e.message}", **ran)
-            continue
-        checked = {**ran, "validation": fingerprint(fresh)}
-        if candidate is None:
-            witness = fresh.witness
-            assert witness is not None
-            detail = f"{witness.failure.value} at t = {witness.time_s} s"
-            record(i, AttemptOutcome.INVALID, detail=detail, **checked)
-            continue
-        candidates[i] = candidate
-        assert candidate.trajectory is not None
-        record(
-            i,
-            AttemptOutcome.VALID,
-            detail="valid",
-            duration_s=candidate.trajectory.duration,
-            **checked,
-        )
 
-    final = tuple(r for r in records if r is not None)
-    assert len(final) == len(attempts)
-    report = PortfolioReport(
-        snapshot=snapshot.fingerprint(),
-        request=fingerprint(request),
-        attempts=final,
-        selected=select(final),
-        stopped=stopped,
-    )
-    return Portfolio(
-        report=report, attempts=attempts, results=tuple(results), candidates=tuple(candidates)
-    )
+def _validate(end: _End, ctx: RobotContext, snapshot: SceneSnapshot) -> None:
+    """Record a returned result: failed, or validated on a fresh scene of ``snapshot``
+    and then invalid or valid, with its candidate."""
+    result = end.raw
+    assert result is not None
+    end.status, end.result = result.status, fingerprint(result)
+    if not result.succeeded:
+        end.ended, end.detail = _Ended.FAILED, result.status.value
+        return
+    try:
+        candidate, fresh = _candidate(end.job.plan_attempt, end.job.request, result, ctx, snapshot)
+    except SsrobotError as e:
+        end.ended, end.detail = _Ended.FAILED, f"{e.code}: {e.message}"
+        return
+    end.validation = fingerprint(fresh)
+    if candidate is None:
+        witness = fresh.witness
+        assert witness is not None
+        end.ended, end.detail = _Ended.INVALID, f"{witness.failure.value} at t = {witness.time_s} s"
+        return
+    assert candidate.trajectory is not None
+    end.candidate = candidate
+    end.ended, end.detail, end.duration_s = _Ended.VALID, "valid", candidate.trajectory.duration
 
 
 def _candidate(

@@ -284,6 +284,59 @@ state with each other or with the live context.
 processor runs again. That call checks that the snapshot is still current and compiles
 exactly the validated motion.
 
+## Racing alternatives
+
+`ssrobot.plan_alternatives(ctx, alternatives, *, snapshot, workers=1, cancel_lower=True,
+abort=None)` plans several **alternative requests** in one snapshot and selects one:
+the same task for either of two arms, or towards either of two goals. Each
+`Alternative(request, attempts, priority=0, label="")` carries its own `PlanAttempt`s.
+It runs on the portfolio's engine:
+- **isolation:** every attempt gets its own planning scene, built on the context's
+  thread before it runs;
+- **validation:** every success is validated again on a fresh scene of the snapshot;
+- **workers:** at most `workers` attempts run at once, and those that may run together
+  need their own planner instances (`shared_planner`).
+
+What alternatives exist (arms, goals, containers) is the caller's choice.
+
+- **Budgets.** Every attempt plans with its own planner's budget, whatever the number of
+  workers. There is no shared deadline: with one, a single worker might never start a
+  later alternative. Workers change latency, never which attempts are planned.
+- **Scheduling.** Attempts are handed to the pool highest alternative priority first,
+  then in declaration order. A new attempt is started only after every finished one has
+  been validated.
+- **Selection** is among `valid` attempts, never by completion order:
+  1. highest alternative priority;
+  2. highest attempt priority;
+  3. shortest validated duration;
+  4. earliest alternative, then earliest attempt.
+- **Cancellation by priority** (`cancel_lower`). Once an attempt is valid, attempts of a
+  *strictly lower* alternative priority stop:
+  - one not yet started never starts (`not_started`);
+  - a running one is told to stop through its `abort` (`canceled_by_priority`), and
+    whatever it returns is not validated.
+
+  Attempts of an *equal* priority always finish, since they could still win on duration.
+  On one worker which work was spared is deterministic. On several it depends on
+  scheduling; the selection never does.
+- **Abort.** `abort` stops the run: attempts not started are `not_started` (detail
+  `aborted`), running planners receive the abort signal, and the report's `stopped` is
+  `aborted`.
+- **The report** (`AlternativesReport`) records every alternative (label, request
+  fingerprint, priority) and every attempt at it: planner, processor, seed, priority;
+  outcome (`refused`, `not_started`, `canceled_by_priority`, `failed`, `invalid`, or
+  `valid`) and why; the planner's status; its candidate's duration; and the
+  fingerprints of its result and fresh validation. It also records the selection.
+  - Decoding refuses a report whose selection isn't the rule's, whose
+    `canceled_by_priority` or `not_started` have no strictly higher valid priority, or
+    abort, to account for them, or that claims a timeout.
+  - When each attempt planned is in `Alternatives.intervals_s`, in seconds from the
+    start of the run. That's for inspection, and never part of the report.
+
+`Alternatives.selected` is the selected alternative, its attempt and its candidate.
+Execute it with `ctx.execute(candidate, planner=attempt.planner)`. `plan_portfolio` is
+the one-alternative case on the same engine, with its report unchanged.
+
 ## Compiling a plan
 
 `ssrobot.prepare(result, scene, *, validator, description, contract, processor=None,
@@ -331,6 +384,8 @@ Every failed check is named in one `execution_unready` error. A successful
 | `artifacts/test_sscbirrt_plans_a_carry_that_executes/` | The example arm holds the box from `pedestal.xml`. A lift and a carry are each planned natively by `plan_to_configuration` at half speed and half acceleration, and run with `ctx.execute`. Their results, which carry their requests and the planner's own path and trajectory reports, and their compiled commands (the trace's `compiled` records) are written. Each compiled artifact equals offline `prepare` of the same inputs; the submission names its fingerprint and the snapshot; its contract is the runtime's. The validator's public calls give the same reports, and the command is exactly the sampled planner trajectory, with `geometry_preserved` false and every check passing. Both execute, the box stays held with no violation; after a detach, the carry is refused with `stale_snapshot` and nothing submitted. A second run is byte-identical. |
 | `artifacts/test_execute_refuses_requests_this_context_did_not_build/forgeries.json` | Plans whose embedded request was altered after planning (another robot, description, revision, start, or goal), executed against this context's own snapshot, and `prepare` given a non-plan, another goal's validator, or another robot's request: each refusal code, that nothing was submitted, and that the genuine plan still succeeds. A second run is byte-identical. |
 | `artifacts/test_a_portfolio_selects_deterministically_from_isolated_attempts/` | The example arm's pedestal swing planned by a portfolio of eight attempts, each with its own planner: three seeded sscbirrt; one that corrupts its own scene and plans through the pedestal (`invalid` on a fresh scene); one that negotiation refuses; a path-only planner with a counting processor; one whose processor cannot time (`failed`, alone); and one whose validator answers about another motion (`failed`, `validation_mismatch`). `portfolio.json` is the report, byte-identical with one worker and with three; the path-only attempt, the highest-priority valid one, is selected. `isolation.json` shows that the live context is unchanged, that every candidate is still valid on a fresh scene, that the processor ran once, and that the executed command is exactly the selected candidate's. |
+| `artifacts/test_alternatives_race_two_arms_and_select_deterministically/` | Two arms of one MuJoCo robot (the conformance robot with colliding geoms) as alternatives, each a configuration goal planned by its own sscbirrt. `alternatives.json` holds every report: equal priorities with the nearer right-arm goal selected (identical with one worker and two; the candidate executes and reaches its goal); a preferred right arm whose goal a cube blocks, so the left is selected; a preferred feasible right arm, with the left `not_started` on one worker and spared, stopped, or finished on two, selecting the same; and an aborted run. `intervals.json` shows when each attempt planned: overlapping on two workers, in sequence on one. |
+| `artifacts/test_an_alternatives_report_cannot_claim_an_impossible_outcome/refusals.json` | Decoding refuses a forged selection, a lower priority stopped without `cancel_lower` or without a strictly higher valid priority, a `not_started` with no reason, and a timeout. |
 | `artifacts/test_a_report_cannot_claim_an_impossible_outcome/refusals.json` | Edits of a real report that decoding refuses: a selection of an invalid or a non-selected valid attempt, or of none; an unknown stop; a cancellation without a stop; a valid attempt without a duration; an invalid one without its validation; a malformed fingerprint; reordered attempts; another selection rule. |
 | `artifacts/test_a_timeout_aborts_running_attempts_and_cancels_pending_ones/canceled.json` | Three attempts that only wait for the abort signal, on one worker, with a 0.2 s timeout: the running one is aborted (`cancelled`), the two pending ones are `canceled` before they start, and nothing is selected. The same attempts, sharing one planner, are refused with two workers (`shared_planner`). |
 | `artifacts/test_neutral_providers_and_geometric_paths/` | The same query through a scene with no native checker plans on sscbirrt's Python backend and passes every check. Its path without the trajectory is refused without a processor (`untimed_result`); with `RestToRestProcessor` it is prepared and executed. A second run is byte-identical. |
