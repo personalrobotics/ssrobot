@@ -81,9 +81,17 @@ def clamp_positions(
 
 
 def check_command(
-    description: RobotDescription, command: Command, info: RuntimeInfo | None = None
+    description: RobotDescription,
+    command: Command,
+    info: RuntimeInfo | None = None,
+    *,
+    limits: bool = True,
 ) -> None:
-    """Raise unless ``command`` is meaningful for the robot and supported by the runtime."""
+    """Raise unless ``command`` is meaningful for the robot and supported by the runtime.
+
+    ``limits=False`` skips a trajectory's per-waypoint position, velocity, and rate
+    checks, for a command already checked against this description: the one
+    ``RobotContext.execute`` compiled and ``prepare`` checked."""
     if isinstance(command, ActionChunk):
         if info is not None and command.start.clock != info.clock:
             raise ValidationError(
@@ -108,19 +116,25 @@ def check_command(
                     )
                 held[resource] = component
     elif isinstance(command, JointTrajectory):
-        _check_trajectory(description, info, command, "")
+        _check_trajectory(description, info, command, "", limits)
     elif isinstance(command, GuardedJointTrajectory):
         _check_guard(description, info, command)
-        _check_trajectory(description, info, command.trajectory, "trajectory")
+        _check_trajectory(description, info, command.trajectory, "trajectory", limits)
     else:
         _check_instant(description, command, info, "")
 
 
 def _check_trajectory(
-    description: RobotDescription, info: RuntimeInfo | None, command: JointTrajectory, path: str
+    description: RobotDescription,
+    info: RuntimeInfo | None,
+    command: JointTrajectory,
+    path: str,
+    limits: bool = True,
 ) -> None:
     _require(description, info, command.group, CommandKind.JOINT_TRAJECTORY, None, path)
     group = _check_joint_order(description, command.group, command.joints, path)
+    if not limits:
+        return
     for i, row in enumerate(command.positions):
         slack = START_TOLERANCE if i == 0 else 0.0
         _check_limits(
@@ -264,25 +278,48 @@ def check_trajectory_rates(
     _check_accelerations(trajectory, acceleration)
 
 
+_ROUNDING = 2.0**-50
+"""A bound on the relative rounding error of the few float operations behind one rate,
+with room to spare (each is correctly rounded, to 2**-53)."""
+_SCREEN = 1e-12
+"""How close to its limit, relatively, a rate computed in floats must come to be decided
+exactly. Far above ``_ROUNDING``, far below the 1e-9 allowance."""
+_FLOAT_EXACT_NS = 2**53
+"""Durations below this many nanoseconds are exact as floats."""
+
+
 def _check_speeds(trajectory: JointTrajectory, caps: Sequence[float | None]) -> None:
     """Every segment's implied speed, |change| / duration, within each joint's velocity
-    limit, whether or not the trajectory carries velocities."""
+    limit, whether or not the trajectory carries velocities.
+
+    Each speed is screened in floats; one that comes within ``_SCREEN`` of its limit, or
+    over it, is decided exactly, in order, so the first violation is the exact one."""
     times = trajectory.time_from_start_ns
+    positions = trajectory.positions
+    limits = [None if cap is None else cap * (1 + 1e-9) * (1 - _SCREEN) for cap in caps]
     for i in range(1, len(times)):
         duration_ns = times[i] - times[i - 1]  # an exact integer, however large
-        before, after = trajectory.positions[i - 1], trajectory.positions[i]
-        for joint, cap, a, b in zip(trajectory.joints, caps, before, after, strict=True):
-            if cap is None:
+        before, after = positions[i - 1], positions[i]
+        exact_duration = duration_ns < _FLOAT_EXACT_NS
+        for k, (cap, limit) in enumerate(zip(caps, limits, strict=True)):
+            if cap is None or limit is None:
                 continue
-            # Exact: |change| / (duration_ns / 1e9) > cap, with a 1e-9 relative allowance.
-            speed = Fraction(abs(b - a)) * 10**9 / duration_ns
-            if speed > Fraction(cap) * (1 + Fraction(1, 10**9)):
-                raise ValidationError(
-                    "out_of_limits",
-                    f"{joint} moves at {float(speed):.6g} between waypoints {i - 1} and {i}, above "
-                    f"its velocity limit {cap}",
-                    path=f"positions[{i}]",
-                )
+            if exact_duration and abs(after[k] - before[k]) * 1e9 / duration_ns <= limit:
+                continue  # clearly within the limit
+            _exact_speed(trajectory, cap, i, k, duration_ns)
+
+
+def _exact_speed(trajectory: JointTrajectory, cap: float, i: int, k: int, duration_ns: int) -> None:
+    a, b = trajectory.positions[i - 1][k], trajectory.positions[i][k]
+    # Exact: |change| / (duration_ns / 1e9) > cap, with a 1e-9 relative allowance.
+    speed = Fraction(abs(b - a)) * 10**9 / duration_ns
+    if speed > Fraction(cap) * (1 + Fraction(1, 10**9)):
+        raise ValidationError(
+            "out_of_limits",
+            f"{trajectory.joints[k]} moves at {float(speed):.6g} between waypoints {i - 1} and "
+            f"{i}, above its velocity limit {cap}",
+            path=f"positions[{i}]",
+        )
 
 
 def _check_accelerations(trajectory: JointTrajectory, caps: Sequence[float | None]) -> None:
@@ -293,35 +330,60 @@ def _check_accelerations(trajectory: JointTrajectory, caps: Sequence[float | Non
     it minus the speed before it, over the mean duration of the two segments. A
     trajectory starts and ends at rest, so the first and last waypoints count the speed
     change from and to rest, over half their one segment.
+
+    As for speeds, each acceleration is screened in floats, with a bound on their
+    rounding error, and decided exactly when it comes near or over its limit.
     """
     times = trajectory.time_from_start_ns
     if all(cap is None for cap in caps):
         return
     durations = [times[i] - times[i - 1] for i in range(1, len(times))]
+    spans = [0, *durations, 0]  # rest before and after: half a segment at each end
     positions = trajectory.positions
-    for k, (joint, cap) in enumerate(zip(trajectory.joints, caps, strict=True)):
+    floats = all(d < _FLOAT_EXACT_NS for d in durations)
+    for k, cap in enumerate(caps):
         if cap is None:
             continue
-        # Exact speeds in joint units per nanosecond, with rest before and after.
-        speeds = (
-            [Fraction(0)]
-            + [
-                (Fraction(positions[i + 1][k]) - Fraction(positions[i][k])) / d
-                for i, d in enumerate(durations)
-            ]
-            + [Fraction(0)]
-        )
-        spans = [0, *durations, 0]  # rest before and after: half a segment at each end
+        limit = cap * (1 + 1e-9) * (1 - _SCREEN)
+        speeds = None
+        if floats:
+            speeds = (
+                [0.0]
+                + [(positions[i + 1][k] - positions[i][k]) / d for i, d in enumerate(durations)]
+                + [0.0]
+            )
         for i in range(len(times)):
-            mean_ns = Fraction(spans[i] + spans[i + 1], 2)
-            acceleration = abs(speeds[i + 1] - speeds[i]) / mean_ns * 10**18  # per s^2
-            if acceleration > Fraction(cap) * (1 + Fraction(1, 10**9)):
-                raise ValidationError(
-                    "out_of_limits",
-                    f"{joint} accelerates at {float(acceleration):.6g} at waypoint {i}, above "
-                    f"its acceleration limit {cap}",
-                    path=f"positions[{i}]",
-                )
+            if speeds is not None:
+                before, after = speeds[i], speeds[i + 1]
+                scale = 1e18 / ((spans[i] + spans[i + 1]) / 2)
+                change = abs(after - before)
+                error = 4 * _ROUNDING * (abs(before) + abs(after) + change)
+                if (change + error) * scale <= limit:
+                    continue  # clearly within the limit
+            _exact_acceleration(trajectory, cap, k, i, spans)
+
+
+def _exact_acceleration(
+    trajectory: JointTrajectory, cap: float, k: int, i: int, spans: list[int]
+) -> None:
+    positions = trajectory.positions
+
+    def speed(segment: int) -> Fraction:
+        """Exact speed in joint units per nanosecond on a segment, or rest outside."""
+        if segment < 0 or segment >= len(positions) - 1:
+            return Fraction(0)
+        change = Fraction(positions[segment + 1][k]) - Fraction(positions[segment][k])
+        return change / spans[segment + 1]
+
+    mean_ns = Fraction(spans[i] + spans[i + 1], 2)
+    acceleration = abs(speed(i) - speed(i - 1)) / mean_ns * 10**18  # per s^2
+    if acceleration > Fraction(cap) * (1 + Fraction(1, 10**9)):
+        raise ValidationError(
+            "out_of_limits",
+            f"{trajectory.joints[k]} accelerates at {float(acceleration):.6g} at waypoint {i}, "
+            f"above its acceleration limit {cap}",
+            path=f"positions[{i}]",
+        )
 
 
 def _applied_key(command: InstantCommand) -> tuple[object, ...]:

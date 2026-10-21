@@ -631,7 +631,9 @@ class RobotContext:
     ) -> Execution:
         info = self._require("submit")
         check_name(source, path="source")
-        check_command(self._description, command, info)
+        # A prepared command was just checked against the description by ``prepare``;
+        # what remains is whether this runtime takes it.
+        check_command(self._description, command, info, limits=prepared is None)
         if snapshot is not None:
             self._check_current(snapshot)
         now = self.now
