@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import functools
 import hashlib
 import json
 import math
@@ -19,7 +20,7 @@ import sys
 import tempfile
 import types
 import typing
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
 
@@ -78,7 +79,7 @@ class Struct:
 
     def __post_init__(self) -> None:
         for f in _fields(type(self)):
-            _check(getattr(self, f.name), f.hint, f.name)
+            _checker(f.hint)(getattr(self, f.name), f.name)
         self._validate()
 
     def _validate(self) -> None:
@@ -229,70 +230,129 @@ def _is_number(v: Any) -> bool:
     return isinstance(v, int | float) and not isinstance(v, bool)
 
 
-def _shallow_match(v: Any, hint: Any) -> bool:
-    if typing.get_origin(hint) is tuple:
-        return isinstance(v, tuple)
-    if hint is float:
-        return _is_number(v)
-    if hint is int:
-        return isinstance(v, int) and not isinstance(v, bool)
-    return isinstance(v, hint)
-
-
 def _check(v: Any, hint: Any, path: str) -> None:
+    _checker(hint)(v, path)
+
+
+_Checker = Callable[[Any, str], None]
+
+
+@functools.cache
+def _checker(hint: Any) -> _Checker:
+    """The construction-time check for a field annotation, built once per annotation.
+
+    A check takes the value and the field path it reports. Tuple elements are checked
+    without building their paths; one that fails is checked again with its path, so
+    the error is the same as checking each element with its path would give."""
     if _is_union(hint):
         members = typing.get_args(hint)
-        if v is None:
-            if type(None) in members:
-                return
-            raise ValidationError("wrong_type", "must not be None", path=path)
-        for m in members:
-            if m is not type(None) and _shallow_match(v, m):
-                _check(v, m, path)
-                return
-        raise ValidationError("wrong_type", f"unexpected {type(v).__name__}", path=path)
+        optional = type(None) in members
+        alternatives = [(_matcher(m), _checker(m)) for m in members if m is not type(None)]
+
+        def check_union(v: Any, path: str) -> None:
+            if v is None:
+                if optional:
+                    return
+                raise ValidationError("wrong_type", "must not be None", path=path)
+            for matches, check in alternatives:
+                if matches(v):
+                    check(v, path)
+                    return
+            raise ValidationError("wrong_type", f"unexpected {type(v).__name__}", path=path)
+
+        return check_union
     if typing.get_origin(hint) is tuple:
-        if not isinstance(v, tuple):
-            raise ValidationError(
-                "wrong_type", f"expected tuple, got {type(v).__name__}", path=path
-            )
         args = typing.get_args(hint)
         if len(args) == 2 and args[1] is Ellipsis:
-            for i, x in enumerate(v):
-                _check(x, args[0], f"{path}[{i}]")
-            return
-        if len(v) != len(args):
-            raise ValidationError(
-                "shape_mismatch", f"expected {len(args)} items, got {len(v)}", path=path
-            )
-        for i, (x, a) in enumerate(zip(v, args, strict=True)):
-            _check(x, a, f"{path}[{i}]")
-        return
+            item = _checker(args[0])
+
+            def check_items(v: Any, path: str) -> None:
+                if not isinstance(v, tuple):
+                    raise ValidationError(
+                        "wrong_type", f"expected tuple, got {type(v).__name__}", path=path
+                    )
+                for i, x in enumerate(v):
+                    try:
+                        item(x, "")
+                    except ValidationError:
+                        item(x, f"{path}[{i}]")
+                        raise
+
+            return check_items
+        items = [_checker(a) for a in args]
+
+        def check_fixed(v: Any, path: str) -> None:
+            if not isinstance(v, tuple):
+                raise ValidationError(
+                    "wrong_type", f"expected tuple, got {type(v).__name__}", path=path
+                )
+            if len(v) != len(items):
+                raise ValidationError(
+                    "shape_mismatch", f"expected {len(items)} items, got {len(v)}", path=path
+                )
+            for i, (x, check) in enumerate(zip(v, items, strict=True)):
+                try:
+                    check(x, "")
+                except ValidationError:
+                    check(x, f"{path}[{i}]")
+                    raise
+
+        return check_fixed
     if hint is float:
-        if not _is_number(v):
-            raise ValidationError(
-                "wrong_type", f"expected number, got {type(v).__name__}", path=path
-            )
-        if not math.isfinite(v):
-            raise ValidationError("non_finite", "must be finite", path=path)
-        return
+
+        def check_float(v: Any, path: str) -> None:
+            if type(v) is float:
+                if not math.isfinite(v):
+                    raise ValidationError("non_finite", "must be finite", path=path)
+                return
+            if not _is_number(v):
+                raise ValidationError(
+                    "wrong_type", f"expected number, got {type(v).__name__}", path=path
+                )
+            if not math.isfinite(v):
+                raise ValidationError("non_finite", "must be finite", path=path)
+
+        return check_float
     if hint is int:
-        if not isinstance(v, int) or isinstance(v, bool):
-            raise ValidationError("wrong_type", f"expected int, got {type(v).__name__}", path=path)
-        return
-    if hint in (str, bool, bytes) or (isinstance(hint, type) and issubclass(hint, enum.Enum)):
-        if not isinstance(v, hint):
-            raise ValidationError(
-                "wrong_type", f"expected {hint.__name__}, got {type(v).__name__}", path=path
-            )
-        return
-    if _is_struct(hint):
-        if not isinstance(v, hint):
-            raise ValidationError(
-                "wrong_type", f"expected {hint.__name__}, got {type(v).__name__}", path=path
-            )
-        return
-    raise TypeError(f"unsupported field annotation {hint!r} at {path}")
+
+        def check_int(v: Any, path: str) -> None:
+            if not isinstance(v, int) or isinstance(v, bool):
+                raise ValidationError(
+                    "wrong_type", f"expected int, got {type(v).__name__}", path=path
+                )
+
+        return check_int
+    if (
+        hint in (str, bool, bytes)
+        or (isinstance(hint, type) and issubclass(hint, enum.Enum))
+        or _is_struct(hint)
+    ):
+
+        def check_instance(v: Any, path: str) -> None:
+            if not isinstance(v, hint):
+                raise ValidationError(
+                    "wrong_type", f"expected {hint.__name__}, got {type(v).__name__}", path=path
+                )
+
+        return check_instance
+
+    def unsupported(v: Any, path: str) -> None:
+        raise TypeError(f"unsupported field annotation {hint!r} at {path}")
+
+    return unsupported
+
+
+@functools.cache
+def _matcher(hint: Any) -> Callable[[Any], bool]:
+    """Whether a value is shaped like one member of a union, to choose the member it is
+    checked against: built once per annotation."""
+    if typing.get_origin(hint) is tuple:
+        return lambda v: isinstance(v, tuple)
+    if hint is float:
+        return _is_number
+    if hint is int:
+        return lambda v: isinstance(v, int) and not isinstance(v, bool)
+    return lambda v: isinstance(v, hint)
 
 
 # ---------------------------------------------------------------------------

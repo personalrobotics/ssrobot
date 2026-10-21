@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import functools
 import math
 import unicodedata
 from dataclasses import dataclass, field
@@ -14,8 +15,23 @@ QUATERNION_TOLERANCE = 1e-6
 """Maximum deviation of a quaternion's norm from 1. Quaternions are never renormalized."""
 
 
+_NAMES_SEEN = 4096
+"""How many valid names ``check_name`` remembers; a robot and its scene have far fewer."""
+
+
+@functools.lru_cache(maxsize=_NAMES_SEEN)
+def _valid_name(name: str) -> bool:
+    return (
+        bool(name)
+        and name == name.strip()
+        and not any(unicodedata.category(c) == "Cc" for c in name)
+    )
+
+
 def check_name(name: str, *, path: str = "name") -> None:
     """Reject empty names, surrounding whitespace, and control characters."""
+    if type(name) is str and _valid_name(name):
+        return
     if not name:
         raise ValidationError("invalid_name", "name must not be empty", path=path)
     if name != name.strip() or any(unicodedata.category(c) == "Cc" for c in name):
