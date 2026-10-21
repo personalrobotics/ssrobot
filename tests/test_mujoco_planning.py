@@ -286,9 +286,9 @@ def test_an_allowed_static_robot_frame_is_honoured(artifacts: Path, tmp_path: Pa
     the arm moves, so a work surface that belongs to the robot was never allowed.
 
     Under ``one_runtime``, the allowance changes within one runtime, and back: hand only,
-    then with ``base``, then hand only again. A runtime keeps the planning models it
-    compiles, one per set of allowances, and each scene must still answer for its own
-    snapshot's."""
+    then with ``base``, then hand only again. A runtime's planning scenes share one
+    planning model and native scene, and each must still answer for its own snapshot's
+    allowances."""
     scene = tmp_path / "on_base.xml"
     scene.write_text(ON_BASE)
     package = load_package(PACKAGE)

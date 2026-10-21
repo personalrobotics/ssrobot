@@ -7,7 +7,6 @@ sscbirrt.
 from __future__ import annotations
 
 import threading
-from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -59,46 +58,40 @@ def planning_model(
     return compile_world(model_path, scene, excludes=excludes)[0]
 
 
-PLANNING_MODELS = 16
-"""How many compiled planning models a runtime keeps, least recently used dropped first:
-one per set of excludes and group, and a run sees few (one per distinct set of held
-objects' allowances)."""
+class PlanningModel:
+    """A runtime's planning model and its native scene for each group.
 
-
-class PlanningModels:
-    """A runtime's compiled planning models and their native scenes, by excludes and group.
-
-    A planning model depends only on the runtime's sources and its excludes, so a model
-    compiled once serves every later snapshot with the same allowances. Each is compiled
-    from the runtime's sources with ``check`` (the package is unchanged) before and after,
-    as every compile is; a model taken from here is one such compile, read only, shared
-    like sscbirrt's native scene. A file changed after it was compiled is noticed only at
-    the next compile."""
+    The planning model is the runtime's model rebuilt from its sources with the
+    description's collision allowances as excludes. Those never change; a held object's
+    allowances belong to each snapshot (sscbirrt 3.11), so one model, and one native scene
+    per group, serve every planning scene. The model is compiled at the first planning
+    scene, with ``check`` (the package is unchanged) before and after, as every compile
+    is; it is read only, shared like sscbirrt's native scene. A file changed after it was
+    compiled is not noticed by later planning scenes."""
 
     def __init__(self, sources: tuple[Path, SceneSource | None], check: Callable[[], None]) -> None:
         self._sources = sources
         self._check = check
-        self._models: OrderedDict[tuple[Any, ...], tuple[Any, Any]] = OrderedDict()
+        self._models: dict[tuple[tuple[str, str], ...], Any] = {}
+        self._scenes: dict[tuple[Any, ...], Any] = {}
         self._lock = threading.Lock()
 
     def get(
         self, excludes: tuple[tuple[str, str], ...], joints: tuple[str, ...]
     ) -> tuple[Any, Any]:
         """The planning model with ``excludes`` and its native scene over ``joints``."""
-        key = (excludes, joints)
         with self._lock:
-            found = self._models.get(key)
-            if found is not None:
-                self._models.move_to_end(key)
-                return found
-            self._check()
-            model = planning_model(self._sources[0], self._sources[1], excludes)
-            self._check()
-            found = (model, native_mujoco.NativeScene.from_model(model, joints))
-            self._models[key] = found
-            if len(self._models) > PLANNING_MODELS:
-                self._models.popitem(last=False)
-            return found
+            model = self._models.get(excludes)
+            if model is None:
+                self._check()
+                model = planning_model(self._sources[0], self._sources[1], excludes)
+                self._check()
+                self._models[excludes] = model
+            scene = self._scenes.get((excludes, joints))
+            if scene is None:
+                scene = native_mujoco.NativeScene.from_model(model, joints)
+                self._scenes[(excludes, joints)] = scene
+            return model, scene
 
 
 class MujocoPlanningScene:
@@ -179,7 +172,7 @@ def materialize(
     description: RobotDescription,
     frames: dict[str, FrameBinding],
     runtime_model: Any,
-    models: PlanningModels,
+    models: PlanningModel,
     objects: dict[str, int],
     fixtures: dict[str, int],
     snapshot: SceneSnapshot,
@@ -200,21 +193,17 @@ def materialize(
             )
         return str(name)
 
-    excludes = [
-        (body_name(c.frame_a), body_name(c.frame_b))
-        for c in description.collision_allowances
-        if frames[c.frame_a].body != frames[c.frame_b].body
-    ] + [
-        # Every allowed name, a scene fixture or a robot frame, by its MuJoCo body: sscbirrt
-        # honours a held object's allowance only for bodies the arm moves, so a static
-        # robot body such as a work surface needs the exclude too.
-        (a.object, name if name in fixtures else body_name(name))
-        for a in snapshot.attachments
-        for name in a.allow
-    ]
+    # The description's allowances, which never change, as excludes, one per body pair;
+    # a held object's allowances are the snapshot's.
+    excludes = tuple(
+        dict.fromkeys(
+            (body_name(c.frame_a), body_name(c.frame_b))
+            for c in description.collision_allowances
+            if frames[c.frame_a].body != frames[c.frame_b].body
+        )
+    )
     joints = description.group(group).joints
-    # one exclude per body pair
-    model, scene = models.get(tuple(dict.fromkeys(excludes)), joints)
+    model, scene = models.get(excludes, joints)
 
     def resolve(kind: Any, name: str, path: str) -> int:
         """A name's id in the planning model; a snapshot naming what is not there would
@@ -253,7 +242,6 @@ def materialize(
             collision_geoms=binding.collision_geoms,
         )
 
-    module = native_mujoco._load()
     lowered = []
     for attachment in snapshot.attachments:
         effector = bound[description.end_effector(attachment.end_effector).frame]
@@ -263,28 +251,30 @@ def materialize(
         p_ee, q_ee = world_pose(data, effector)
         body_ee = _matrix(*relative(p_ee, q_ee, p_body, q_body))
         ee_object = _matrix(attachment.transform.position, attachment.transform.quat_wxyz)
-        allowed = sorted({bound[f].body for f in attachment.allow if f in bound})
+        # Each allowed name by its exact MuJoCo body: a robot frame's, moving or not, or a
+        # scene fixture's. sscbirrt honours them against the arm and the environment alike.
+        allowed = sorted(
+            {
+                bound[name].body if name in bound else mujoco.mj_name2id(model, _BODY, name)
+                for name in attachment.allow
+                if name in bound or name in fixtures
+            }
+        )
         lowered.append(
-            module.Attachment(
+            native_mujoco.Attachment(
                 mujoco.mj_name2id(model, _BODY, attachment.object),
                 effector.body,
-                (body_ee @ ee_object).tolist(),
-                allowed,
+                body_ee @ ee_object,
+                allowed_bodies=allowed,
             )
         )
     try:
-        native_snapshot = module.Snapshot(
-            scene.native,
-            [float(v) for v in data.qpos],
-            [float(v) for v in data.mocap_pos.reshape(-1)],
-            [float(v) for v in data.mocap_quat.reshape(-1)],
-            lowered,
+        native_snapshot = native_mujoco.Snapshot.from_state(
+            scene, data.qpos, data.mocap_pos, data.mocap_quat, lowered
         )
-    except ValueError as e:
+    except (TypeError, ValueError) as e:
         raise ValidationError("invalid_snapshot", str(e), path="snapshot") from None
-    checker = native_mujoco.NativeCollisionChecker(
-        scene, native_mujoco.Snapshot(native_snapshot, scene)
-    )
+    checker = native_mujoco.NativeCollisionChecker(scene, native_snapshot)
 
     names = {0: "world"}
     for name, binding in bound.items():
