@@ -18,6 +18,7 @@ from sscbirrt.exceptions import (
     AllStartConfigurationsInCollision,
     AllStartConfigurationsInvalid,
     MotionContractError,
+    PlanningError,
     UnsupportedCapability,
 )
 from sscbirrt.legacy import legacy_problem
@@ -344,8 +345,11 @@ class CBiRRT:
         is (``RobotContext.execute_continuation`` builds ``request`` from the actual state
         and checks the gap is within its arrival tolerance).
 
-        The planned path is kept exactly. When the actual start differs from the path's
-        first waypoint, a straight bridge from the actual start to it comes first. The
+        The planned path is kept exactly, but for a whole turn of a continuous joint:
+        the path is moved to the turn nearest the actual start, the same motion.
+        When the actual start differs from the path's first waypoint, a straight bridge
+        from the actual start to it comes first. A bridge that is invalid, or timing that
+        sscbirrt cannot do (``PlanningError``), is a failure (``rebase_failed``). The
         whole path is then timed again by sscbirrt's trajectory smoother under the
         request's limits, and validated as ``plan``'s results are: the path and the
         trajectory, by the validator ``plan`` applies. The ``rebase`` diagnostic says what
@@ -365,8 +369,20 @@ class CBiRRT:
             goal=self._goal_distance(request, scene, goals),
         )
         start = tuple(float(v) for v in request.start)
-        gap = max(abs(a - b) for a, b in zip(start, path.waypoints[0], strict=True))
-        waypoints = path.waypoints if gap == 0.0 else (start, *path.waypoints)
+        # Whole turns of a continuous joint between the actual start and the path's first
+        # waypoint are the same state: move the path onto the actual start's turn.
+        turns = [
+            round((s - w) / (2 * math.pi))
+            if self.description.joint(j).kind is JointKind.CONTINUOUS
+            else 0
+            for j, s, w in zip(request.joints, start, path.waypoints[0], strict=True)
+        ]
+        planned = tuple(
+            tuple(v + 2 * math.pi * k for v, k in zip(q, turns, strict=True))
+            for q in path.waypoints
+        )
+        gap = max(abs(a - b) for a, b in zip(start, planned[0], strict=True))
+        waypoints = planned if gap == 0.0 else (start, *planned)
         rebased = GeometricPath(group=request.group, joints=request.joints, waypoints=waypoints)
         path_report = validator.validate_path(rebased)
         if not path_report.valid:
@@ -389,15 +405,20 @@ class CBiRRT:
             constraints or None,
         )
         limits = request.limits
-        source = planner.smooth_trajectory(
-            problem,
-            [np.array(q, dtype=float) for q in waypoints],
-            TrajectoryOptions(
-                velocity_limits=np.array(limits.effective_velocity),
-                acceleration_limits=np.array(limits.effective_acceleration),
-                seed=request.seed,
-            ),
-        )
+        try:
+            source = planner.smooth_trajectory(
+                problem,
+                [np.array(q, dtype=float) for q in waypoints],
+                TrajectoryOptions(
+                    velocity_limits=np.array(limits.effective_velocity),
+                    acceleration_limits=np.array(limits.effective_acceleration),
+                    seed=request.seed,
+                ),
+            )
+        except PlanningError as e:
+            return self._failure(
+                request, PlanStatus.INFEASIBLE, "rebase_failed", f"timing failed: {e}"
+            )
         trajectory = _timed(request, source)
         trajectory_report = (
             validator.validate_trajectory(trajectory, rebased)

@@ -1577,7 +1577,7 @@ class PreparedTrajectory(Record):
     is ready to execute."""
 
     SCHEMA = "ssrobot.PreparedTrajectory"
-    VERSION = 4
+    VERSION = 5
 
     request: PlanningRequest = field(metadata=meta("The request it was planned for."))
     source: str = field(

@@ -477,7 +477,10 @@ interpolate it linearly, so it is a different artifact from the source law.
 - `period_ns`: the time between waypoints of a command compiled for it, positive;
 - `interpolation`: how it moves between consecutive waypoints. `linear` is the only
   value: straight lines in raw joint values, with continuous joints not wrapped;
-- `fixed_period`: whether that period holds for as long as the context is open.
+- `fixed_period`: whether that period holds for as long as the context is open;
+- `goal_tolerance`: how close, per joint, a trajectory's last waypoint must be reached
+  for it to succeed, or `None` when the runtime declares none. `MujocoRuntime` declares
+  its `goal_tolerance` option here.
 
 It declares what the runtime accepts, not its internal servo rate. A runtime that
 cannot state one declares None, and nothing guesses one for it. The `opened` trace
@@ -815,7 +818,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`KinematicModel`](../schemas/ssrobot.KinematicModel.v1.json) | A robot's frames and joints, as a model loader produces them. |
 | [`ssrobot.package`](../schemas/ssrobot.package.v1.json) | A package manifest, `ssrobot.toml`. See [packages.md](packages.md). |
 | [`PackageReport`](../schemas/ssrobot.PackageReport.v1.json) | What loading a package resolved. |
-| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v4.json) | What an opened runtime binds and confirms, including its scene channels and which channels are privileged. |
+| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v5.json) | What an opened runtime binds and confirms, including its scene channels and which channels are privileged. |
 | [`JointCommand`](../schemas/ssrobot.JointCommand.v1.json) | Instantaneous position, velocity, or effort targets for a group. |
 | [`GripperCommand`](../schemas/ssrobot.GripperCommand.v1.json) | Target opening. |
 | [`BaseTwistCommand`](../schemas/ssrobot.BaseTwistCommand.v1.json) | Planar base velocity. |
@@ -828,7 +831,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
 | [`Submission`](../schemas/ssrobot.Submission.v2.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
-| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v2.json) | One event in a trace. |
+| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v3.json) | One event in a trace. |
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`PortfolioReport`](../schemas/ssrobot.PortfolioReport.v1.json) | Every attempt of a planner portfolio and which was selected. See planning.md. |
@@ -845,7 +848,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`TimedTrajectory`](../schemas/ssrobot.TimedTrajectory.v2.json) | An exact timed motion from rest to rest: the source law, not a runtime command. |
 | [`MotionValidation`](../schemas/ssrobot.MotionValidation.v2.json) | One validator's answer for one exact motion, bound to its scene, constraints, goal, and policy. |
 | [`PlanResult`](../schemas/ssrobot.PlanResult.v3.json) | A planner's answer to one request, carrying the request and its validation evidence. |
-| [`PreparedTrajectory`](../schemas/ssrobot.PreparedTrajectory.v4.json) | A command compiled for a runtime's trajectory contract, with its readiness checks and both validation reports; one that decodes is ready to execute. |
+| [`PreparedTrajectory`](../schemas/ssrobot.PreparedTrajectory.v5.json) | A command compiled for a runtime's trajectory contract, with its readiness checks and both validation reports; one that decodes is ready to execute. |
 | [`MujocoProfile`](../schemas/ssrobot.MujocoProfile.v1.json) | MuJoCo-specific settings a package declares for `MujocoRuntime`. See [mujoco.md](mujoco.md). |
 | [`AuthoringDraft`](../schemas/ssrobot.AuthoringDraft.v1.json) | What `ssrobot init` knows about a package being authored, and what is undecided. See [authoring.md](authoring.md). |
 | [`AuthoringAnswers`](../schemas/ssrobot.AuthoringAnswers.v1.json) | Answers to a draft's decisions, for non-interactive authoring. |

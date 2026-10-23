@@ -28,17 +28,24 @@ from ssrobot.commands import (
     command_components,
 )
 from ssrobot.continuation import (
-    ARRIVAL_TOLERANCE,
     OBJECT_TOLERANCE_M,
+    OBJECT_TOLERANCE_RAD,
     REST_TOLERANCE,
     Continuation,
     ContinuationReport,
     ContinuationResult,
     Discrepancy,
     PredictedSnapshot,
+    check_tolerance,
 )
 from ssrobot.conventions import ClockMode, Pose, Timestamp, check_name
-from ssrobot.description import EndEffector, Manipulator, MobileBase, RobotDescription
+from ssrobot.description import (
+    EndEffector,
+    JointKind,
+    Manipulator,
+    MobileBase,
+    RobotDescription,
+)
 from ssrobot.errors import (
     CapabilityError,
     LifecycleError,
@@ -224,12 +231,16 @@ def _compose(a: Pose, b: Pose) -> Pose:
 
 
 def _scene_changes(
-    prediction: PredictedSnapshot, actual: SceneSnapshot, object_tolerance_m: float
+    prediction: PredictedSnapshot,
+    actual: SceneSnapshot,
+    object_tolerance_m: float,
+    object_tolerance_rad: float,
 ) -> list[Discrepancy]:
     """How ``actual`` differs from ``prediction`` beyond the joints: a scene change (a new
-    revision, other attachments or fixtures), or a free object moved beyond tolerance.
-    Held objects move with their hand, which the joints already account for; unsettled
-    and released ones are not compared. The expected releases are the only allowed scene
+    revision, other attachments or fixtures), or a free object moved or turned beyond
+    tolerance. Held objects move with their hand, which the joints already account for;
+    an attachment no longer held is a free object. Unsettled and released ones are not
+    compared. The expected releases are the only allowed scene
     change: with them, the scene is compared by content rather than by revision."""
     predicted = prediction.state
     changes = []
@@ -247,21 +258,44 @@ def _scene_changes(
         changes.append(Discrepancy(what="attachments", predicted=0.0, actual=1.0, tolerance=0.0))
     if actual.fixtures != predicted.fixtures:
         changes.append(Discrepancy(what="fixtures", predicted=0.0, actual=1.0, tolerance=0.0))
-    held = {o.name for o in prediction.held} | {a.object for a in predicted.attachments}
+    held = {o.name for o in prediction.held}
+    held |= {a.object for a in predicted.attachments if a.held}
+    held |= {a.object for a in actual.attachments if a.held}
     held |= set(prediction.unsettled) | set(prediction.releases)
     now = {o.name: o for o in actual.objects}
     for o in predicted.objects:
         if o.name in held:
             continue
         there = now.get(o.name)
-        moved = math.inf if there is None else math.dist(there.pose.position, o.pose.position)
+        if there is None:
+            changes.append(
+                Discrepancy(
+                    what=f"object {o.name}",
+                    predicted=0.0,
+                    actual=-1.0,
+                    tolerance=object_tolerance_m,
+                )
+            )
+            continue
+        moved = math.dist(there.pose.position, o.pose.position)
         if moved > object_tolerance_m:
             changes.append(
                 Discrepancy(
                     what=f"object {o.name}",
                     predicted=0.0,
-                    actual=moved if math.isfinite(moved) else -1.0,
+                    actual=moved,
                     tolerance=object_tolerance_m,
+                )
+            )
+        dot = abs(sum(p * q for p, q in zip(there.pose.quat_wxyz, o.pose.quat_wxyz, strict=True)))
+        turned = 2 * math.acos(min(1.0, dot))
+        if turned > object_tolerance_rad:
+            changes.append(
+                Discrepancy(
+                    what=f"object {o.name} rotation",
+                    predicted=0.0,
+                    actual=turned,
+                    tolerance=object_tolerance_rad,
                 )
             )
     return changes
@@ -309,6 +343,7 @@ class RobotContext:
         # Predictions this context made, by their state's fingerprint: a plan made on one
         # executes only as a continuation.
         self._predicted: dict[str, PredictedSnapshot] = {}
+        self._accepted: dict[str, Timestamp] = {}  # when the runtime accepted each execution
         self._planning_pool: ThreadPoolExecutor | None = None
 
     # -- Properties ------------------------------------------------------------------
@@ -762,6 +797,8 @@ class RobotContext:
         end_q = tuple(command.positions[-1])
         moved: dict[str, Pose] = {}
         for attachment in base.attachments:
+            if not attachment.held:
+                continue  # left the grasp: a free object, where it is
             frame = self._description.end_effector(attachment.end_effector).frame
             before = scene.forward_kinematics(start_q, frame)
             after = scene.forward_kinematics(end_q, frame)
@@ -781,8 +818,12 @@ class RobotContext:
             replace(o, pose=moved[o.name]) if o.name in moved else o for o in base.objects
         )
         attachments = tuple(a for a in base.attachments if a.object not in releases)
-        duration = command.time_from_start_ns[-1]
-        stamp = Timestamp(clock=base.stamp.clock, time_ns=base.stamp.time_ns + duration)
+        # It ends its duration after the runtime accepted it, not after the snapshot it
+        # was planned on: time may pass in between.
+        accepted = self._accepted[execution.id]
+        stamp = Timestamp(
+            clock=accepted.clock, time_ns=accepted.time_ns + command.time_from_start_ns[-1]
+        )
         predicted_state = replace(
             base, positions=positions, objects=objects, attachments=attachments, stamp=stamp
         )
@@ -833,24 +874,41 @@ class RobotContext:
         self,
         continuation: Continuation,
         *,
-        arrival_tolerance: float = ARRIVAL_TOLERANCE,
+        arrival_tolerance: float | None = None,
         rest_tolerance: float = REST_TOLERANCE,
         object_tolerance_m: float = OBJECT_TOLERANCE_M,
+        object_tolerance_rad: float = OBJECT_TOLERANCE_RAD,
         source: str = "planner",
         timeout_ns: int | None = None,
     ) -> ContinuationResult:
         """Run ``continuation`` from the state the robot actually arrived in, or refuse.
 
-        It captures the actual state and checks, in order: the source execution
-        succeeded; the plan's joints are observed at rest; each is within
-        ``arrival_tolerance`` of the plan's start; the scene changed only as predicted
-        (same revision, attachments and fixtures, free objects within
-        ``object_tolerance_m``). Then the plan's planner rebases it onto the actual state
+        Every tolerance must be finite and >= 0. ``arrival_tolerance`` defaults to the
+        runtime's declared goal tolerance (``TrajectoryContract.goal_tolerance``), what
+        a source's success already guarantees; a runtime that declares none needs one
+        passed. It captures the actual state and checks, in order: the source execution
+        succeeded; the plan's joints are observed at rest, by a reading no older than
+        the arrival; each is within ``arrival_tolerance`` of the plan's start, a
+        continuous joint the short way round; the scene changed only as predicted (same
+        revision, attachments and fixtures, free objects within ``object_tolerance_m``
+        and ``object_tolerance_rad``). Then the plan's planner rebases it onto the actual state
         (``Planner.rebase``), and the rebased motion is compiled with ``prepare``,
         validated whole under the plan's validation policy, and submitted with the actual
         snapshot. A refusal submits nothing; its code says which check failed. The report
         is the evidence either way."""
         self._require("execute_continuation")
+        rest_tolerance = check_tolerance(rest_tolerance, "rest_tolerance")
+        object_tolerance_m = check_tolerance(object_tolerance_m, "object_tolerance_m")
+        object_tolerance_rad = check_tolerance(object_tolerance_rad, "object_tolerance_rad")
+        if arrival_tolerance is None:
+            arrival_tolerance = self.trajectory_contract.goal_tolerance
+            if arrival_tolerance is None:
+                raise ValidationError(
+                    "undeclared_tolerance",
+                    "the runtime declares no goal tolerance; pass arrival_tolerance",
+                    path="arrival_tolerance",
+                )
+        arrival_tolerance = check_tolerance(arrival_tolerance, "arrival_tolerance")
         if not isinstance(continuation, Continuation):
             raise ValidationError(
                 "wrong_type", "continuation must be a Continuation", path="continuation"
@@ -864,7 +922,8 @@ class RobotContext:
         actual = self.snapshot()
         predicted_start = tuple(request.start)
         actual_start = tuple(actual.position(j) for j in request.joints)
-        gap = max(abs(a - b) for a, b in zip(actual_start, predicted_start, strict=True))
+        gaps = self._joint_gaps(request.joints, actual_start, predicted_start)
+        gap = max(gaps)
         evidence: dict[str, object] = {
             "prediction": fingerprint(prediction),
             "source": prediction.source,
@@ -874,6 +933,9 @@ class RobotContext:
             "actual_start": actual_start,
             "max_start_gap": gap,
             "arrival_tolerance": arrival_tolerance,
+            "rest_tolerance": rest_tolerance,
+            "object_tolerance_m": object_tolerance_m,
+            "object_tolerance_rad": object_tolerance_rad,
         }
 
         def refuse(code: str, detail: str, **more: object) -> ContinuationResult:
@@ -894,8 +956,9 @@ class RobotContext:
             state = "unknown" if source_execution is None else source_execution.status.state.value
             return refuse("source_not_succeeded", f"{prediction.source} is {state}")
 
-        rest, moving = self._rest(request.joints, rest_tolerance)
+        rest, moving, rest_stamp = self._rest(request.joints, rest_tolerance, actual.stamp)
         evidence["rest"] = rest
+        evidence["rest_stamp"] = rest_stamp
         if moving is None:
             return refuse("rest_unobservable", rest)
         if moving:
@@ -903,8 +966,8 @@ class RobotContext:
 
         off = tuple(
             Discrepancy(what=j, predicted=p, actual=a, tolerance=arrival_tolerance)
-            for j, p, a in zip(request.joints, predicted_start, actual_start, strict=True)
-            if abs(a - p) > arrival_tolerance
+            for j, p, a, g in zip(request.joints, predicted_start, actual_start, gaps, strict=True)
+            if g > arrival_tolerance
         )
         if off:
             return refuse(
@@ -913,7 +976,7 @@ class RobotContext:
                 discrepancies=off,
             )
 
-        changed = _scene_changes(prediction, actual, object_tolerance_m)
+        changed = _scene_changes(prediction, actual, object_tolerance_m, object_tolerance_rad)
         if changed:
             return refuse(
                 "unpredicted_scene_change",
@@ -943,11 +1006,13 @@ class RobotContext:
             return refuse("rebase_failed", account or rebased.status.value)
         check_result(rebased_request, rebased)
         evidence["rebased_plan"] = fingerprint(rebased)
+        # Validated whole on a fresh scene, independent of the one the planner rebased in.
+        fresh = self.planning_scene(actual, request.group, clearance_m=request.clearance_m)
         try:
             prepared = prepare(
                 rebased,
-                scene,
-                validator=planner.validator(rebased_request, scene),
+                fresh,
+                validator=planner.validator(rebased_request, fresh),
                 description=self._description,
                 contract=self.trajectory_contract,
             )
@@ -972,11 +1037,25 @@ class RobotContext:
         self._emit(TraceKind.CONTINUED, source, report)
         return ContinuationResult(report=report, execution=execution, rebased=rebased)
 
+    def _joint_gaps(
+        self, joints: Sequence[str], a: Sequence[float], b: Sequence[float]
+    ) -> tuple[float, ...]:
+        """How far apart two configurations of ``joints`` are, per joint: a continuous
+        joint's gap the short way round, at most pi."""
+        gaps = []
+        for j, x, y in zip(joints, a, b, strict=True):
+            d = x - y
+            if self._description.joint(j).kind is JointKind.CONTINUOUS:
+                d = math.remainder(d, 2 * math.pi)
+            gaps.append(abs(d))
+        return tuple(gaps)
+
     def _rest(
-        self, joints: Sequence[str], tolerance: float
-    ) -> tuple[str, list[Discrepancy] | None]:
+        self, joints: Sequence[str], tolerance: float, arrival: Timestamp
+    ) -> tuple[str, list[Discrepancy] | None, Timestamp | None]:
         """Whether ``joints`` are observed at rest: by a declared joint-velocity channel
-        whose source covers them all. None when no such channel is available."""
+        whose source covers them all, read no earlier than ``arrival``, and when that
+        reading was valid. None when no such reading is available."""
         info = self.info
         for spec in self._description.channels:
             if spec.quantity is not Quantity.JOINT_VELOCITY or spec.name not in info.channels:
@@ -987,7 +1066,15 @@ class RobotContext:
                 continue
             if not set(joints) <= set(covered):
                 continue
-            value = self.observe(ObservationRequest(channels=(spec.name,))).readings[0].value
+            reading = self.observe(ObservationRequest(channels=(spec.name,))).readings[0]
+            if reading.stamp.time_ns < arrival.time_ns:
+                return (
+                    f"{spec.name}: its reading is from {reading.stamp.time_ns} ns, before the "
+                    f"arrival snapshot at {arrival.time_ns} ns",
+                    None,
+                    reading.stamp,
+                )
+            value = reading.value
             assert isinstance(value, tuple)
             speeds = dict(zip(covered, (float(v) for v in value), strict=True))
             moving = [
@@ -996,8 +1083,12 @@ class RobotContext:
                 if abs(speeds[j]) > tolerance
             ]
             peak = max(abs(speeds[j]) for j in joints)
-            return f"{spec.name}: at most {peak:.3g}/s, tolerance {tolerance}", moving
-        return "no declared joint-velocity channel covers the plan's joints", None
+            return (
+                f"{spec.name}: at most {peak:.3g}/s, tolerance {tolerance}",
+                moving,
+                reading.stamp,
+            )
+        return "no declared joint-velocity channel covers the plan's joints", None, None
 
     # -- Commands --------------------------------------------------------------------
 
@@ -1141,6 +1232,7 @@ class RobotContext:
             )
         self._accept_direct(status.stamp, rollback=execution_id)
         accepted = self.now
+        self._accepted[execution_id] = accepted
         deadline = (
             None
             if timeout_ns is None

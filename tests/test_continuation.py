@@ -25,15 +25,20 @@ unpredicted scene change, when it was not.
 The trace records each prediction (``predicted``) and each decision (``continued``).
 The evidence is ``continuation.json``: the prediction and its lineage, the accepted
 report (predicted and actual start, the rest reading, sscbirrt's account of its rebase,
-the rebased plan and compiled command), every refusal's report, and the timeline: how many
-of the source motion's ticks the context stepped while the worker planned. Reproduce with
-``pytest tests/test_continuation.py``.
+the rebased plan and compiled command), and every refusal's report; a second run gives
+the same bytes, which the test checks. ``timeline.json`` holds the wall-clock overlap: how
+many of the source motion's ticks the context stepped while the worker planned.
+``reconciliation.json`` holds what a continuation refuses to take on trust (#185); see
+``test_continuations_check_what_they_reconcile``. Reproduce with
+``uv run pytest tests/test_continuation.py``.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -42,14 +47,17 @@ import pytest
 from ssrobot import (
     ConfigurationGoal,
     ExecutionState,
+    JointTrajectory,
     PlannerCapabilities,
     PlanningRequest,
     PlanResult,
     Pose,
     RobotContext,
     SsrobotError,
+    Timestamp,
     TraceKind,
     TraceRecord,
+    ValidationError,
     dumps,
     load_package,
 )
@@ -104,13 +112,112 @@ def _arm(ctx: RobotContext) -> list[float]:
     return [round(snap.position(j), 4) for j in ctx.description.group(ARM).joints]
 
 
-def _session(tmp: Path, run: Any, **fixture: Any) -> Any:
+class _Reported:
+    """MujocoRuntime as a real robot's driver may report it, for the cases a simulator
+    never produces on its own: ``wrap`` reports those joints in [-pi, pi), as an encoder
+    does, and maps commands back to the turn the joint is on; set later, ``offsets``
+    shifts reported joints, ``rotate`` (object, radians) turns an object about z in
+    place, and ``stale`` stamps velocity readings before the observation."""
+
+    def __init__(self, *, wrap: tuple[str, ...] = ()) -> None:
+        self.wrap = set(wrap)
+        self.offsets: dict[str, float] = {}
+        self.rotate: tuple[str, float] | None = None
+        self.stale = False
+        self.inner: Any = None
+        self._scene: Any = None  # the scene state of the latest snapshot
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    def _reported(self, joint: str, value: float) -> float:
+        value += self.offsets.get(joint, 0.0)
+        if joint in self.wrap:
+            value = (value + math.pi) % (2 * math.pi) - math.pi
+        return value
+
+    def snapshot(self, scene: Any) -> Any:
+        self._scene = scene
+        taken = self.inner.snapshot(scene)
+        objects = taken.objects
+        if self.rotate is not None:
+            name, angle = self.rotate
+            turn = (math.cos(angle / 2), 0.0, 0.0, math.sin(angle / 2))
+            objects = tuple(
+                replace(o, pose=replace(o.pose, quat_wxyz=_multiply(turn, o.pose.quat_wxyz)))
+                if o.name == name
+                else o
+                for o in objects
+            )
+        positions = tuple(
+            self._reported(j, v) for j, v in zip(taken.joints, taken.positions, strict=True)
+        )
+        return replace(taken, positions=positions, objects=objects)
+
+    def observe(self, request: Any) -> Any:
+        observation = self.inner.observe(request)
+        if not self.stale:
+            return observation
+        before = Timestamp(
+            clock=observation.stamp.clock, time_ns=observation.stamp.time_ns - 2_000_000
+        )
+        return replace(
+            observation,
+            readings=tuple(
+                replace(r, stamp=before) if r.channel.endswith("_qd") else r
+                for r in observation.readings
+            ),
+        )
+
+    def submit(self, execution: str, command: Any) -> Any:
+        if self.wrap and isinstance(command, JointTrajectory):
+            raw = self.inner.snapshot(self._scene)
+            turns = {
+                j: round((raw.position(j) - command.positions[0][i]) / (2 * math.pi))
+                for i, j in enumerate(command.joints)
+                if j in self.wrap
+            }
+            command = replace(
+                command,
+                positions=tuple(
+                    tuple(
+                        v + 2 * math.pi * turns.get(j, 0)
+                        for j, v in zip(command.joints, row, strict=True)
+                    )
+                    for row in command.positions
+                ),
+            )
+        return self.inner.submit(execution, command)
+
+
+def _multiply(a: tuple[float, ...], b: tuple[float, ...]) -> tuple[float, float, float, float]:
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return (
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    )
+
+
+def _session(
+    tmp: Path,
+    run: Any,
+    *,
+    reported: _Reported | None = None,
+    runtime_options: dict[str, Any] | None = None,
+    **fixture: Any,
+) -> Any:
     """``run`` in a fresh session; its outcome, with the trace's predictions and
     continuation decisions (``refusal`` None when accepted), in order."""
     package_root, scene = colliding_bimanual(tmp, **fixture)
     package = load_package(package_root)
     records: list[TraceRecord] = []
-    runtime = MujocoRuntime(package, scene=scene)
+    runtime: Any = MujocoRuntime(package, scene=scene, **(runtime_options or {}))
+    if reported is not None:
+        reported.inner = runtime
+        runtime = reported
     with RobotContext(package.description, runtime, sinks=[records.append]) as ctx:
         outcome = run(ctx, CBiRRT(package.description))
     outcome["traced"] = [
@@ -251,7 +358,8 @@ def _settle_and_attach(ctx: RobotContext, source: Any) -> None:
     ctx.attach("block", "left_tool")
 
 
-def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_path: Path) -> None:
+def _evidence(tmp_path: Path) -> dict[str, Any]:
+    """Every scenario of the main test, in fresh sessions under ``tmp_path``."""
     accepted = _session(tmp_path / "accepted", _accepted)
     refusals = {
         "source_not_succeeded": _session(
@@ -304,18 +412,28 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
             tmp_path / "kept", lambda c, p: _releasing(c, p, release=False), block=BLOCK
         ),
     }
-    (artifacts / "continuation.json").write_text(
-        json.dumps(
-            {
-                "accepted": accepted,
-                "refused": refusals,
-                "unsettled": unsettled,
-                "releases": released,
-            },
-            indent=2,
-        )
-        + "\n"
-    )
+    return {
+        "accepted": accepted,
+        "refused": refusals,
+        "unsettled": unsettled,
+        "releases": released,
+    }
+
+
+def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_path: Path) -> None:
+    def semantic(evidence: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """The evidence as bytes, less the wall-clock timeline, which is returned apart."""
+        timeline = evidence["accepted"].pop("timeline")
+        return json.dumps(evidence, indent=2) + "\n", timeline
+
+    first, timeline = semantic(_evidence(tmp_path / "first"))
+    (artifacts / "continuation.json").write_text(first)
+    (artifacts / "timeline.json").write_text(json.dumps(timeline, indent=2) + "\n")
+    # A second run gives the same bytes: the semantic evidence is repeatable.
+    assert semantic(_evidence(tmp_path / "second"))[0] == first
+    evidence = json.loads(first)
+    accepted, refusals = evidence["accepted"], evidence["refused"]
+    unsettled, released = evidence["unsettled"], evidence["releases"]
 
     report = accepted["report"]
     assert report["accepted"] and report["refusal"] is None, report
@@ -330,7 +448,7 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
     assert prediction["lineage"] == [prediction["base"]]
     assert prediction["moved"] == ["right_j1", "right_j2"]
     # The context stepped the source motion while the worker planned.
-    assert accepted["timeline"]["ticks_stepped_while_planning"] > 0
+    assert timeline["ticks_stepped_while_planning"] > 0
 
     # The trace records the prediction, then each decision: the accepted one last.
     traced = accepted["traced"]
@@ -351,3 +469,197 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
     kept = released["kept"]["report"]
     assert kept["refusal"] == "unpredicted_scene_change", kept
     assert [d["what"] for d in kept["discrepancies"]] == ["attachments"]
+
+
+OBSTACLE = (0.135, -0.235, 0.15)  # the right arm's second link at (0.45, 0); clear of rest and A
+
+
+def _planned_on(ctx: RobotContext, prediction: Any, goal: tuple[float, float]) -> Any:
+    ahead = CBiRRT(ctx.description)
+    plan = ctx.plan(_request(ctx, goal, prediction), snapshot=prediction, planner=ahead)
+    assert plan.succeeded, plan.status
+    return ctx.continuation(plan, planner=ahead, prediction=prediction)
+
+
+def _bad_tolerances(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
+    source, prediction = _start_source(ctx, planner)
+    continuation = _planned_on(ctx, prediction, B)
+    _settle(ctx, source)
+    executions, out = len(ctx.executions), dict[str, Any]()
+    for name in (
+        "arrival_tolerance",
+        "rest_tolerance",
+        "object_tolerance_m",
+        "object_tolerance_rad",
+    ):
+        for bad in (math.nan, -1.0, math.inf):
+            try:
+                options: dict[str, Any] = {name: bad}
+                ctx.execute_continuation(continuation, **options)
+                out[f"{name}={bad}"] = "accepted"
+            except ValidationError as e:
+                out[f"{name}={bad}"] = e.code
+    out["submitted_nothing"] = len(ctx.executions) == executions
+    return out
+
+
+def _seam(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
+    """right_j1 (continuous) to 3.0, then the source on across +pi to 3.3: the runtime
+    reports the arrival wrapped, as -2.98, a full turn from the predicted 3.3."""
+    first = ctx.snapshot()
+    to = ctx.plan(_request(ctx, (3.0, 0.0), first), snapshot=first, planner=planner)
+    assert to.succeeded, to.status
+    _settle(ctx, ctx.execute(to, planner=planner))
+    snapshot = ctx.snapshot()
+    plan = ctx.plan(_request(ctx, (3.3, 0.0), snapshot), snapshot=snapshot, planner=planner)
+    assert plan.succeeded, plan.status
+    source = ctx.execute(plan, planner=planner)
+    prediction = ctx.predict(source)
+    continuation = _planned_on(ctx, prediction, (3.6, 0.3))
+    _settle(ctx, source)
+    arrived = ctx.snapshot().position("right_j1")
+    result = ctx.execute_continuation(continuation, rest_tolerance=1.0)
+    out: dict[str, Any] = {
+        "predicted_start": round(prediction.state.position("right_j1"), 4),
+        "reported_arrival": round(arrived, 4),
+        "report": json.loads(dumps(result.report)),
+    }
+    if result.execution is not None:
+        out["continued"] = ctx.run_until(result.execution, max_ticks=MAX_TICKS).state.value
+        out["reached"] = _arm(ctx)
+    return out
+
+
+def _unheld(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
+    """The block declared held, but left behind by a first motion: the runtime marks it
+    no longer held. A prediction of the next motion does not carry it."""
+    ctx.attach("block", TOOL)
+    first = ctx.snapshot()
+    away = ctx.plan(_request(ctx, (0.5, 0.0), first), snapshot=first, planner=planner)
+    assert away.succeeded, away.status
+    _settle(ctx, ctx.execute(away, planner=planner))
+    attachment = ctx.scene.attachment("block")
+    base = ctx.snapshot()
+    plan = ctx.plan(_request(ctx, A, base), snapshot=base, planner=planner)
+    assert plan.succeeded, plan.status
+    prediction = ctx.predict(ctx.execute(plan, planner=planner))
+    return {
+        "held_before_source": attachment is not None and attachment.held,
+        "carried": [o.name for o in prediction.held],
+        "predicted_where_it_was": next(
+            o for o in prediction.state.objects if o.name == "block"
+        ).pose
+        == next(o for o in base.objects if o.name == "block").pose,
+    }
+
+
+def _late_start(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
+    """Time passes between the planning snapshot and the source being accepted."""
+    snapshot = ctx.snapshot()
+    plan = ctx.plan(_request(ctx, A, snapshot), snapshot=snapshot, planner=planner)
+    for _ in range(50):
+        ctx.step()
+    source = ctx.execute(plan, planner=planner)
+    accepted = ctx.now.time_ns
+    assert isinstance(source.command, JointTrajectory)
+    return {
+        "snapshot_ns": snapshot.stamp.time_ns,
+        "accepted_ns": accepted,
+        "duration_ns": source.command.time_from_start_ns[-1],
+        "predicted_ns": ctx.predict(source).state.stamp.time_ns,
+    }
+
+
+def test_continuations_check_what_they_reconcile(artifacts: Path, tmp_path: Path) -> None:
+    """#185: a continuation refuses what it cannot verify, and measures joints and object
+    poses by their real geometry."""
+    rotated, blocked, stale = _Reported(), _Reported(), _Reported()
+
+    def rotate_after(ctx: RobotContext, source: Any) -> None:
+        _settle(ctx, source)
+        rotated.rotate = ("block", 0.3)
+
+    def offset_after(ctx: RobotContext, source: Any) -> None:
+        _settle(ctx, source)
+        blocked.offsets = {"right_j1": 0.45 - A[0]}  # reported inside the obstacle
+
+    def stale_after(ctx: RobotContext, source: Any) -> None:
+        _settle(ctx, source)
+        stale.stale = True
+
+    report = {
+        "bad_tolerances": _session(tmp_path / "tolerances", _bad_tolerances),
+        "seam": _session(
+            tmp_path / "seam", _seam, reported=_Reported(wrap=("right_j1",)), continuous=True
+        ),
+        "rotated_in_place": _session(
+            tmp_path / "rotated",
+            lambda c, p: _refused(c, p, before=rotate_after, rest_tolerance=1.0),
+            reported=rotated,
+            block=BLOCK,
+        ),
+        "unheld": _session(tmp_path / "unheld", _unheld, block=BLOCK),
+        "late_start": _session(tmp_path / "late", _late_start),
+        "contract_tolerance": _session(
+            tmp_path / "contract",
+            lambda c, p: _refused(c, p, before=_settle, rest_tolerance=1.0),
+            runtime_options={"goal_tolerance": 0.02},
+        ),
+        "blocked_bridge": _session(
+            tmp_path / "blocked",
+            lambda c, p: _refused(
+                c, p, before=offset_after, arrival_tolerance=0.5, rest_tolerance=1.0
+            ),
+            reported=blocked,
+            blocked=OBSTACLE,
+        ),
+        "stale_rest": _session(
+            tmp_path / "stale",
+            lambda c, p: _refused(c, p, before=stale_after),
+            reported=stale,
+        ),
+    }
+    for outcome in report.values():
+        outcome.pop("traced", None)
+    (artifacts / "reconciliation.json").write_text(json.dumps(report, indent=2) + "\n")
+
+    bad = report["bad_tolerances"]
+    assert bad.pop("submitted_nothing")
+    assert set(bad.values()) <= {"out_of_limits", "non_finite"}, bad
+
+    seam = report["seam"]
+    assert seam["predicted_start"] == pytest.approx(3.3, abs=0.02)
+    assert seam["reported_arrival"] == pytest.approx(3.3 - 2 * math.pi, abs=0.02)
+    assert seam["report"]["accepted"], seam["report"]
+    assert seam["report"]["max_start_gap"] < 0.02  # the short way round, not a full turn
+    assert seam["continued"] == "succeeded"
+    assert seam["reached"] == pytest.approx([3.6 - 2 * math.pi, 0.3], abs=0.02)
+
+    turned = report["rotated_in_place"]["report"]
+    assert turned["refusal"] == "unpredicted_scene_change", turned
+    assert [d["what"] for d in turned["discrepancies"]] == ["object block rotation"]
+    assert turned["discrepancies"][0]["actual"] == pytest.approx(0.3, abs=1e-6)
+    assert report["rotated_in_place"]["submitted_nothing"]
+
+    unheld = report["unheld"]
+    assert unheld == {
+        "held_before_source": False,
+        "carried": [],
+        "predicted_where_it_was": True,
+    }
+
+    late = report["late_start"]
+    assert late["accepted_ns"] > late["snapshot_ns"]
+    assert late["predicted_ns"] == late["accepted_ns"] + late["duration_ns"]
+
+    contract = report["contract_tolerance"]["report"]
+    assert contract["accepted"] and contract["arrival_tolerance"] == 0.02, contract
+
+    bridge = report["blocked_bridge"]
+    assert bridge["report"]["refusal"] == "rebase_failed", bridge["report"]
+    assert "bridge" in bridge["report"]["detail"] and bridge["submitted_nothing"]
+
+    stale_rest = report["stale_rest"]
+    assert stale_rest["report"]["refusal"] == "rest_unobservable", stale_rest["report"]
+    assert "before the arrival" in stale_rest["report"]["detail"]
+    assert stale_rest["submitted_nothing"]

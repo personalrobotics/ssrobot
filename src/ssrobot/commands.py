@@ -185,10 +185,22 @@ class TrajectoryContract(Value):
     fixed_period: bool = field(
         metadata=meta("Whether the period holds for the lifetime of the context.")
     )
+    goal_tolerance: float | None = field(
+        default=None,
+        metadata=meta(
+            "How close, per joint, a trajectory's end must be reached for it to succeed; "
+            "None when the runtime declares none.",
+            unit="joint",
+        ),
+    )
 
     def _validate(self) -> None:
         if self.period_ns <= 0:
             raise ValidationError("out_of_limits", "period_ns must be positive", path="period_ns")
+        if self.goal_tolerance is not None and self.goal_tolerance < 0:
+            raise ValidationError(
+                "out_of_limits", "goal_tolerance must be >= 0", path="goal_tolerance"
+            )
 
 
 class WrenchPart(enum.StrEnum):
