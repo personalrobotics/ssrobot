@@ -8,6 +8,9 @@ boundary end to end.
 from __future__ import annotations
 
 import math
+import shutil
+from importlib import resources
+from pathlib import Path
 
 from ssrobot import (
     ChannelSpec,
@@ -378,3 +381,36 @@ class ScriptedRuntime:
 
     def recover(self) -> None:
         self.calls.append("recover")
+
+
+def colliding_bimanual(
+    root: Path, *, blocked: tuple[float, float, float] | None = None
+) -> tuple[Path, Path]:
+    """A two-arm MuJoCo package and a scene, under ``root``: the MuJoCo conformance robot
+    (two independent two-joint arms, at y = +0.3 and y = -0.3) with its geoms colliding
+    and an acceleration limit on every joint, so plans can be timed. ``blocked`` places a
+    fixed 4 cm cube centred there, to make a configuration that reaches it infeasible.
+    Returns the package root and the scene file."""
+    source = Path(str(resources.files("ssrobot.mujoco") / "conformance_robot"))
+    package = root / "colliding_bimanual"
+    shutil.copytree(source, package)
+    model = package / "bimanual.xml"
+    model.write_text(
+        model.read_text().replace(
+            '<geom contype="0" conaffinity="0" density="200"/>',
+            '<geom contype="1" conaffinity="1" density="200"/>',
+        )
+    )
+    manifest = package / "ssrobot.toml"
+    manifest.write_text(
+        manifest.read_text().replace("velocity = 2.0\n", "velocity = 2.0\nacceleration = 4.0\n")
+    )
+    obstacle = (
+        ""
+        if blocked is None
+        else f'<body name="obstacle" pos="{blocked[0]} {blocked[1]} {blocked[2]}">'
+        '<geom type="box" size="0.02 0.02 0.02" contype="1" conaffinity="1"/></body>'
+    )
+    scene = root / "scene.xml"
+    scene.write_text(f"<mujoco><worldbody>{obstacle}</worldbody></mujoco>\n")
+    return package, scene
