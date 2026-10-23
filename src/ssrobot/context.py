@@ -928,7 +928,7 @@ class RobotContext:
             request, snapshot=actual.fingerprint(), revision=actual.revision, start=actual_start
         )
         check_planned_in(rebased_request, self._description, actual)
-        scene = self.planning_scene(actual, request.group)
+        scene = self.planning_scene(actual, request.group, clearance_m=request.clearance_m)
         try:
             rebased = rebase(plan, rebased_request, scene)
         except SsrobotError as e:
