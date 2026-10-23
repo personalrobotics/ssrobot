@@ -223,10 +223,14 @@ class SnapshotRuntime(Runtime, Protocol):
         attachments, stamped like any direct answer."""
         ...
 
-    def planning_scene(self, snapshot: SceneSnapshot, group: str) -> PlanningScene:
-        """An isolated planning scene for ``group`` over ``snapshot``.
+    def planning_scene(
+        self, snapshot: SceneSnapshot, group: str, *, clearance_m: float = 0.0
+    ) -> PlanningScene:
+        """An isolated planning scene for ``group`` over ``snapshot`` that keeps
+        ``clearance_m`` (finite, >= 0) from the environment, and reports it.
 
         Raises ``ValidationError("incompatible_snapshot")`` if the snapshot was captured
-        from a different simulated world.
+        from a different simulated world, and ``CapabilityError("clearance_unsupported")``
+        for a nonzero clearance it cannot keep; it never ignores one.
         """
         ...

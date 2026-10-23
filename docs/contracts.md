@@ -134,7 +134,7 @@ trace. It validates everything going into the runtime and everything coming out.
 | `attach(object, end_effector, *, transform=None, allow=None, revision=None, source="client")` | Open only. Declares a scene object held by an end effector and returns the new scene. Changes nothing unless it succeeds. |
 | `detach(object, *, revision=None, source="client")` | Open or faulted. Removes the attachment and its allowances and returns the new scene. |
 | `snapshot()` | Open or faulted. Captures a `SceneSnapshot` for planning. See *Snapshots and planning scenes*. |
-| `planning_scene(snapshot, group)` | Open or faulted. An isolated `PlanningScene` for one joint group over a snapshot. |
+| `planning_scene(snapshot, group, *, clearance_m=0.0)` | Open or faulted. An isolated `PlanningScene` for one joint group over a snapshot, keeping `clearance_m` from the environment. |
 | `manipulator(name=None)`, `base(name=None)` | A planning view of one manipulator or mobile base. See *Planning requests and results*. |
 | `plan(request, *, snapshot, planner, processor=None, abort=None)` | Open or faulted. Negotiates, plans in an isolated planning scene, and checks the result against the request. |
 | `owners(component)`, `executions` | Every unfinished execution holding any of the component's resources, as `Ownership` entries; and every execution in submission order. |
@@ -294,7 +294,7 @@ answer: the runtime's description, name, world, revision, joints, objects, fixtu
 and attachments must all match its own. The stamp is a direct answer, like `submit`'s. Anything else is a contract
 breach. A good snapshot is traced as a `snapshot` record.
 
-`ctx.planning_scene(snapshot, group)` materializes a
+`ctx.planning_scene(snapshot, group, *, clearance_m=0.0)` materializes a
 `PlanningScene`:
 - **Over one joint group.** The group's joints vary. Every other joint, object, and
   attachment stays as in the snapshot, and each held object moves with its end effector
@@ -304,6 +304,10 @@ breach. A good snapshot is traced as a `snapshot` record.
   time.
 - **Planning on the past is fine.** A snapshot from an earlier revision may be
   materialized. Only applying the result is checked.
+- **At a clearance.** Contact closer than `clearance_m` to the environment is disallowed,
+  as touching is; see *Clearance* in [planning.md](planning.md). The scene reports its
+  `clearance_m`. A runtime that cannot keep a nonzero clearance refuses it; it never
+  ignores one.
 
 Materializing refuses:
 
@@ -313,6 +317,8 @@ Materializing refuses:
 | a snapshot from another runtime, or another simulated world (`model` is not `world()`) | `incompatible_snapshot` |
 | a snapshot whose joints are not the description's, in order; whose objects or fixtures are not this scene's; or whose attachments name an unknown end effector, or allow a name that is neither a frame nor a fixture | `incompatible_snapshot` |
 | an undeclared group | `unknown_reference` |
+| a clearance that is not a finite number >= 0 | `wrong_type`, `out_of_limits` |
+| a nonzero clearance the runtime cannot keep | `clearance_unsupported` (`CapabilityError`) |
 
 | Query | Answer |
 | --- | --- |
@@ -325,8 +331,8 @@ Materializing refuses:
 `wrong_type`; the wrong count is `shape_mismatch`; NaN or infinity is `non_finite`. An
 unknown frame fails with `unknown_reference`. The context validates every query and
 every answer the same way for every provider:
-- A planning scene for another group, snapshot, or edge resolution than requested is a
-  contract breach when it is materialized.
+- A planning scene for another group, snapshot, edge resolution, or clearance than
+  requested is a contract breach when it is materialized.
 - A query answer of the wrong type is `runtime_contract`.
 - So is a contact naming anything other than a description frame, a snapshot object or
   fixture, or `world`. Planning scenes are
@@ -369,6 +375,7 @@ runtime holding the same snapshot builds the same request:
 | `constraints` | Every `ConstraintClass` the motion must satisfy, sorted: always `position_limits`, `collision`, `velocity_limits`, `acceleration_limits`; `tsr_path` exactly when there is a path constraint; and any the caller adds, such as `effort_limits` |
 | `limits` | `EffectiveLimits`: each joint's declared velocity and acceleration limits, the request's scaling factors in (0, 1], and their products. The description is never changed. |
 | `timeout_s`, `seed` | The planning budget and the random seed. Cancellation is a call-time `abort` callable, not wire data. |
+| `clearance_m` | The minimum separation, in m, the motion keeps from the environment beyond allowed contacts; 0, the default, counts only touching. See *Clearance* in [planning.md](planning.md). |
 
 A `Tsr` is the region of poses `origin @ T_w @ offset` with `T_w` translating within
 `position_bounds` (m) and rotating within `rotation_bounds` (roll, pitch, yaw about fixed
@@ -383,6 +390,7 @@ Building a request refuses:
 | a goal configuration of the wrong width, or outside position limits | `shape_mismatch`, `out_of_limits` |
 | a group joint with no declared velocity or acceleration limit | `undeclared_limits` |
 | a scaling factor outside (0, 1] | `out_of_limits` |
+| a clearance that is negative or not finite | `out_of_limits`, `non_finite` |
 | a base pose goal on a manipulator | `unsupported_goal` |
 
 **Negotiation.** `ctx.plan(request, *, snapshot, planner, processor=None, abort=None)`,
@@ -397,7 +405,8 @@ returns. Nothing is planned unless negotiation succeeds:
 | the planner returns only a geometric path and no processor is selected | `untimed_result` |
 | no selected planner or processor validates a required constraint class | `unsupported_constraint` |
 
-It then materializes `ctx.planning_scene(snapshot, request.group)` and calls
+It then materializes `ctx.planning_scene(snapshot, request.group,
+clearance_m=request.clearance_m)` and calls
 `planner.plan(request, scene, abort=abort)`. A result answering any other request is
 refused (`planner_contract`).
 
@@ -546,7 +555,7 @@ subject:
 | `subject`, `motion` | What was validated, and its identity (the fingerprint of its subject descriptor): `state_identity`, `motion_identity`, or `path_identity` for the geometry, or `trajectory_identity` for the exact timed trajectory, which covers its law, every ramp (so q(t) over the whole time domain), and its effective limits. Validation evidence is not part of an identity: a trajectory's piece validation tags, validated classes, producer, provenance, or the source path given as evidence (see `evidence`). |
 | `evidence` | For a trajectory validated along its source path, that path's identity. Evidence, not subject: a trajectory has one identity whether or not a path is given, and the policy states how the path is used. |
 | `interpolation` or `law`, `intervals`, `duration_s` | How the subject moves, and its extent |
-| `validator` | `ValidatorIdentity`: the implementation, its `ValidationPolicy`, the snapshot and group it is bound to, `constraints_identity` (the description, which fixes limits and collision allowances, plus the path constraints), and `goal_identity` (the goal its `goal_distance` measures, with the description, component, and frame that fix how it is lowered). A validator's answers are about exactly the problem these name. |
+| `validator` | `ValidatorIdentity`: the implementation, its `ValidationPolicy`, the snapshot and group it is bound to, `constraints_identity` (the description, which fixes limits and collision allowances, plus the clearance and the path constraints), and `goal_identity` (the goal its `goal_distance` measures, with the description, component, and frame that fix how it is lowered). A validator's answers are about exactly the problem these name. |
 | `valid`, `witness` | The verdict, and for an invalid subject the first invalid state: `failure`, its location (`segment` and `fraction` for a motion or path, `time_s` for a trajectory), configuration, contacts, and violated constraint |
 | `checks` | How many state or interval checks were made |
 
@@ -816,7 +825,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
 | [`Submission`](../schemas/ssrobot.Submission.v2.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
-| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v1.json) | One event in a trace. |
+| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v2.json) | One event in a trace. |
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`PortfolioReport`](../schemas/ssrobot.PortfolioReport.v1.json) | Every attempt of a planner portfolio and which was selected. See planning.md. |
@@ -824,7 +833,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`SceneState`](../schemas/ssrobot.SceneState.v1.json) | A context's scene: its objects and fixtures, what it holds, and its revision. |
 | [`AttachmentViolation`](../schemas/ssrobot.AttachmentViolation.v1.json) | A runtime's report that an attached object left its declared transform. |
 | [`SceneSnapshot`](../schemas/ssrobot.SceneSnapshot.v1.json) | An immutable copy of everything a geometric query reads, from which planning scenes are built. |
-| [`PlanningRequest`](../schemas/ssrobot.PlanningRequest.v1.json) | Everything a planner needs, fully resolved from a description and a snapshot. |
+| [`PlanningRequest`](../schemas/ssrobot.PlanningRequest.v2.json) | Everything a planner needs, fully resolved from a description and a snapshot. |
 | [`ConfigurationGoal`](../schemas/ssrobot.ConfigurationGoal.v1.json) | Reach any one of these configurations. |
 | [`PoseGoal`](../schemas/ssrobot.PoseGoal.v1.json) | Bring a frame to a world pose, within tolerances. |
 | [`OffsetGoal`](../schemas/ssrobot.OffsetGoal.v1.json) | Move a frame in a straight line, keeping its orientation. |
@@ -832,8 +841,8 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`BasePoseGoal`](../schemas/ssrobot.BasePoseGoal.v1.json) | Bring a mobile base's frame to a world pose. |
 | [`TimedTrajectory`](../schemas/ssrobot.TimedTrajectory.v2.json) | An exact timed motion from rest to rest: the source law, not a runtime command. |
 | [`MotionValidation`](../schemas/ssrobot.MotionValidation.v2.json) | One validator's answer for one exact motion, bound to its scene, constraints, goal, and policy. |
-| [`PlanResult`](../schemas/ssrobot.PlanResult.v2.json) | A planner's answer to one request, carrying the request and its validation evidence. |
-| [`PreparedTrajectory`](../schemas/ssrobot.PreparedTrajectory.v3.json) | A command compiled for a runtime's trajectory contract, with its readiness checks and both validation reports; one that decodes is ready to execute. |
+| [`PlanResult`](../schemas/ssrobot.PlanResult.v3.json) | A planner's answer to one request, carrying the request and its validation evidence. |
+| [`PreparedTrajectory`](../schemas/ssrobot.PreparedTrajectory.v4.json) | A command compiled for a runtime's trajectory contract, with its readiness checks and both validation reports; one that decodes is ready to execute. |
 | [`MujocoProfile`](../schemas/ssrobot.MujocoProfile.v1.json) | MuJoCo-specific settings a package declares for `MujocoRuntime`. See [mujoco.md](mujoco.md). |
 | [`AuthoringDraft`](../schemas/ssrobot.AuthoringDraft.v1.json) | What `ssrobot init` knows about a package being authored, and what is undecided. See [authoring.md](authoring.md). |
 | [`AuthoringAnswers`](../schemas/ssrobot.AuthoringAnswers.v1.json) | Answers to a draft's decisions, for non-interactive authoring. |

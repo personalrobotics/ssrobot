@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.PlanResult v2",
+  "title": "ssrobot.PlanResult v3",
   "$ref": "#/$defs/PlanResult",
   "$defs": {
     "BasePoseGoal": {
@@ -492,7 +492,7 @@
           "const": "ssrobot.PlanResult"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "request": {
           "$ref": "#/$defs/PlanningRequest",
@@ -573,7 +573,7 @@
           "const": "ssrobot.PlanningRequest"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "robot": {
           "type": "string",
@@ -681,6 +681,11 @@
           "type": "integer",
           "description": "Random seed; equal requests give equal results.",
           "x-unit": "1"
+        },
+        "clearance_m": {
+          "type": "number",
+          "description": "Minimum separation the moving robot and its held objects keep from the environment, beyond allowed contacts; see docs/planning.md.",
+          "x-unit": "m"
         }
       },
       "required": [

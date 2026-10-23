@@ -588,8 +588,11 @@ class MujocoRuntime:
         self._open_data()
         return self._identity
 
-    def planning_scene(self, snapshot: SceneSnapshot, group: str) -> PlanningScene:
-        """A planning scene built on sscbirrt's native MuJoCo scene; see docs/mujoco.md."""
+    def planning_scene(
+        self, snapshot: SceneSnapshot, group: str, *, clearance_m: float = 0.0
+    ) -> PlanningScene:
+        """A planning scene built on sscbirrt's native MuJoCo scene, keeping
+        ``clearance_m`` as geom margins; see docs/mujoco.md."""
         if snapshot.model != self._identity:
             raise ValidationError(
                 "incompatible_snapshot",
@@ -612,6 +615,7 @@ class MujocoRuntime:
             fixtures=self._fixtures,
             snapshot=snapshot,
             group=group,
+            clearance_m=clearance_m,
         )
 
     # -- Opening ---------------------------------------------------------------------

@@ -63,11 +63,12 @@ class PlanningModel:
 
     The planning model is the runtime's model rebuilt from its sources with the
     description's collision allowances as excludes. Those never change; a held object's
-    allowances belong to each snapshot (sscbirrt 3.11), so one model, and one native scene
-    per group, serve every planning scene. The model is compiled at the first planning
-    scene, with ``check`` (the package is unchanged) before and after, as every compile
-    is; it is read only, shared like sscbirrt's native scene. A file changed after it was
-    compiled is not noticed by later planning scenes."""
+    allowances belong to each snapshot (sscbirrt 3.11), and a clearance to each checker
+    (sscbirrt 3.13), so one model, and one native scene per group, serve every planning
+    scene. The model is compiled at the first planning scene, with ``check`` (the package
+    is unchanged) before and after, as every compile is; it is read only, shared like
+    sscbirrt's native scene. A file changed after it was compiled is not noticed by later
+    planning scenes."""
 
     def __init__(self, sources: tuple[Path, SceneSource | None], check: Callable[[], None]) -> None:
         self._sources = sources
@@ -115,8 +116,10 @@ class MujocoPlanningScene:
         addresses: tuple[int, ...],
         names: dict[int, str],
         checker: Any,
+        clearance_m: float,
     ) -> None:
         self._snapshot = snapshot
+        self._clearance_m = clearance_m
         self._group = group
         self._joints = joints
         self._model = model
@@ -137,6 +140,10 @@ class MujocoPlanningScene:
     @property
     def snapshot(self) -> SceneSnapshot:
         return self._snapshot
+
+    @property
+    def clearance_m(self) -> float:
+        return self._clearance_m
 
     def forward_kinematics(self, q: Sequence[float], frame: str) -> Pose:
         for address, value in zip(self._addresses, q, strict=True):
@@ -177,8 +184,10 @@ def materialize(
     fixtures: dict[str, int],
     snapshot: SceneSnapshot,
     group: str,
+    clearance_m: float,
 ) -> MujocoPlanningScene:
-    """Build a planning scene for ``group`` from a snapshot the runtime has checked."""
+    """Build a planning scene for ``group`` from a snapshot the runtime has checked,
+    keeping ``clearance_m`` from the environment."""
     reason = native_mujoco.unavailable_reason()
     if reason is not None:
         raise CapabilityError("planning_unavailable", f"sscbirrt's native MuJoCo scene: {reason}")
@@ -274,7 +283,9 @@ def materialize(
         )
     except (TypeError, ValueError) as e:
         raise ValidationError("invalid_snapshot", str(e), path="snapshot") from None
-    checker = native_mujoco.NativeCollisionChecker(scene, native_snapshot)
+    # sscbirrt keeps the clearance between the moving set (the group's bodies and what they
+    # hold) and the environment, in its own view of the shared model (sscbirrt#256).
+    checker = native_mujoco.NativeCollisionChecker(scene, native_snapshot, clearance=clearance_m)
 
     names = {0: "world"}
     for name, binding in bound.items():
@@ -300,4 +311,5 @@ def materialize(
         ),
         names=names,
         checker=checker,
+        clearance_m=clearance_m,
     )

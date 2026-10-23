@@ -77,7 +77,8 @@ its default is 0.05 in the Euclidean norm of raw joint coordinates. Every raw-li
 interval is subdivided so consecutive checked states are at most that far apart, with
 both endpoints checked. The guarantee is discrete: nothing is claimed between checked
 states. A smaller value can detect finer collisions at the cost of more checks. The
-validator does not compute distance or clearance and does not adapt the resolution.
+validator does not compute distances and does not adapt the resolution; a clearance is
+a request's choice (*Clearance*, below).
 
 Whoever changes the geometry of a motion validates the change:
 
@@ -90,6 +91,40 @@ Whoever changes the geometry of a motion validates the change:
   trajectory for the runtime, and checks the sampled command as the runtime will run it.
 - A planner that returns only a path runs only after an explicitly selected
   path-preserving processor, such as `RestToRestProcessor`, times it.
+
+## Clearance
+
+`PlanningRequest.clearance_m` is the minimum separation the motion keeps from the
+environment. It changes which motions are valid, so it belongs to the request: views
+take it like any request option (`arm.plan_to_configuration(q, planner=planner,
+clearance_m=0.005)`), it is part of the request's fingerprint and of
+`constraints_identity`, and so every validation report is bound to it. Every scene made
+for a request has its clearance: planning, the planner's validator, `prepare`, execution,
+and portfolios. A result or prepared trajectory made at one clearance is refused as
+evidence at another (`validation_mismatch`). A skill that wants one clearance for many
+stages holds it as configuration and puts it in each request; there is no runtime-wide
+default.
+
+What it keeps clear is sscbirrt's clearance (sscbirrt#256):
+- **The moving set** is the group's bodies and the objects they hold. **The
+  environment** is everything else: the world, fixtures, resting objects, and robot
+  bodies the group does not move, such as a robot's fixed base, its table (Geodude's is
+  part of its model), or the other arm. Within `clearance_m` of the environment, the
+  moving set is in disallowed contact, unless that contact is allowed.
+- **Allowed contacts stay allowed:** the description's collision allowances, and each
+  attachment's allowed bodies, such as the support a held object is lifted from.
+- **The moving set keeps no clearance from itself.** An arm's own links, and a held
+  object against the arm holding it, are checked exactly as at 0.
+- **A larger authored margin is kept;** a clearance never reduces one.
+- **0, the default, counts only touching,** exactly as before clearances existed.
+
+**Cost.** Recording the clearance per request does not mean compiling per request: a
+clearance belongs to each planning scene's collision checker, never to the planning
+model or its native scene, so one of each serves every clearance (for MuJoCo, see
+*Snapshots and planning scenes* in [mujoco.md](mujoco.md)). The recurring cost is the
+collision check at that margin, which stays small because sscbirrt does not check
+pairs that cannot change (sscbirrt#254): on Geodude's four-can recycling scene, a 5 mm
+check of the right arm costs about 1.3x a check at 0.
 
 ## The planner
 
