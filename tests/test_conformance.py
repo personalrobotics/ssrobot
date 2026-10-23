@@ -121,7 +121,8 @@ def _coherent(trace_path: Path) -> set[str]:
             sources[r.payload.execution] = r.payload.source
         elif r.kind is TraceKind.APPLIED:
             # Provenance: every applied command is attributed to whoever submitted it.
-            assert r.source == sources[r.payload.execution]  # type: ignore[union-attr]
+            assert isinstance(r.payload, AppliedCommand)
+            assert r.source == sources[r.payload.execution]
         elif isinstance(r.payload, ExecutionStatus):
             history.setdefault(r.payload.execution, []).append(r.payload.state.value)
     assert set(history) == set(sources)
