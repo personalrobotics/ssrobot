@@ -122,9 +122,9 @@ What it keeps clear, as measured on Geodude's recycling demo before it was adopt
 **Cost.** Recording the clearance per request does not mean compiling per request. A
 runtime prepares each clearance once, at its first use, and reuses it (for MuJoCo, see
 *Snapshots and planning scenes* in [mujoco.md](mujoco.md)). The recurring cost is the
-collision check at that margin: with sscbirrt 3.12.0, about 1.08x a check at 0 for
-5 mm on sscbirrt's benchmark, because pairs that cannot change are not checked
-(sscbirrt#254).
+collision check at that margin, which stays small because sscbirrt 3.12.0 does not
+check pairs that cannot change (sscbirrt#254): on Geodude's four-can recycling scene, a
+5 mm check of the right arm costs about 1.3x a check at 0 (25 µs against 33 µs).
 
 ## The planner
 

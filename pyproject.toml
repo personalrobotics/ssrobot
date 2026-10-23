@@ -14,7 +14,7 @@ ssrobot = "ssrobot.cli:main"
 # Exact: sscbirrt's native MuJoCo adapter is built against this MuJoCo and refuses
 # another, and MujocoRuntime checks it at open. Planning scenes are built on that adapter.
 # sscbirrt is exact too: 3.12.0 checks no environment-against-environment pairs
-# (sscbirrt#254), so a planning clearance, as geom margins, costs about 1.08x per check.
+# (sscbirrt#254), so a planning clearance, as geom margins, costs little more per check.
 mujoco = ["mujoco==3.14.0", "sscbirrt[mujoco]==3.12.0"]
 # The sscbirrt, ssik, and sstsr adapter. 3.9 is the first sscbirrt release to expose
 # the same public validator that planning applies; 3.12.0, as the mujoco extra pins. The adapter measures goal regions
