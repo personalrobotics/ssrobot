@@ -20,6 +20,7 @@ from sscbirrt.exceptions import (
     MotionContractError,
     UnsupportedCapability,
 )
+from sscbirrt.legacy import legacy_problem
 
 from ssrobot.description import JointKind, RobotDescription
 from ssrobot.errors import CapabilityError, ValidationError
@@ -336,6 +337,97 @@ class CBiRRT:
             ),
         )
 
+    def rebase(
+        self, plan: PlanResult, request: PlanningRequest, scene: PlanningScene
+    ) -> PlanResult:
+        """``plan``, rebased onto ``request``: the same plan from where the robot actually
+        is (``RobotContext.execute_continuation`` builds ``request`` from the actual state
+        and checks the gap is within its arrival tolerance).
+
+        The planned path is kept exactly. When the actual start differs from the path's
+        first waypoint, a straight bridge from the actual start to it comes first. The
+        whole path is then timed again by sscbirrt's trajectory smoother under the
+        request's limits, and validated as ``plan``'s results are: the path and the
+        trajectory, by the validator ``plan`` applies. The ``rebase`` diagnostic says what
+        changed."""
+        path = plan.path
+        if path is None:
+            return self._failure(request, PlanStatus.INVALID_INPUT, "rebase_failed", "no path")
+        if path.joints != request.joints:
+            return self._failure(
+                request, PlanStatus.INVALID_INPUT, "rebase_failed", "the path is of other joints"
+            )
+        planner, constraints, goals = self._setup(request, scene)
+        validator = SscbirrtValidator(
+            planner.validator(constraint_tsrs=constraints or None),
+            request=request,
+            scene=scene,
+            goal=self._goal_distance(request, scene, goals),
+        )
+        start = tuple(float(v) for v in request.start)
+        gap = max(abs(a - b) for a, b in zip(start, path.waypoints[0], strict=True))
+        waypoints = path.waypoints if gap == 0.0 else (start, *path.waypoints)
+        rebased = GeometricPath(group=request.group, joints=request.joints, waypoints=waypoints)
+        path_report = validator.validate_path(rebased)
+        if not path_report.valid:
+            return self._failure(
+                request,
+                PlanStatus.INFEASIBLE,
+                "rebase_failed",
+                f"the bridge from the actual start is invalid: {path_report.witness}",
+            )
+        problem = legacy_problem(
+            planner.robot,
+            planner.ik,
+            planner.collision,
+            planner.space,
+            planner.config,
+            None,
+            None,
+            None,
+            None,
+            constraints or None,
+        )
+        limits = request.limits
+        source = planner.smooth_trajectory(
+            problem,
+            [np.array(q, dtype=float) for q in waypoints],
+            TrajectoryOptions(
+                velocity_limits=np.array(limits.effective_velocity),
+                acceleration_limits=np.array(limits.effective_acceleration),
+                seed=request.seed,
+            ),
+        )
+        trajectory = _timed(request, source)
+        trajectory_report = (
+            validator.validate_trajectory(trajectory, rebased)
+            if source.validation is None
+            else validator.record(
+                source.validation, trajectory_subject(trajectory), evidence=rebased
+            )
+        )
+        account = (
+            "no bridge: the actual start is the planned start"
+            if gap == 0.0
+            else f"a {gap:.3g} straight bridge from the actual start to the planned path"
+        )
+        return PlanResult(
+            request=request,
+            planner=self.name,
+            backend=str(source.backend),
+            status=PlanStatus.SUCCEEDED,
+            diagnostics=(
+                Diagnostic(
+                    code="rebase",
+                    message=f"{account}; retimed, {len(trajectory.pieces)} pieces, "
+                    f"{trajectory.duration:.3f} s (was {_duration(plan):.3f} s)",
+                ),
+            ),
+            path=rebased,
+            trajectory=trajectory,
+            validation=(path_report, trajectory_report),
+        )
+
     def _failure(
         self,
         request: PlanningRequest,
@@ -351,6 +443,10 @@ class CBiRRT:
             status=status,
             diagnostics=(Diagnostic(code=_code(code), message=message),),
         )
+
+
+def _duration(plan: PlanResult) -> float:
+    return math.nan if plan.trajectory is None else plan.trajectory.duration
 
 
 def _code(name: str) -> str:

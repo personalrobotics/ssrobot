@@ -11,7 +11,8 @@ import enum
 import math
 import numbers
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from types import TracebackType
 from typing import Any, cast
@@ -22,8 +23,19 @@ from ssrobot.commands import (
     Command,
     CommandKind,
     GuardedJointTrajectory,
+    JointTrajectory,
     TrajectoryContract,
     command_components,
+)
+from ssrobot.continuation import (
+    ARRIVAL_TOLERANCE,
+    OBJECT_TOLERANCE_M,
+    REST_TOLERANCE,
+    Continuation,
+    ContinuationReport,
+    ContinuationResult,
+    Discrepancy,
+    PredictedSnapshot,
 )
 from ssrobot.conventions import ClockMode, Pose, Timestamp, check_name
 from ssrobot.description import EndEffector, Manipulator, MobileBase, RobotDescription
@@ -111,6 +123,8 @@ ALLOWED_STATES: dict[str, frozenset[ContextState]] = {
     "snapshot": frozenset({_S.OPEN, _S.FAULTED}),
     "planning_scene": frozenset({_S.OPEN, _S.FAULTED}),
     "detach": frozenset({_S.OPEN, _S.FAULTED}),
+    "predict": frozenset({_S.OPEN}),
+    "execute_continuation": frozenset({_S.OPEN}),
 }
 """Context states in which each operation is allowed."""
 
@@ -185,6 +199,74 @@ class Ownership:
     """Whether it holds every resource of the component."""
 
 
+def _state(snapshot: SceneSnapshot | PredictedSnapshot) -> SceneSnapshot:
+    """The snapshot to plan in: a prediction's predicted state, or the snapshot itself."""
+    return snapshot.state if isinstance(snapshot, PredictedSnapshot) else snapshot
+
+
+def _compose(a: Pose, b: Pose) -> Pose:
+    """Frame ``b``, given in ``a``, in ``a``'s parent."""
+    aw, ax, ay, az = a.quat_wxyz
+    bw, bx, by, bz = b.quat_wxyz
+    px, py, pz = b.position
+    # Rotate b's position by a's rotation: q v q*.
+    tx, ty, tz = 2 * (ay * pz - az * py), 2 * (az * px - ax * pz), 2 * (ax * py - ay * px)
+    rx = px + aw * tx + (ay * tz - az * ty)
+    ry = py + aw * ty + (az * tx - ax * tz)
+    rz = pz + aw * tz + (ax * ty - ay * tx)
+    w = aw * bw - ax * bx - ay * by - az * bz
+    x = aw * bx + ax * bw + ay * bz - az * by
+    y = aw * by - ax * bz + ay * bw + az * bx
+    z = aw * bz + ax * by - ay * bx + az * bw
+    n = math.sqrt(w * w + x * x + y * y + z * z)
+    ox, oy, oz = a.position
+    return Pose(position=(ox + rx, oy + ry, oz + rz), quat_wxyz=(w / n, x / n, y / n, z / n))
+
+
+def _scene_changes(
+    prediction: PredictedSnapshot, actual: SceneSnapshot, object_tolerance_m: float
+) -> list[Discrepancy]:
+    """How ``actual`` differs from ``prediction`` beyond the joints: a scene change (a new
+    revision, other attachments or fixtures), or a free object moved beyond tolerance.
+    Held objects move with their hand, which the joints already account for; unsettled
+    and released ones are not compared. The expected releases are the only allowed scene
+    change: with them, the scene is compared by content rather than by revision."""
+    predicted = prediction.state
+    changes = []
+    # Without releases the scene must not have changed at all. With them it has, so it
+    # is compared by content instead: the attachments less the released ones, the same
+    # fixtures, every object.
+    base = prediction.base_revision
+    if actual.revision < base or (not prediction.releases and actual.revision != base):
+        changes.append(
+            Discrepancy(
+                what="revision", predicted=float(base), actual=float(actual.revision), tolerance=0.0
+            )
+        )
+    if actual.attachments != predicted.attachments:
+        changes.append(Discrepancy(what="attachments", predicted=0.0, actual=1.0, tolerance=0.0))
+    if actual.fixtures != predicted.fixtures:
+        changes.append(Discrepancy(what="fixtures", predicted=0.0, actual=1.0, tolerance=0.0))
+    held = {o.name for o in prediction.held} | {a.object for a in predicted.attachments}
+    held |= set(prediction.unsettled) | set(prediction.releases)
+    now = {o.name: o for o in actual.objects}
+    for o in predicted.objects:
+        if o.name in held:
+            continue
+        there = now.get(o.name)
+        moved = math.inf if there is None else math.dist(there.pose.position, o.pose.position)
+        if moved > object_tolerance_m:
+            changes.append(
+                Discrepancy(
+                    what=f"object {o.name}",
+                    predicted=0.0,
+                    actual=moved if math.isfinite(moved) else -1.0,
+                    tolerance=object_tolerance_m,
+                )
+            )
+    return changes
+
+
 def _order(execution_id: str) -> int:
     return int(execution_id.removeprefix("e"))
 
@@ -224,6 +306,10 @@ class RobotContext:
         # Snapshots captured at the current scene revision, by fingerprint: the ones a
         # plan may still be executed against. Older revisions are stale anyway.
         self._captured: dict[str, SceneSnapshot] = {}
+        # Predictions this context made, by their state's fingerprint: a plan made on one
+        # executes only as a continuation.
+        self._predicted: dict[str, PredictedSnapshot] = {}
+        self._planning_pool: ThreadPoolExecutor | None = None
 
     # -- Properties ------------------------------------------------------------------
 
@@ -358,6 +444,8 @@ class RobotContext:
             self._emit(TraceKind.CLOSED, "context", None)
         finally:
             self._state = ContextState.CLOSED
+            if self._planning_pool is not None:
+                self._planning_pool.shutdown(wait=True, cancel_futures=True)
             self._runtime.close()
 
     def recover(self) -> ContextState:
@@ -476,16 +564,22 @@ class RobotContext:
         return taken
 
     def planning_scene(
-        self, snapshot: SceneSnapshot, group: str, *, clearance_m: float = 0.0
+        self,
+        snapshot: SceneSnapshot | PredictedSnapshot,
+        group: str,
+        *,
+        clearance_m: float = 0.0,
     ) -> PlanningScene:
         """An isolated planning scene for ``group`` over ``snapshot``, keeping
         ``clearance_m`` from the environment (docs/planning.md). A runtime that cannot
         keep a nonzero clearance refuses it (``CapabilityError``).
 
         A snapshot from an earlier revision is allowed: planning on the past is fine, and
-        ``submit(snapshot=...)`` refuses applying the result if the scene has changed.
+        ``submit(snapshot=...)`` refuses applying the result if the scene has changed. A
+        ``PredictedSnapshot`` plans in its predicted state.
         """
         self._require("planning_scene")
+        snapshot = _state(snapshot)
         self._check_world(snapshot)
         if isinstance(clearance_m, bool) or not isinstance(clearance_m, numbers.Real):
             raise ValidationError("wrong_type", "clearance_m must be a number", path="clearance_m")
@@ -537,7 +631,7 @@ class RobotContext:
         self,
         request: PlanningRequest,
         *,
-        snapshot: SceneSnapshot,
+        snapshot: SceneSnapshot | PredictedSnapshot,
         planner: Planner,
         processor: TrajectoryProcessor | None = None,
         abort: Callable[[], bool] | None = None,
@@ -547,21 +641,363 @@ class RobotContext:
 
         Nothing is planned unless negotiation succeeds. The result is checked against
         the request; a planner answering another request, start, or limits is refused.
+        A ``PredictedSnapshot`` plans in its predicted state; the result executes only as
+        a continuation (``continuation``, ``execute_continuation``).
         """
-        if not isinstance(request, PlanningRequest):
-            raise ValidationError("wrong_type", "request must be a PlanningRequest", path="request")
-        if not isinstance(snapshot, SceneSnapshot) or snapshot.fingerprint() != request.snapshot:
-            raise ValidationError(
-                "snapshot_mismatch", "the request was built in another snapshot", path="snapshot"
-            )
-        check_planned_in(request, self._description, snapshot)
-        negotiate(request, planner.capabilities(request), processor)
-        scene = self.planning_scene(snapshot, request.group, clearance_m=request.clearance_m)
+        scene = self._negotiated_scene(request, snapshot, planner, processor)
         result = planner.plan(request, scene, abort=abort)
         if not isinstance(result, PlanResult):
             raise ValidationError("planner_contract", f"the planner answered {result!r}")
         check_result(request, result)
         return result
+
+    def plan_async(
+        self,
+        request: PlanningRequest,
+        *,
+        snapshot: SceneSnapshot | PredictedSnapshot,
+        planner: Planner,
+        processor: TrajectoryProcessor | None = None,
+        abort: Callable[[], bool] | None = None,
+    ) -> Future[PlanResult]:
+        """``plan``, on a worker thread: negotiation and the planning scene happen here,
+        on the context's thread, and only ``planner.plan`` and the check of its result
+        run on the worker, so the context may keep stepping meanwhile. The planner must
+        not be used by anything else until the future is done. The future's result is
+        exactly what ``plan`` would have returned."""
+        scene = self._negotiated_scene(request, snapshot, planner, processor)
+        if self._planning_pool is None:
+            self._planning_pool = ThreadPoolExecutor(thread_name_prefix="ssrobot-plan")
+
+        def run() -> PlanResult:
+            result = planner.plan(request, scene, abort=abort)
+            if not isinstance(result, PlanResult):
+                raise ValidationError("planner_contract", f"the planner answered {result!r}")
+            check_result(request, result)
+            return result
+
+        return self._planning_pool.submit(run)
+
+    def _negotiated_scene(
+        self,
+        request: PlanningRequest,
+        snapshot: SceneSnapshot | PredictedSnapshot,
+        planner: Planner,
+        processor: TrajectoryProcessor | None,
+    ) -> PlanningScene:
+        if not isinstance(request, PlanningRequest):
+            raise ValidationError("wrong_type", "request must be a PlanningRequest", path="request")
+        state = _state(snapshot)
+        if not isinstance(state, SceneSnapshot) or state.fingerprint() != request.snapshot:
+            raise ValidationError(
+                "snapshot_mismatch", "the request was built in another snapshot", path="snapshot"
+            )
+        check_planned_in(request, self._description, state)
+        negotiate(request, planner.capabilities(request), processor)
+        return self.planning_scene(state, request.group, clearance_m=request.clearance_m)
+
+    # -- Interleaving planning and execution -----------------------------------------
+
+    def predict(
+        self,
+        execution: Execution,
+        *,
+        unsettled: Iterable[str] = (),
+        releases: Mapping[str, Pose] | None = None,
+        joints: Mapping[str, float] | None = None,
+    ) -> PredictedSnapshot:
+        """The state expected if ``execution`` succeeds: its joints at its last waypoint,
+        every held object its hand moves carried with it, everything else as in the
+        captured snapshot it was submitted with. One motion ahead: the execution must
+        have been submitted with a snapshot this context captured, and be a joint
+        trajectory; a guarded one stops where it meets contact, which is not known in
+        advance (``unpredictable_command``).
+
+        ``unsettled`` names free objects whose pose the prediction makes no claim about,
+        such as one just released and still falling; it is recorded in the prediction,
+        and their poses are not compared on arrival. ``releases`` names held objects the
+        robot is expected to release after ``execution`` and before a plan made on the
+        prediction runs, such as a can dropped where the motion ends, each with the pose
+        it is expected to come to rest at. In the predicted state each is detached and at
+        that pose, for planning only; on arrival each must have been detached, the only
+        scene change allowed, and its pose is not compared. ``joints`` sets joints the
+        motion does not move to the positions expected when the plan runs, such as a
+        gripper's, opened by that release; for planning only."""
+        self._require("predict")
+        self._check_own(execution)
+        command = execution.command
+        if not isinstance(command, JointTrajectory):
+            raise ValidationError(
+                "unpredictable_command",
+                f"only a joint trajectory's end is predictable, not a {type(command).__name__}",
+                path="execution",
+            )
+        state = execution.status.state
+        if state.terminal and state is not ExecutionState.SUCCEEDED:
+            raise ValidationError(
+                "source_not_succeeded", f"{execution.id} ended {state.value}", path="execution"
+            )
+        base_id = execution.submission.snapshot
+        base = None if base_id is None else self._captured.get(base_id)
+        if base is None or base_id is None:
+            raise ValidationError(
+                "unpredictable_command",
+                f"{execution.id} was not submitted with a snapshot captured at the current "
+                "scene revision",
+                path="execution",
+            )
+        end = dict(zip(command.joints, command.positions[-1], strict=True))
+        expected = {str(j): float(v) for j, v in (joints or {}).items()}
+        if set(expected) & set(end) or not set(expected) <= set(base.joints):
+            raise ValidationError(
+                "unknown_reference",
+                "joints names joints of the robot the motion does not move",
+                path="joints",
+            )
+        end.update(expected)
+        positions = tuple(end.get(j, v) for j, v in zip(base.joints, base.positions, strict=True))
+        # Held objects on an end effector this motion moves go with it.
+        scene = self.planning_scene(base, command.group)
+        start_q = tuple(base.position(j) for j in command.joints)
+        end_q = tuple(command.positions[-1])
+        moved: dict[str, Pose] = {}
+        for attachment in base.attachments:
+            frame = self._description.end_effector(attachment.end_effector).frame
+            before = scene.forward_kinematics(start_q, frame)
+            after = scene.forward_kinematics(end_q, frame)
+            if before != after:
+                moved[attachment.object] = _compose(after, attachment.transform)
+        releases = dict(releases or {})
+        held_now = {a.object for a in base.attachments}
+        for name in releases:
+            if name not in held_now:
+                raise ValidationError(
+                    "unknown_reference",
+                    f"{name!r} is not held, so it cannot be released",
+                    path="releases",
+                )
+        moved.update(releases)
+        objects = tuple(
+            replace(o, pose=moved[o.name]) if o.name in moved else o for o in base.objects
+        )
+        attachments = tuple(a for a in base.attachments if a.object not in releases)
+        duration = command.time_from_start_ns[-1]
+        stamp = Timestamp(clock=base.stamp.clock, time_ns=base.stamp.time_ns + duration)
+        predicted_state = replace(
+            base, positions=positions, objects=objects, attachments=attachments, stamp=stamp
+        )
+        prediction = PredictedSnapshot(
+            state=predicted_state,
+            base=base_id,
+            base_revision=base.revision,
+            source=execution.id,
+            command=fingerprint(command),
+            moved=tuple(command.joints),
+            held=tuple(o for o in objects if o.name in moved and o.name not in releases),
+            unsettled=tuple(sorted(set(unsettled))),
+            expected=tuple(sorted(expected)),
+            releases=tuple(sorted(releases)),
+            world=base.model,
+            lineage=(base_id,),
+        )
+        self._predicted[predicted_state.fingerprint()] = prediction
+        self._emit(TraceKind.PREDICTED, "context", prediction)
+        return prediction
+
+    def continuation(
+        self, plan: PlanResult, *, planner: Planner, prediction: PredictedSnapshot
+    ) -> Continuation:
+        """Bind a successful plan made on ``prediction`` (by this context) to it and to
+        the planner that made it, for ``execute_continuation``."""
+        if not isinstance(prediction, PredictedSnapshot):
+            raise ValidationError(
+                "wrong_type", "prediction must be a PredictedSnapshot", path="prediction"
+            )
+        fingerprint_ = prediction.state.fingerprint()
+        if self._predicted.get(fingerprint_) != prediction:
+            raise ValidationError(
+                "unknown_prediction", "this context did not make that prediction", path="prediction"
+            )
+        if not isinstance(plan, PlanResult) or not plan.succeeded:
+            raise ValidationError(
+                "unsuccessful_plan", "only a successful plan continues", path="plan"
+            )
+        if plan.request.snapshot != fingerprint_:
+            raise ValidationError(
+                "snapshot_mismatch", "the plan was made on another snapshot", path="plan"
+            )
+        check_planned_in(plan.request, self._description, prediction.state)
+        return Continuation(plan=plan, planner=planner, prediction=prediction)
+
+    def execute_continuation(
+        self,
+        continuation: Continuation,
+        *,
+        arrival_tolerance: float = ARRIVAL_TOLERANCE,
+        rest_tolerance: float = REST_TOLERANCE,
+        object_tolerance_m: float = OBJECT_TOLERANCE_M,
+        source: str = "planner",
+        timeout_ns: int | None = None,
+    ) -> ContinuationResult:
+        """Run ``continuation`` from the state the robot actually arrived in, or refuse.
+
+        It captures the actual state and checks, in order: the source execution
+        succeeded; the plan's joints are observed at rest; each is within
+        ``arrival_tolerance`` of the plan's start; the scene changed only as predicted
+        (same revision, attachments and fixtures, free objects within
+        ``object_tolerance_m``). Then the plan's planner rebases it onto the actual state
+        (``Planner.rebase``), and the rebased motion is compiled with ``prepare``,
+        validated whole under the plan's validation policy, and submitted with the actual
+        snapshot. A refusal submits nothing; its code says which check failed. The report
+        is the evidence either way."""
+        self._require("execute_continuation")
+        if not isinstance(continuation, Continuation):
+            raise ValidationError(
+                "wrong_type", "continuation must be a Continuation", path="continuation"
+            )
+        plan, planner, prediction = continuation.plan, continuation.planner, continuation.prediction
+        if self._predicted.get(prediction.state.fingerprint()) != prediction:
+            raise ValidationError(
+                "unknown_prediction", "this context did not make that prediction", path="prediction"
+            )
+        request = plan.request
+        actual = self.snapshot()
+        predicted_start = tuple(request.start)
+        actual_start = tuple(actual.position(j) for j in request.joints)
+        gap = max(abs(a - b) for a, b in zip(actual_start, predicted_start, strict=True))
+        evidence: dict[str, object] = {
+            "prediction": fingerprint(prediction),
+            "source": prediction.source,
+            "plan": fingerprint(plan),
+            "actual": actual.fingerprint(),
+            "predicted_start": predicted_start,
+            "actual_start": actual_start,
+            "max_start_gap": gap,
+            "arrival_tolerance": arrival_tolerance,
+        }
+
+        def refuse(code: str, detail: str, **more: object) -> ContinuationResult:
+            report = ContinuationReport(
+                accepted=False,
+                refusal=code,
+                detail=detail,
+                **{**evidence, **more},  # type: ignore[arg-type]
+            )
+            self._emit(TraceKind.CONTINUED, source, report)
+            return ContinuationResult(report=report, execution=None, rebased=None)
+
+        source_execution = self._executions.get(prediction.source)
+        if (
+            source_execution is None
+            or source_execution.status.state is not ExecutionState.SUCCEEDED
+        ):
+            state = "unknown" if source_execution is None else source_execution.status.state.value
+            return refuse("source_not_succeeded", f"{prediction.source} is {state}")
+
+        rest, moving = self._rest(request.joints, rest_tolerance)
+        evidence["rest"] = rest
+        if moving is None:
+            return refuse("rest_unobservable", rest)
+        if moving:
+            return refuse("not_at_rest", rest, discrepancies=tuple(moving))
+
+        off = tuple(
+            Discrepancy(what=j, predicted=p, actual=a, tolerance=arrival_tolerance)
+            for j, p, a in zip(request.joints, predicted_start, actual_start, strict=True)
+            if abs(a - p) > arrival_tolerance
+        )
+        if off:
+            return refuse(
+                "arrival_out_of_tolerance",
+                f"{len(off)} joint(s) arrived more than {arrival_tolerance} from the start",
+                discrepancies=off,
+            )
+
+        changed = _scene_changes(prediction, actual, object_tolerance_m)
+        if changed:
+            return refuse(
+                "unpredicted_scene_change",
+                "; ".join(d.what for d in changed),
+                discrepancies=tuple(changed),
+            )
+
+        rebase = getattr(planner, "rebase", None)
+        if rebase is None:
+            return refuse("rebase_unsupported", f"planner {planner.name!r} cannot rebase a plan")
+        rebased_request = replace(
+            request, snapshot=actual.fingerprint(), revision=actual.revision, start=actual_start
+        )
+        check_planned_in(rebased_request, self._description, actual)
+        scene = self.planning_scene(actual, request.group, clearance_m=request.clearance_m)
+        try:
+            rebased = rebase(plan, rebased_request, scene)
+        except SsrobotError as e:
+            return refuse("rebase_failed", f"{e.code}: {e.message}")
+        if not isinstance(rebased, PlanResult):
+            raise ValidationError("planner_contract", f"the planner rebased into {rebased!r}")
+        account = "; ".join(
+            d.message for d in rebased.diagnostics if d.code in ("rebase", "rebase_failed")
+        )
+        evidence["rebase"] = account
+        if not rebased.succeeded:
+            return refuse("rebase_failed", account or rebased.status.value)
+        check_result(rebased_request, rebased)
+        evidence["rebased_plan"] = fingerprint(rebased)
+        try:
+            prepared = prepare(
+                rebased,
+                scene,
+                validator=planner.validator(rebased_request, scene),
+                description=self._description,
+                contract=self.trajectory_contract,
+            )
+        except ValidationError as e:
+            if e.code != "execution_unready":
+                raise
+            return refuse("continuation_invalid", e.message)
+        evidence["prepared"] = fingerprint(prepared)
+        execution = self._submit(
+            prepared.command,
+            source=source,
+            timeout_ns=timeout_ns,
+            snapshot=actual,
+            prepared=prepared,
+        )
+        report = ContinuationReport(
+            accepted=True,
+            detail="rebased, validated, and submitted",
+            execution=execution.id,
+            **evidence,  # type: ignore[arg-type]
+        )
+        self._emit(TraceKind.CONTINUED, source, report)
+        return ContinuationResult(report=report, execution=execution, rebased=rebased)
+
+    def _rest(
+        self, joints: Sequence[str], tolerance: float
+    ) -> tuple[str, list[Discrepancy] | None]:
+        """Whether ``joints`` are observed at rest: by a declared joint-velocity channel
+        whose source covers them all. None when no such channel is available."""
+        info = self.info
+        for spec in self._description.channels:
+            if spec.quantity is not Quantity.JOINT_VELOCITY or spec.name not in info.channels:
+                continue
+            try:
+                covered = self._description.component_joints(spec.source)
+            except SsrobotError:
+                continue
+            if not set(joints) <= set(covered):
+                continue
+            value = self.observe(ObservationRequest(channels=(spec.name,))).readings[0].value
+            assert isinstance(value, tuple)
+            speeds = dict(zip(covered, (float(v) for v in value), strict=True))
+            moving = [
+                Discrepancy(what=j, predicted=0.0, actual=speeds[j], tolerance=tolerance)
+                for j in joints
+                if abs(speeds[j]) > tolerance
+            ]
+            peak = max(abs(speeds[j]) for j in joints)
+            return f"{spec.name}: at most {peak:.3g}/s, tolerance {tolerance}", moving
+        return "no declared joint-velocity channel covers the plan's joints", None
 
     # -- Commands --------------------------------------------------------------------
 
@@ -608,6 +1044,12 @@ class RobotContext:
         self._require("execute")
         if not isinstance(plan, PlanResult):
             raise ValidationError("wrong_type", "the plan must be a PlanResult", path="plan")
+        if plan.request.snapshot in self._predicted:
+            raise ValidationError(
+                "predicted_plan",
+                "the plan was made on a prediction: run it with execute_continuation",
+                path="plan",
+            )
         contract = self.trajectory_contract
         snapshot = self._captured.get(plan.request.snapshot)
         if snapshot is None:
@@ -1351,7 +1793,7 @@ class ManipulatorView:
         self,
         goal: Goal,
         *,
-        snapshot: SceneSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
         frame: str | None = None,
         path_constraint: Sequence[Tsr] = (),
         constraints: Sequence[ConstraintClass] = (),
@@ -1380,7 +1822,7 @@ class ManipulatorView:
             )
         return build_request(
             self._context.description,
-            snapshot,
+            _state(snapshot),
             component=self.name,
             group=self.group,
             frame=frame if needs_frame else None,
@@ -1398,7 +1840,7 @@ class ManipulatorView:
         self,
         goal: Goal,
         *,
-        snapshot: SceneSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
         planner: Planner,
         processor: TrajectoryProcessor | None = None,
         abort: Callable[[], bool] | None = None,
@@ -1416,7 +1858,7 @@ class ManipulatorView:
         self,
         configuration: Sequence[float],
         *,
-        snapshot: SceneSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
         planner: Planner,
         **options: Any,
     ) -> PlanResult:
@@ -1428,7 +1870,7 @@ class ManipulatorView:
         self,
         configurations: Sequence[Sequence[float]],
         *,
-        snapshot: SceneSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
         planner: Planner,
         **options: Any,
     ) -> PlanResult:
@@ -1442,7 +1884,7 @@ class ManipulatorView:
         self,
         pose: Pose,
         *,
-        snapshot: SceneSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
         planner: Planner,
         position_tolerance: float = 1e-3,
         rotation_tolerance: float = 1e-2,
@@ -1458,7 +1900,7 @@ class ManipulatorView:
         direction: Sequence[float],
         distance: float,
         *,
-        snapshot: SceneSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
         planner: Planner,
         position_tolerance: float = 1e-3,
         rotation_tolerance: float = 1e-2,
@@ -1479,7 +1921,7 @@ class ManipulatorView:
         self,
         tsrs: Sequence[Tsr],
         *,
-        snapshot: SceneSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
         planner: Planner,
         **options: Any,
     ) -> PlanResult:

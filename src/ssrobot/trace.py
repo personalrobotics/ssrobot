@@ -10,6 +10,7 @@ from pathlib import Path
 from types import TracebackType
 
 from ssrobot._wire import AssetStore, Record, dumps, loads, meta
+from ssrobot.continuation import ContinuationReport, PredictedSnapshot
 from ssrobot.conventions import check_name
 from ssrobot.errors import ValidationError
 from ssrobot.execution import AppliedCommand, ExecutionStatus, RuntimeHealth, Submission
@@ -43,6 +44,12 @@ class TraceKind(enum.StrEnum):
     VIOLATION = "violation"
     """An attached object left its declared transform; payload is the
     ``AttachmentViolation``."""
+    PREDICTED = "predicted"
+    """``RobotContext.predict`` predicted where an execution ends; payload is the
+    ``PredictedSnapshot``. Planning on it happens off the runtime clock."""
+    CONTINUED = "continued"
+    """``RobotContext.execute_continuation`` decided whether a plan made on a prediction
+    runs; payload is the ``ContinuationReport``, accepted or refused."""
     STEPPED = "stepped"
     """A manual control tick ended at ``time_ns``; no payload."""
     CLOSED = "closed"
@@ -60,6 +67,8 @@ TracePayload = (
     | AttachmentViolation
     | SceneSnapshot
     | PreparedTrajectory
+    | PredictedSnapshot
+    | ContinuationReport
 )
 
 _PAYLOAD: dict[TraceKind, type[Record] | None] = {
@@ -73,6 +82,8 @@ _PAYLOAD: dict[TraceKind, type[Record] | None] = {
     TraceKind.SCENE: SceneState,
     TraceKind.VIOLATION: AttachmentViolation,
     TraceKind.SNAPSHOT: SceneSnapshot,
+    TraceKind.PREDICTED: PredictedSnapshot,
+    TraceKind.CONTINUED: ContinuationReport,
     TraceKind.STEPPED: None,
     TraceKind.CLOSED: None,
 }
