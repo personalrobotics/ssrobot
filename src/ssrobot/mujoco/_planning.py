@@ -6,7 +6,9 @@ sscbirrt.
 
 from __future__ import annotations
 
+import copy
 import threading
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -58,28 +60,58 @@ def planning_model(
     return compile_world(model_path, scene, excludes=excludes)[0]
 
 
+def with_clearance(model: Any, clearance_m: float) -> Any:
+    """A copy of ``model`` whose environment keeps ``clearance_m``: every colliding geom
+    on a body no robot joint moves (the world, fixtures, free objects) gets a margin of at
+    least ``clearance_m``, so MuJoCo reports a contact within that distance of it, and
+    sscbirrt counts it unless allowed. A larger authored margin is kept. Robot geoms keep
+    theirs, so robot against robot is unchanged. ``model`` is not modified."""
+    moved = np.zeros(model.nbody, dtype=bool)
+    free = int(mujoco.mjtJoint.mjJNT_FREE)
+    for body in range(1, model.nbody):  # a parent precedes its children
+        adr, n = int(model.body_jntadr[body]), int(model.body_jntnum[body])
+        moved[body] = moved[model.body_parentid[body]] or any(
+            int(model.jnt_type[j]) != free for j in range(adr, adr + n)
+        )
+    environment = ~moved[model.geom_bodyid] & (
+        (model.geom_contype != 0) | (model.geom_conaffinity != 0)
+    )
+    clear = copy.copy(model)
+    clear.geom_margin[environment] = np.maximum(clear.geom_margin[environment], clearance_m)
+    return clear
+
+
+# Distinct nonzero clearances kept at once; the least recently used is dropped with its
+# native scenes, so arbitrary clearances cannot grow memory without bound.
+_CLEARANCES = 4
+
+
 class PlanningModel:
-    """A runtime's planning model and its native scene for each group.
+    """A runtime's planning model and its native scene for each group and clearance.
 
     The planning model is the runtime's model rebuilt from its sources with the
     description's collision allowances as excludes. Those never change; a held object's
     allowances belong to each snapshot (sscbirrt 3.11), so one model, and one native scene
-    per group, serve every planning scene. The model is compiled at the first planning
-    scene, with ``check`` (the package is unchanged) before and after, as every compile
-    is; it is read only, shared like sscbirrt's native scene. A file changed after it was
-    compiled is not noticed by later planning scenes."""
+    per group, serve every planning scene at one clearance. The model is compiled at the
+    first planning scene, with ``check`` (the package is unchanged) before and after, as
+    every compile is. A nonzero clearance is a copy of it with the environment's margins
+    raised (``with_clearance``), made at that clearance's first use and kept for the
+    last few clearances used. All are read only, shared like sscbirrt's native scene. A
+    file changed after the compile is not noticed by later planning scenes."""
 
     def __init__(self, sources: tuple[Path, SceneSource | None], check: Callable[[], None]) -> None:
         self._sources = sources
         self._check = check
         self._models: dict[tuple[tuple[str, str], ...], Any] = {}
+        self._clear: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
         self._scenes: dict[tuple[Any, ...], Any] = {}
         self._lock = threading.Lock()
 
     def get(
-        self, excludes: tuple[tuple[str, str], ...], joints: tuple[str, ...]
+        self, excludes: tuple[tuple[str, str], ...], joints: tuple[str, ...], clearance_m: float
     ) -> tuple[Any, Any]:
-        """The planning model with ``excludes`` and its native scene over ``joints``."""
+        """The planning model with ``excludes`` at ``clearance_m``, and its native scene
+        over ``joints``."""
         with self._lock:
             model = self._models.get(excludes)
             if model is None:
@@ -87,10 +119,21 @@ class PlanningModel:
                 model = planning_model(self._sources[0], self._sources[1], excludes)
                 self._check()
                 self._models[excludes] = model
-            scene = self._scenes.get((excludes, joints))
+            if clearance_m:
+                key = (excludes, clearance_m)
+                clear = self._clear.get(key)
+                if clear is None:
+                    clear = self._clear[key] = with_clearance(model, clearance_m)
+                    if len(self._clear) > _CLEARANCES:
+                        dropped, _ = self._clear.popitem(last=False)
+                        for k in [k for k in self._scenes if k[:2] == dropped]:
+                            del self._scenes[k]
+                self._clear.move_to_end(key)
+                model = clear
+            scene = self._scenes.get((excludes, clearance_m, joints))
             if scene is None:
                 scene = native_mujoco.NativeScene.from_model(model, joints)
-                self._scenes[(excludes, joints)] = scene
+                self._scenes[(excludes, clearance_m, joints)] = scene
             return model, scene
 
 
@@ -115,8 +158,10 @@ class MujocoPlanningScene:
         addresses: tuple[int, ...],
         names: dict[int, str],
         checker: Any,
+        clearance_m: float,
     ) -> None:
         self._snapshot = snapshot
+        self._clearance_m = clearance_m
         self._group = group
         self._joints = joints
         self._model = model
@@ -137,6 +182,10 @@ class MujocoPlanningScene:
     @property
     def snapshot(self) -> SceneSnapshot:
         return self._snapshot
+
+    @property
+    def clearance_m(self) -> float:
+        return self._clearance_m
 
     def forward_kinematics(self, q: Sequence[float], frame: str) -> Pose:
         for address, value in zip(self._addresses, q, strict=True):
@@ -177,8 +226,10 @@ def materialize(
     fixtures: dict[str, int],
     snapshot: SceneSnapshot,
     group: str,
+    clearance_m: float,
 ) -> MujocoPlanningScene:
-    """Build a planning scene for ``group`` from a snapshot the runtime has checked."""
+    """Build a planning scene for ``group`` from a snapshot the runtime has checked,
+    keeping ``clearance_m`` from the environment."""
     reason = native_mujoco.unavailable_reason()
     if reason is not None:
         raise CapabilityError("planning_unavailable", f"sscbirrt's native MuJoCo scene: {reason}")
@@ -203,7 +254,7 @@ def materialize(
         )
     )
     joints = description.group(group).joints
-    model, scene = models.get(excludes, joints)
+    model, scene = models.get(excludes, joints, clearance_m)
 
     def resolve(kind: Any, name: str, path: str) -> int:
         """A name's id in the planning model; a snapshot naming what is not there would
@@ -300,4 +351,5 @@ def materialize(
         ),
         names=names,
         checker=checker,
+        clearance_m=clearance_m,
     )

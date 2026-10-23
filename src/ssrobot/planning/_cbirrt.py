@@ -186,6 +186,10 @@ class CBiRRT:
         rules."""
         if (scene.group, scene.joints) != (request.group, request.joints):
             raise ValidationError("joint_mismatch", "the scene plans other joints than the request")
+        if scene.clearance_m != request.clearance_m:
+            raise ValidationError(
+                "validation_mismatch", "the scene keeps another clearance than the request"
+            )
         kinematics = self._kinematics_for(request)
         if kinematics is None and (request.path_constraint or isinstance(request.goal, OffsetGoal)):
             # sscbirrt projects onto a path constraint with IK, so neither its planner

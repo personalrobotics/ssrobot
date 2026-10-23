@@ -255,6 +255,12 @@ class PlanningScene(Protocol):
         """The snapshot it was materialized from."""
         ...
 
+    @property
+    def clearance_m(self) -> float:
+        """The clearance it keeps from the environment: contact closer than this is
+        disallowed unless allowed (docs/planning.md). 0 counts only touching."""
+        ...
+
     def forward_kinematics(self, q: Sequence[float], frame: str) -> Pose:
         """``frame``'s pose in the world at ``q``."""
         ...

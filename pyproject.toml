@@ -11,22 +11,22 @@ dependencies = []
 ssrobot = "ssrobot.cli:main"
 
 [project.optional-dependencies]
-# Exact: sscbirrt's native MuJoCo adapter is built against this version and refuses
-# another, and MujocoRuntime checks it at open. Planning scenes are built on that adapter;
-# 3.11 is the first sscbirrt release whose public snapshot carries each attachment's
-# allowed bodies (sscbirrt#206) and honours them against the environment (sscbirrt#247).
-mujoco = ["mujoco==3.14.0", "sscbirrt[mujoco]>=3.11,<4"]
+# Exact: sscbirrt's native MuJoCo adapter is built against this MuJoCo and refuses
+# another, and MujocoRuntime checks it at open. Planning scenes are built on that adapter.
+# sscbirrt is exact too: 3.12.0 checks no environment-against-environment pairs
+# (sscbirrt#254), so a planning clearance, as geom margins, costs about 1.08x per check.
+mujoco = ["mujoco==3.14.0", "sscbirrt[mujoco]==3.12.0"]
 # The sscbirrt, ssik, and sstsr adapter. 3.9 is the first sscbirrt release to expose
-# the same public validator that planning applies; 3.11, as the mujoco extra needs. The adapter measures goal regions
+# the same public validator that planning applies; 3.12.0, as the mujoco extra pins. The adapter measures goal regions
 # with sstsr directly; 3.5 is the first release whose distance wraps angles to the
 # representative nearest the bound (sstsr#186).
-planning = ["sscbirrt[ssik]>=3.11,<4", "sstsr>=3.5,<4"]
+planning = ["sscbirrt[ssik]==3.12.0", "sstsr>=3.5,<4"]
 
 [dependency-groups]
 dev = [
     "jsonschema>=4.23",
     "mujoco==3.14.0",
-    "sscbirrt[mujoco,ssik]>=3.11,<4",
+    "sscbirrt[mujoco,ssik]==3.12.0",
     "sstsr>=3.5,<4",
     "mypy>=1.13",
     "pytest>=8.3",

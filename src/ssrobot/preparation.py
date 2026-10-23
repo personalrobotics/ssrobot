@@ -94,6 +94,10 @@ def prepare(
         raise ValidationError(
             "snapshot_mismatch", "the scene is not the request's group and snapshot"
         )
+    if scene.clearance_m != request.clearance_m:
+        raise ValidationError(
+            "validation_mismatch", "the scene keeps another clearance than the request"
+        )
     check_planned_in(request, description, scene.snapshot)
     identity = validator.identity
     check_bound(identity, request, path="validator")

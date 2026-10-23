@@ -316,7 +316,9 @@ def plan_portfolio(
         except SsrobotError as e:
             record(i, AttemptOutcome.REFUSED, detail=e.code)
             continue
-        scenes[i] = ctx.planning_scene(snapshot, request.group)
+        scenes[i] = ctx.planning_scene(
+            snapshot, requests[i].group, clearance_m=requests[i].clearance_m
+        )
 
     stop = threading.Event()
     deadline = None if timeout_s is None else time.monotonic() + timeout_s
@@ -417,7 +419,7 @@ def _candidate(
     that motion and report; no candidate if the motion is invalid. The report is checked
     to come from that validator, bound to the request, about exactly that motion with
     its path as evidence."""
-    scene = ctx.planning_scene(snapshot, request.group)
+    scene = ctx.planning_scene(snapshot, request.group, clearance_m=request.clearance_m)
     validator = attempt.planner.validator(request, scene)
     check_bound(validator.identity, request, path="validator")
     path = result.path

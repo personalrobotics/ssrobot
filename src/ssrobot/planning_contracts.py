@@ -356,7 +356,7 @@ class PlanningRequest(Record):
     which constraints and limits, in which snapshot of the world."""
 
     SCHEMA = "ssrobot.PlanningRequest"
-    VERSION = 1
+    VERSION = 2
 
     robot: str = field(metadata=meta("Robot name."))
     description: str = field(metadata=meta("Fingerprint of the robot description."))
@@ -381,6 +381,14 @@ class PlanningRequest(Record):
     limits: EffectiveLimits = field(metadata=meta("The velocity and acceleration limits."))
     timeout_s: float = field(metadata=meta("Planning time budget.", unit="s"))
     seed: int = field(metadata=meta("Random seed; equal requests give equal results.", unit="1"))
+    clearance_m: float = field(
+        default=0.0,
+        metadata=meta(
+            "Minimum separation the moving robot and its held objects keep from the "
+            "environment, beyond allowed contacts; see docs/planning.md.",
+            unit="m",
+        ),
+    )
 
     def _validate(self) -> None:
         check_name(self.robot, path="robot")
@@ -433,6 +441,8 @@ class PlanningRequest(Record):
             raise ValidationError("out_of_limits", "timeout_s must be positive", path="timeout_s")
         if self.seed < 0:
             raise ValidationError("out_of_limits", "seed must be >= 0", path="seed")
+        if self.clearance_m < 0:
+            raise ValidationError("out_of_limits", "clearance_m must be >= 0", path="clearance_m")
 
     def fingerprint(self) -> str:
         return fingerprint(self)
@@ -693,7 +703,7 @@ class PlanResult(Record):
     constraints."""
 
     SCHEMA = "ssrobot.PlanResult"
-    VERSION = 2
+    VERSION = 3
 
     request: PlanningRequest = field(metadata=meta("The request it answers."))
     planner: str = field(metadata=meta("Planner name and version."))
@@ -1359,9 +1369,9 @@ class TrajectorySubject(Value):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConstraintSet(Value):
     """What a validator enforces beyond the scene: the description (which fixes joint
-    limits and collision allowances), the path constraints, and an offset goal's line,
-    which constrains the frame throughout as well. Together with the snapshot, these fix
-    every constraint the validator applies."""
+    limits and collision allowances), the clearance, the path constraints, and an offset
+    goal's line, which constrains the frame throughout as well. Together with the
+    snapshot, these fix every constraint the validator applies."""
 
     description: str = field(metadata=meta("Fingerprint of the robot description."))
     path_constraint: tuple[Tsr, ...] = field(
@@ -1371,6 +1381,9 @@ class ConstraintSet(Value):
         default=None, metadata=meta("An offset goal, whose straight line the frame keeps to.")
     )
     frame: str | None = field(default=None, metadata=meta("The constrained frame, if any."))
+    clearance_m: float = field(
+        default=0.0, metadata=meta("The request's planning clearance.", unit="m")
+    )
 
 
 def _configuration(values: Sequence[float], path: str) -> tuple[float, ...]:
@@ -1535,6 +1548,7 @@ def constraints_identity(request: PlanningRequest) -> str:
             path_constraint=request.path_constraint,
             offset=offset,
             frame=request.frame if request.path_constraint or offset is not None else None,
+            clearance_m=request.clearance_m,
         )
     )
 
@@ -1563,7 +1577,7 @@ class PreparedTrajectory(Record):
     is ready to execute."""
 
     SCHEMA = "ssrobot.PreparedTrajectory"
-    VERSION = 3
+    VERSION = 4
 
     request: PlanningRequest = field(metadata=meta("The request it was planned for."))
     source: str = field(
@@ -1655,6 +1669,7 @@ def build_request(
     acceleration_scaling: float = 1.0,
     timeout_s: float = 10.0,
     seed: int = 0,
+    clearance_m: float = 0.0,
 ) -> PlanningRequest:
     """A fully resolved request from the description and the snapshot alone, so every
     runtime that holds the same snapshot builds the same request."""
@@ -1696,6 +1711,8 @@ def build_request(
         raise ValidationError("wrong_type", "seed must be an int", path="seed")
     if isinstance(timeout_s, bool) or not isinstance(timeout_s, int | float):
         raise ValidationError("wrong_type", "timeout_s must be a number", path="timeout_s")
+    if isinstance(clearance_m, bool) or not isinstance(clearance_m, int | float):
+        raise ValidationError("wrong_type", "clearance_m must be a number", path="clearance_m")
     return PlanningRequest(
         robot=description.name,
         description=snapshot.description,
@@ -1717,4 +1734,5 @@ def build_request(
         ),
         timeout_s=float(timeout_s),
         seed=seed,
+        clearance_m=float(clearance_m),
     )

@@ -1040,23 +1040,23 @@ wheels = [
 
 [[package]]
 name = "sscbirrt"
-version = "3.11.0"
+version = "3.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "sstsr" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/03/8a48fe47ff43b875ff59b9d6a434b83c106a0a353fa5ea6f8e982b7600d5/sscbirrt-3.11.0.tar.gz", hash = "sha256:82b38029a8105d39ab720bead6d473383c993ee3f97b177fd5ce409f27526509", size = 5400756, upload-time = "2026-10-21T05:33:43.443Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0e/ea/561e44c9d5af0d82f133ee85c96b942de7767d6355cc3e3ddb9a2bfd1df9/sscbirrt-3.12.0.tar.gz", hash = "sha256:b7d82d2fd51ce0355933ac971fdac2a0af8ef81380f465228c6770b7744e6e4a", size = 5406317, upload-time = "2026-10-22T20:19:41.896Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/d6/3cd0dbd13c282a1ed79d3262a2723a0111cd829cae66936061872863b106/sscbirrt-3.11.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:7173f74fc35dcd9da5a0e1f260cbeb2b541ad11b1dded1f9c403d74544bcf290", size = 1084576, upload-time = "2026-10-21T05:33:28.421Z" },
-    { url = "https://files.pythonhosted.org/packages/8f/21/5eb32db2bb067a8875379bd1dae3e38013c236318c7eaf346b3d92fadc3b/sscbirrt-3.11.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1bd4039e53ffd9560b1de51cac62e3bc3a6a88d12adeb671e732ef071acde8c1", size = 1429918, upload-time = "2026-10-21T05:33:30.06Z" },
-    { url = "https://files.pythonhosted.org/packages/c2/f0/0c8bcf14aa6df1aa292c7b243c7045be75fbb0b9c0ecae98d80e35b1fc5f/sscbirrt-3.11.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:eb130b2a7a01615b6788e4a9e1b8bdeee624042f9ca122e1ce4f00caa58865c0", size = 1088178, upload-time = "2026-10-21T05:33:31.818Z" },
-    { url = "https://files.pythonhosted.org/packages/e2/ab/a47e48f081b3ff85933b42cbe97ff4d6dfe986a1e8f533df7ad54052e6c8/sscbirrt-3.11.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4bb41a415d6530ed3dfa7ecec56f44fa5601479c78c67431da75fd830716e730", size = 1436963, upload-time = "2026-10-21T05:33:33.899Z" },
-    { url = "https://files.pythonhosted.org/packages/15/e2/a40113544553abc1ce38483b9695748b9ab6607f65233f89ad9cb9a4f7b0/sscbirrt-3.11.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:5f0fe52d77823843df8b9a6108622c9f685111bf0520af493c9150719c0dd3e0", size = 1088251, upload-time = "2026-10-21T05:33:35.947Z" },
-    { url = "https://files.pythonhosted.org/packages/45/46/fe5600cc9881db66bfab5ea0a43a11fb23711cd3a9e79ff8d5df45a5160e/sscbirrt-3.11.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3b276b7bd4b597802980993701930154ae8b9f6c7a0f5f3a626254b480c7241a", size = 1436951, upload-time = "2026-10-21T05:33:37.498Z" },
-    { url = "https://files.pythonhosted.org/packages/18/d9/2fe61056ec2b895ed1551a2088e899a2103a4cfd617a83dc0aa73c172087/sscbirrt-3.11.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:a08558f0a537ab91deaaca49b5f0844f0d1d41a5d37185b5917de5e529955c89", size = 1089005, upload-time = "2026-10-21T05:33:39.33Z" },
-    { url = "https://files.pythonhosted.org/packages/e2/b6/8297efc7eb28813d7afff030af5d0a0e1cbf5e37103f48a34e8ef97158ef/sscbirrt-3.11.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5c5992c568caca10c0a0e0f4507a610868d0946a23c54f2ce35c8c1c265c30b2", size = 1437400, upload-time = "2026-10-21T05:33:41.161Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/fc/b913b0ad5e981dddedab8b79ae008208359326216ea006e463874b062bfc/sscbirrt-3.12.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:b92f25a4e260de6d8c60a329f9249288ff1e274da26abac13320fe768b4899bf", size = 1085838, upload-time = "2026-10-22T20:19:29.806Z" },
+    { url = "https://files.pythonhosted.org/packages/a9/9c/e420bd6a496158713196f3f885a05a4360630a6b60386f9bcd8235f40222/sscbirrt-3.12.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5f3558fdc718221aded2f7b6d37ec79afe2db89c6c6f15f5a29b36c76842112f", size = 1431210, upload-time = "2026-10-22T20:19:31.159Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/16/d8ad69d9cfdf35c02a71c48c7881659511820b236da642f7d64f3fc2734d/sscbirrt-3.12.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:c5119a4555754872c5fdce92f983e7dba00fe41c82d574d0f79beb9bf757bf48", size = 1089406, upload-time = "2026-10-22T20:19:32.609Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/d5/d75844c82c082afe9c0d427d9b92829a0d3ecb010dd973b1a1f7cfefa878/sscbirrt-3.12.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0bb8dbe0e1be2a5bace51d9038d365acacb0e879b23ee4143dcc578ca784a0ba", size = 1438776, upload-time = "2026-10-22T20:19:34.131Z" },
+    { url = "https://files.pythonhosted.org/packages/51/f8/782b2800bb8971f43a1162e473abd71adfe52944ac8b8c5933f7b7907e55/sscbirrt-3.12.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:c48db0b73681764dd56630ba780f220287a26dca1d3d7de51ad4f35668f29a3c", size = 1089481, upload-time = "2026-10-22T20:19:35.546Z" },
+    { url = "https://files.pythonhosted.org/packages/71/ea/d8dc201fe67eaa65f97e27adaf46f48e2414056e1e2027620cfcead1cdc5/sscbirrt-3.12.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:00e5534dce33353e5225194c184ba60bc238610c0faf60ca6146ffb9a223554d", size = 1438728, upload-time = "2026-10-22T20:19:37.16Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/81/7734e4e7aaa3bea03fe3dd0dd95fc6df4c952264a26ab2bd94d780459d6b/sscbirrt-3.12.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:366766251452b9f58449906d9629b4fbdea537cdbc2f2246a749baf5585ee00e", size = 1090304, upload-time = "2026-10-22T20:19:38.925Z" },
+    { url = "https://files.pythonhosted.org/packages/32/d9/cdfd8192185e26ce51a9e0cbbc64e9f55866aebe9a0cb6457e4a31229c6f/sscbirrt-3.12.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:eda2804ee8dc5c8d5291c5e7e45d9dbca9b26598ac03390e36a10cca7c42a896", size = 1439147, upload-time = "2026-10-22T20:19:40.347Z" },
 ]
 
 [package.optional-dependencies]
@@ -1128,8 +1128,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mujoco", marker = "extra == 'mujoco'", specifier = "==3.14.0" },
-    { name = "sscbirrt", extras = ["mujoco"], marker = "extra == 'mujoco'", specifier = ">=3.11,<4" },
-    { name = "sscbirrt", extras = ["ssik"], marker = "extra == 'planning'", specifier = ">=3.11,<4" },
+    { name = "sscbirrt", extras = ["mujoco"], marker = "extra == 'mujoco'", specifier = "==3.12.0" },
+    { name = "sscbirrt", extras = ["ssik"], marker = "extra == 'planning'", specifier = "==3.12.0" },
     { name = "sstsr", marker = "extra == 'planning'", specifier = ">=3.5,<4" },
 ]
 provides-extras = ["mujoco", "planning"]
@@ -1141,7 +1141,7 @@ dev = [
     { name = "mypy", specifier = ">=1.13" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "ruff", specifier = ">=0.8" },
-    { name = "sscbirrt", extras = ["mujoco", "ssik"], specifier = ">=3.11,<4" },
+    { name = "sscbirrt", extras = ["mujoco", "ssik"], specifier = "==3.12.0" },
     { name = "sstsr", specifier = ">=3.5,<4" },
 ]
 

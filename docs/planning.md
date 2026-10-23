@@ -77,7 +77,8 @@ its default is 0.05 in the Euclidean norm of raw joint coordinates. Every raw-li
 interval is subdivided so consecutive checked states are at most that far apart, with
 both endpoints checked. The guarantee is discrete: nothing is claimed between checked
 states. A smaller value can detect finer collisions at the cost of more checks. The
-validator does not compute distance or clearance and does not adapt the resolution.
+validator does not compute distances and does not adapt the resolution; a clearance is
+a request's choice (*Clearance*, below).
 
 Whoever changes the geometry of a motion validates the change:
 
@@ -90,6 +91,40 @@ Whoever changes the geometry of a motion validates the change:
   trajectory for the runtime, and checks the sampled command as the runtime will run it.
 - A planner that returns only a path runs only after an explicitly selected
   path-preserving processor, such as `RestToRestProcessor`, times it.
+
+## Clearance
+
+`PlanningRequest.clearance_m` is the minimum separation the motion keeps from the
+environment. It changes which motions are valid, so it belongs to the request: views
+take it like any request option (`arm.plan_to_configuration(q, planner=planner,
+clearance_m=0.005)`), it is part of the request's fingerprint and of
+`constraints_identity`, and so every validation report is bound to it. Every scene made
+for a request has its clearance: planning, the planner's validator, `prepare`, execution,
+and portfolios. A result or prepared trajectory made at one clearance is refused as
+evidence at another (`validation_mismatch`). A skill that wants one clearance for many
+stages holds it as configuration and puts it in each request; there is no runtime-wide
+default.
+
+What it keeps clear, as measured on Geodude's recycling demo before it was adopted:
+- **The environment** is every colliding geometry no robot joint moves: the world,
+  fixed structure (including a robot's own fixed base and mounting, such as Geodude's
+  table), fixtures, and free objects. Within `clearance_m` of it, a robot body or a
+  held object is in disallowed contact, unless that contact is allowed.
+- **Allowed contacts stay allowed:** the description's collision allowances, and each
+  attachment's allowed bodies, such as the support a held object is lifted from.
+- **Robot bodies keep no clearance from each other.** Contact between bodies robot
+  joints move, such as an arm's own links or the other arm, is checked exactly as at 0.
+- **A held object is a free object,** so it keeps the clearance from the robot bodies
+  its attachment does not allow, as well as from the environment.
+- **A larger authored margin is kept;** a clearance never reduces one.
+- **0, the default, counts only touching,** exactly as before clearances existed.
+
+**Cost.** Recording the clearance per request does not mean compiling per request. A
+runtime prepares each clearance once, at its first use, and reuses it (for MuJoCo, see
+*Snapshots and planning scenes* in [mujoco.md](mujoco.md)). The recurring cost is the
+collision check at that margin: with sscbirrt 3.12.0, about 1.08x a check at 0 for
+5 mm on sscbirrt's benchmark, because pairs that cannot change are not checked
+(sscbirrt#254).
 
 ## The planner
 

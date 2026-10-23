@@ -421,11 +421,14 @@ class _SnapshotScripted(_SceneScripted):
         *,
         scene_group: str | None = None,
         contact_names: tuple[str, str] = ("tcp", "box"),
+        ignore_clearance: bool = False,
     ) -> None:
         super().__init__()
         self.snapshot_tamper = tamper
         self.scene_group = scene_group  # answer for this group instead of the requested one
         self.contact_names = contact_names
+        # answer every clearance with a scene that keeps none, instead of refusing it
+        self.ignore_clearance = ignore_clearance
 
     def world(self) -> str:
         return "scripted-world"
@@ -451,8 +454,12 @@ class _SnapshotScripted(_SceneScripted):
         )
         return taken if self.snapshot_tamper is None else self.snapshot_tamper(taken)
 
-    def planning_scene(self, snapshot: SceneSnapshot, group: str) -> PlanningScene:
+    def planning_scene(
+        self, snapshot: SceneSnapshot, group: str, *, clearance_m: float = 0.0
+    ) -> PlanningScene:
         assert self._description is not None
+        if clearance_m and not self.ignore_clearance:
+            raise CapabilityError("clearance_unsupported", "scripted scenes keep no clearance")
         answered = self.scene_group or group
         return _ScriptedScene(
             snapshot, answered, self._description.group(answered).joints, self.contact_names
@@ -471,6 +478,7 @@ class _ScriptedScene:
     ) -> None:
         self.snapshot, self.group, self.joints = snapshot, group, joints
         self.names = names
+        self.clearance_m = 0.0
 
     def forward_kinematics(self, q: Sequence[float], frame: str) -> Pose:
         return Pose(position=(0.0, 0.0, 0.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
@@ -527,6 +535,14 @@ def test_snapshot_runtimes_that_break_their_contract(artifacts: Path) -> None:
     with RobotContext(robot, _SnapshotScripted()) as ctx:
         scene = ctx.planning_scene(ctx.snapshot(), "arm")
         report["named_contacts"] = [c.second for c in scene.contacts((0.0, 0.0, 0.0))]
+        # A clearance the provider cannot keep is refused, never silently dropped.
+        with pytest.raises(CapabilityError) as unsupported:
+            ctx.planning_scene(ctx.snapshot(), "arm", clearance_m=0.005)
+        report["clearance_unsupported"] = [unsupported.value.code, ctx.state.value]
+    with RobotContext(robot, _SnapshotScripted(ignore_clearance=True)) as ctx:
+        with pytest.raises(ValidationError) as ignored:
+            ctx.planning_scene(ctx.snapshot(), "arm", clearance_m=0.005)
+        report["clearance_ignored"] = [ignored.value.code, ctx.state.value]
     _write(artifacts / "snapshot-breach-report.json", report)
     assert report == {
         "wrong_revision": ["runtime_contract", "faulted"],
@@ -537,4 +553,6 @@ def test_snapshot_runtimes_that_break_their_contract(artifacts: Path) -> None:
         "another_group": ["runtime_contract", "faulted"],
         "unknown_contact_names": "runtime_contract",
         "named_contacts": ["box"],
+        "clearance_unsupported": ["clearance_unsupported", "open"],
+        "clearance_ignored": ["runtime_contract", "faulted"],
     }
