@@ -486,7 +486,12 @@ def _run_jobs(
                 try:
                     end.raw = future.result()
                 except SsrobotError as e:
-                    end.ended, end.detail = _Ended.FAILED, f"{e.code}: {e.message}"
+                    # Told to stop, it was outranked however it stopped: by a canceled
+                    # result or by an expected error. Any other exception propagates.
+                    if k in told:
+                        end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, OUTRANKED
+                    else:
+                        end.ended, end.detail = _Ended.FAILED, f"{e.code}: {e.message}"
                     continue
                 if k in told:
                     end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, OUTRANKED

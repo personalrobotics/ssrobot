@@ -14,15 +14,21 @@ that arm, planned by its own sscbirrt.
 - ``aborted``: an abort stops the run; attempts that never started say so.
 Decoding refuses reports that claim an impossible outcome.
 
-The evidence is ``alternatives.json`` (every report), ``intervals.json`` (when each
-attempt planned, for inspection; timing is never part of a report), and
-``refusals.json``. Reproduce with ``pytest tests/test_plan_alternatives.py``.
+The evidence is ``alternatives.json``: every deterministic run's report and what was
+executed, byte-identical on a second run, which the test checks. ``diagnostics.json``
+holds what depends on scheduling: the two-worker cutoff's report, and when each attempt
+planned (timing is never part of a report). ``inputs_and_outranked.json`` shows a
+caller's attempts changed after planning change nothing, and how an outranked attempt
+that raises is recorded. ``refusals.json`` holds forged reports refused. Reproduce with
+``uv run pytest tests/test_plan_alternatives.py``; compare ``alternatives.json`` across
+runs to verify.
 """
 
 from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +42,7 @@ from ssrobot import (
     PlanResult,
     RobotContext,
     SsrobotError,
+    ValidationError,
     dumps,
     load_package,
     loads,
@@ -75,6 +82,26 @@ class _Patient:
         return self._inner.plan(request, scene, abort=lambda: True)
 
 
+class _Refusing(_Patient):
+    """A planner that waits for its abort signal, then raises: an expected operational
+    error (``SsrobotError``), or with ``unexpected``, a programming error."""
+
+    name = "refusing"
+
+    def __init__(self, inner: CBiRRT, *, unexpected: bool = False) -> None:
+        super().__init__(inner)
+        self._unexpected = unexpected
+
+    def plan(
+        self, request: PlanningRequest, scene: PlanningScene, *, abort: Any = None
+    ) -> PlanResult:
+        while abort is None or not abort():
+            pass
+        if self._unexpected:
+            raise RuntimeError("a defect in the planner")
+        raise ValidationError("planner_stopped", "stopped before it finished")
+
+
 def _run(
     tmp: Path,
     *,
@@ -84,6 +111,8 @@ def _run(
     workers: int = 1,
     execute: bool = False,
     patient: bool = False,
+    left: Callable[[CBiRRT], Any] | None = None,
+    mutate: bool = False,
     abort: Any = None,
 ) -> dict[str, Any]:
     priorities = priorities or {"left_arm": 0, "right_arm": 0}
@@ -93,6 +122,14 @@ def _run(
     goals = {"left_arm": LEFT_GOAL, "right_arm": right_goal}
     with RobotContext(d, MujocoRuntime(package, scene=scene)) as ctx:
         snapshot = ctx.snapshot()
+
+        def planner(arm: str) -> Any:
+            if arm == "left_arm" and left is not None:
+                return left(CBiRRT(d))
+            return _Patient(CBiRRT(d)) if patient else CBiRRT(d)
+
+        # Each alternative's attempts as a list the caller still holds.
+        attempts = {arm: [PlanAttempt(planner=planner(arm), seed=0)] for arm in ARMS}
         alternatives = [
             Alternative(
                 request=build_request(
@@ -103,9 +140,7 @@ def _run(
                     frame=d.end_effector(tool).frame,
                     goal=ConfigurationGoal(configurations=(goals[arm],)),
                 ),
-                attempts=(
-                    PlanAttempt(planner=_Patient(CBiRRT(d)) if patient else CBiRRT(d), seed=0),
-                ),
+                attempts=attempts[arm],
                 priority=priorities[arm],
                 label=arm,
             )
@@ -118,6 +153,20 @@ def _run(
             "report": json.loads(dumps(result.report)),
             "intervals_s": [list(row) for row in result.intervals_s],
         }
+        if mutate:
+            # The caller swaps every planner after planning; the selection must not move.
+            chosen = result.selected
+            assert chosen is not None
+            planned = chosen[1].planner
+            for arm in ARMS:
+                attempts[arm][0] = PlanAttempt(planner=CBiRRT(d), seed=1)
+            again = result.selected
+            assert again is not None
+            out["mutated"] = {
+                "same_planner": again[1].planner is planned,
+                "same_attempt_seed": again[1].seed == 0,
+                "same_report": json.loads(dumps(result.report)) == out["report"],
+            }
         if execute:
             selected = result.selected
             assert selected is not None
@@ -149,26 +198,55 @@ def _selected(report: dict[str, Any]) -> str | None:
 def test_alternatives_race_two_arms_and_select_deterministically(
     artifacts: Path, tmp_path: Path
 ) -> None:
-    runs = {
-        "equal_1_worker": _run(tmp_path / "e1", workers=1, execute=True),
-        "equal_2_workers": _run(tmp_path / "e2", workers=2),
-        "fallback": _run(
-            tmp_path / "f",
-            blocked=True,
-            right_goal=LEFT_GOAL,
-            priorities={"left_arm": 0, "right_arm": 1},
-        ),
-        "cutoff_1_worker": _run(tmp_path / "c1", priorities={"left_arm": 0, "right_arm": 1}),
-        "cutoff_2_workers": _run(
-            tmp_path / "c2", priorities={"left_arm": 0, "right_arm": 1}, workers=2
-        ),
-        "aborted": _run(tmp_path / "a", patient=True, abort=lambda: True),
-    }
-    (artifacts / "alternatives.json").write_text(
-        json.dumps({k: v["report"] for k, v in runs.items()}, indent=2) + "\n"
+    def deterministic(tmp: Path) -> dict[str, dict[str, Any]]:
+        """The runs whose every outcome is fixed: no result depends on scheduling."""
+        return {
+            "equal_1_worker": _run(tmp / "e1", workers=1, execute=True),
+            "equal_2_workers": _run(tmp / "e2", workers=2),
+            "fallback": _run(
+                tmp / "f",
+                blocked=True,
+                right_goal=LEFT_GOAL,
+                priorities={"left_arm": 0, "right_arm": 1},
+            ),
+            "cutoff_1_worker": _run(tmp / "c1", priorities={"left_arm": 0, "right_arm": 1}),
+            "aborted": _run(tmp / "a", patient=True, abort=lambda: True),
+        }
+
+    def semantic(runs: dict[str, dict[str, Any]]) -> str:
+        """The semantic evidence: each report, the selection, and what was executed."""
+        return (
+            json.dumps(
+                {
+                    k: {"report": v["report"], "executed": v.get("executed")}
+                    for k, v in runs.items()
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+
+    runs = deterministic(tmp_path / "first")
+    (artifacts / "alternatives.json").write_text(semantic(runs))
+    # A second run gives the same bytes: the semantic evidence is repeatable.
+    assert (
+        semantic(deterministic(tmp_path / "second"))
+        == (artifacts / "alternatives.json").read_text()
     )
-    (artifacts / "intervals.json").write_text(
-        json.dumps({k: v["intervals_s"] for k, v in runs.items()}, indent=2) + "\n"
+    # On two workers, whether the lower priority is spared, stopped, or finishes depends
+    # on scheduling: its report is diagnostic, beside when each attempt planned.
+    runs["cutoff_2_workers"] = _run(
+        tmp_path / "c2", priorities={"left_arm": 0, "right_arm": 1}, workers=2
+    )
+    (artifacts / "diagnostics.json").write_text(
+        json.dumps(
+            {
+                "cutoff_2_workers_report": runs["cutoff_2_workers"]["report"],
+                "intervals_s": {k: v["intervals_s"] for k, v in runs.items()},
+            },
+            indent=2,
+        )
+        + "\n"
     )
 
     equal = runs["equal_1_worker"]
@@ -249,3 +327,41 @@ def test_an_alternatives_report_cannot_claim_an_impossible_outcome(
         "canceled_by_priority_with_nothing_higher_valid": "inconsistent_outcome",
         "stopped_by_a_timeout": "unsupported_value",
     }
+
+
+def test_alternatives_hold_their_own_inputs_and_classify_outranked_attempts(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    """#184: the caller's attempts lists, changed after planning, change nothing; a lower
+    priority told to stop is canceled_by_priority even when it raises an expected error,
+    and a programming error still propagates."""
+    preferred = {"left_arm": 0, "right_arm": 1}
+    mutated = _run(tmp_path / "m", mutate=True)["mutated"]
+    raised = _run(
+        tmp_path / "r",
+        priorities=preferred,
+        workers=2,
+        left=lambda inner: _Refusing(inner),
+    )["report"]
+    try:
+        _run(
+            tmp_path / "u",
+            priorities=preferred,
+            workers=2,
+            left=lambda inner: _Refusing(inner, unexpected=True),
+        )
+        defect = "swallowed"
+    except RuntimeError as e:
+        defect = f"propagated: {e}"
+    report = {
+        "mutated": mutated,
+        "raised_when_outranked": _outcomes(raised),
+        "unexpected_error": defect,
+    }
+    (artifacts / "inputs_and_outranked.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert mutated == {"same_planner": True, "same_attempt_seed": True, "same_report": True}
+    assert report["raised_when_outranked"] == {
+        "left_arm": ["canceled_by_priority"],
+        "right_arm": ["valid"],
+    }
+    assert defect == "propagated: a defect in the planner"

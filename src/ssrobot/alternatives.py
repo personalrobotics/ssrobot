@@ -78,7 +78,7 @@ class AlternativeOutcome(enum.StrEnum):
     aborted."""
     CANCELED_BY_PRIORITY = "canceled_by_priority"
     """It was running when a strictly higher priority became valid, and was told to stop;
-    whatever it returned was not validated."""
+    whatever it returned, or the expected error it raised, was not validated."""
     FAILED = "failed"
     """The planner did not succeed, or it, its processor, or its validator raised an
     expected error."""
@@ -290,7 +290,7 @@ class Alternatives:
     part of the report), and the selection."""
 
     report: AlternativesReport
-    alternatives: tuple[Alternative, ...]
+    alternatives: tuple[Alternative, ...]  # canonical copies: each one's attempts a tuple
     results: tuple[tuple[PlanResult | None, ...], ...]
     candidates: tuple[tuple[PlanResult | None, ...], ...]
     intervals_s: tuple[tuple[tuple[float, float] | None, ...], ...]
@@ -305,7 +305,7 @@ class Alternatives:
         candidate = self.candidates[i][j]
         assert candidate is not None
         alternative = self.alternatives[i]
-        return alternative, tuple(alternative.attempts)[j], candidate
+        return alternative, alternative.attempts[j], candidate
 
 
 def plan_alternatives(
@@ -325,8 +325,10 @@ def plan_alternatives(
     threads; with more than one, no two attempts may share a planner instance
     (``shared_planner``). ``abort`` stops the run: attempts not started never start,
     running planners receive the abort signal, and the report says so."""
-    alternatives = tuple(alternatives)
-    attempts = [tuple(a.attempts) for a in alternatives]
+    # Canonical copies with immutable attempts: the caller's sequences may change after
+    # planning, and the selection must still name the attempt that was validated.
+    alternatives = tuple(replace(a, attempts=tuple(a.attempts)) for a in alternatives)
+    attempts = [a.attempts for a in alternatives]
     total = sum(len(a) for a in attempts)
     if not alternatives or total > MAX_ATTEMPTS or any(not a for a in attempts):
         raise ValidationError(
