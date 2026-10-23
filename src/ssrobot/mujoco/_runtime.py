@@ -794,6 +794,7 @@ class MujocoRuntime:
                 period_ns=self._substeps * timestep_ns,
                 interpolation=TrajectoryInterpolation.LINEAR,
                 fixed_period=True,
+                goal_tolerance=self._goal_tolerance,
             ),
             # Every trajectory-driven group, on every bound wrench channel. step() reads
             # the guard after each tick's physics and sets the hold before the next tick,

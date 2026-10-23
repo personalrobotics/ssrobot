@@ -351,7 +351,8 @@ it when the robot arrives. Three pieces make that safe:
    - the source execution and its command;
    - the joints the command moves (`moved`), set to its last waypoint in the predicted
      state;
-   - held objects that move with the hand (`held`);
+   - held objects that move with the hand (`held`). Only attachments still `held` are
+     carried; one the runtime reports has left the grasp is a free object, where it is;
    - free objects whose pose it makes no claim about (`unsettled`, from
      `ctx.predict(execution, unsettled=...)`), such as one just released and still
      falling. They stay at their captured pose for planning and aren't compared on
@@ -367,6 +368,9 @@ it when the robot arrives. Three pieces make that safe:
      gripper's, opened by a release; for planning only;
    - the world identity, and its `lineage`.
 
+   Its stamp is when the source should end: when the runtime accepted it, plus its
+   duration.
+
    Only a joint trajectory submitted with a snapshot captured at the current revision is
    predictable. A guarded trajectory stops where it meets contact, which isn't known in
    advance (`unpredictable_command`). A prediction extends a captured snapshot by one
@@ -379,32 +383,44 @@ it when the robot arrives. Three pieces make that safe:
    prediction (`predicted_plan`).
 3. **A continuation.** `ctx.continuation(plan, planner=..., prediction=...)` binds the
    plan to its prediction and the planner that made it.
-   `ctx.execute_continuation(continuation, *, arrival_tolerance=0.01, rest_tolerance=0.05,
-   object_tolerance_m=0.005, source="planner", timeout_ns=None)` then:
-   1. captures the actual state;
-   2. checks, in order:
+   `ctx.execute_continuation(continuation, *, arrival_tolerance=None, rest_tolerance=0.05,
+   object_tolerance_m=0.005, object_tolerance_rad=0.05, source="planner", timeout_ns=None)`
+   then:
+   1. refuses a tolerance that isn't a finite number >= 0 (`non_finite`, `out_of_limits`),
+      before anything is compared. `arrival_tolerance` defaults to the runtime's declared
+      `TrajectoryContract.goal_tolerance`, what a source's success already guarantees; a
+      runtime that declares none needs one passed (`undeclared_tolerance`);
+   2. captures the actual state;
+   3. checks, in order:
       - the source execution succeeded (`source_not_succeeded`);
       - the plan's joints are observed at rest, by a declared joint-velocity channel
-        covering them (`rest_unobservable` when there is none; `not_at_rest`);
-      - each joint is within `arrival_tolerance` of the plan's start
-        (`arrival_out_of_tolerance`);
+        covering them, in a reading no older than the arrival snapshot
+        (`rest_unobservable` when there is no such reading; `not_at_rest`). The report
+        records the reading's stamp;
+      - each joint is within `arrival_tolerance` of the plan's start, a continuous joint
+        the short way round (`arrival_out_of_tolerance`);
       - the scene changed only as predicted: the same revision, attachments and fixtures,
-        and free objects within `object_tolerance_m` (`unpredicted_scene_change`);
+        and every free object within `object_tolerance_m` of its predicted position and
+        `object_tolerance_rad` of its predicted orientation
+        (`unpredicted_scene_change`);
    3. asks the plan's planner to rebase it onto the actual state:
       `planner.rebase(plan, request, scene)`, an optional planner method
       (`rebase_unsupported` without it; `rebase_failed`). ssrobot core never splices
       trajectories;
    4. compiles the rebased motion with `prepare`, validating it whole under the plan's
-      validation policy (`continuation_invalid`);
+      validation policy in a fresh scene of the actual state, not the one the planner
+      rebased in (`continuation_invalid`);
    5. submits it with the actual snapshot.
 
    A refusal submits nothing. `ContinuationResult.report`, a `ContinuationReport`, is the
-   evidence either way: the predicted and actual starts, every discrepancy, how rest was
-   established, the planner's account of its rebase, and the fingerprints of the rebased
-   plan and compiled command.
+   evidence either way: the predicted and actual starts, every tolerance, every
+   discrepancy, how and when rest was established, the planner's account of its rebase,
+   and the fingerprints of the rebased plan and compiled command.
 
-**sscbirrt's rebase** keeps the planned path exactly. When the actual start differs from
-its first waypoint, it puts a straight bridge from the actual start first. It then times
+**sscbirrt's rebase** keeps the planned path exactly, but for whole turns of a continuous
+joint: the path moves to the turn nearest the actual start, the same motion. When the
+actual start differs from its first waypoint, it puts a straight bridge from the actual
+start first. An invalid bridge, or timing sscbirrt cannot do, is `rebase_failed`. It then times
 the whole path again with sscbirrt's trajectory smoother, under the request's limits, and
 validates it as `plan`'s results are. Its `rebase` diagnostic gives the bridge's length,
 and the old and new durations.
@@ -459,7 +475,8 @@ Every failed check is named in one `execution_unready` error. A successful
 | `artifacts/test_alternatives_race_two_arms_and_select_deterministically/` | Two arms of one MuJoCo robot (the conformance robot with colliding geoms) as alternatives, each a configuration goal planned by its own sscbirrt. `alternatives.json` holds the report of every run whose outcomes are fixed, and is byte-identical on a second run: equal priorities with the nearer right-arm goal selected (identical with one worker and two; the candidate executes and reaches its goal); a preferred right arm whose goal a cube blocks, so the left is selected; a preferred feasible right arm with the left `not_started` on one worker; and an aborted run. `diagnostics.json` holds what depends on scheduling: the same preference on two workers, where the left is spared, stopped, or finished while the selection is the same, and when each attempt planned. |
 | `artifacts/test_alternatives_hold_their_own_inputs_and_classify_outranked_attempts/inputs_and_outranked.json` | The caller's attempts lists, changed after planning, change neither the selection nor the report (#184). A lower priority told to stop that raises an expected error is `canceled_by_priority`; one that raises a programming error propagates it. |
 | `artifacts/test_an_alternatives_report_cannot_claim_an_impossible_outcome/refusals.json` | Decoding refuses a forged selection, a lower priority stopped without `cancel_lower` or without a strictly higher valid priority, a `not_started` with no reason, and a timeout. |
-| `artifacts/test_a_plan_made_on_a_prediction_continues_on_arrival/continuation.json` | The right arm of the colliding two-arm robot moves to A. Its move on to B is planned on `ctx.predict` of that motion, on a worker, while the context steps every tick of the source motion. Ordinary `execute` refuses the plan (`predicted_plan`); planned on the context's thread it is identical. Once the arm is at rest at A, about 5 mm (rad) from the predicted start, the continuation is rebased by sscbirrt (a straight bridge, retimed), validated, and executed to B. From fresh runs, each refusal submits nothing: a canceled source, an arm still moving, an arrival outside a tight tolerance, a block attached after the prediction, and a planner that cannot rebase. |
+| `artifacts/test_a_plan_made_on_a_prediction_continues_on_arrival/continuation.json` | The right arm of the colliding two-arm robot moves to A. Its move on to B is planned on `ctx.predict` of that motion, on a worker, while the context steps every tick of the source motion. Ordinary `execute` refuses the plan (`predicted_plan`); planned on the context's thread it is identical. Once the arm is at rest at A, about 5 mm (rad) from the predicted start, the continuation is rebased by sscbirrt (a straight bridge, retimed), validated, and executed to B. From fresh runs, each refusal submits nothing: a canceled source, an arm still moving, an arrival outside a tight tolerance, a block attached after the prediction, and a planner that cannot rebase. A second run is byte-identical. `timeline.json` holds the wall-clock overlap, apart. |
+| `artifacts/test_continuations_check_what_they_reconcile/reconciliation.json` | What a continuation refuses to take on trust (#185). NaN, negative and infinite tolerances are refused before anything is compared, and nothing is submitted. A continuous joint arriving across +pi, reported as -2.98 a full turn from the predicted 3.3, continues the short way round: its bridge is 8e-11, not a full turn. A block turned 0.3 rad in place is an `unpredicted_scene_change` (`object block rotation`). A block that left the grasp is not carried by the prediction. A source accepted 0.25 s after its snapshot is predicted to end its duration after that. The default arrival tolerance is the runtime's declared goal tolerance (0.02). A bridge through an obstacle is `rebase_failed`, with nothing submitted. A velocity reading from before the arrival snapshot doesn't establish rest (`rest_unobservable`). |
 | `artifacts/test_a_report_cannot_claim_an_impossible_outcome/refusals.json` | Edits of a real report that decoding refuses: a selection of an invalid or a non-selected valid attempt, or of none; an unknown stop; a cancellation without a stop; a valid attempt without a duration; an invalid one without its validation; a malformed fingerprint; reordered attempts; another selection rule. |
 | `artifacts/test_a_timeout_aborts_running_attempts_and_cancels_pending_ones/canceled.json` | Three attempts that only wait for the abort signal, on one worker, with a 0.2 s timeout: the running one is aborted (`cancelled`), the two pending ones are `canceled` before they start, and nothing is selected. The same attempts, sharing one planner, are refused with two workers (`shared_planner`). |
 | `artifacts/test_neutral_providers_and_geometric_paths/` | The same query through a scene with no native checker plans on sscbirrt's Python backend and passes every check. Its path without the trajectory is refused without a processor (`untimed_result`); with `RestToRestProcessor` it is prepared and executed. A second run is byte-identical. |

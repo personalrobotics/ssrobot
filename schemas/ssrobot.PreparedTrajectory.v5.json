@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.PreparedTrajectory v4",
+  "title": "ssrobot.PreparedTrajectory v5",
   "$ref": "#/$defs/PreparedTrajectory",
   "$defs": {
     "BasePoseGoal": {
@@ -743,7 +743,7 @@
           "const": "ssrobot.PreparedTrajectory"
         },
         "version": {
-          "const": 4
+          "const": 5
         },
         "request": {
           "$ref": "#/$defs/PlanningRequest",
@@ -822,6 +822,18 @@
         "fixed_period": {
           "type": "boolean",
           "description": "Whether the period holds for the lifetime of the context."
+        },
+        "goal_tolerance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How close, per joint, a trajectory's end must be reached for it to succeed; None when the runtime declares none.",
+          "x-unit": "joint"
         }
       },
       "required": [

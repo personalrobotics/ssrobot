@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.RuntimeInfo v4",
+  "title": "ssrobot.RuntimeInfo v5",
   "$ref": "#/$defs/RuntimeInfo",
   "$defs": {
     "ChannelSpec": {
@@ -173,7 +173,7 @@
           "const": "ssrobot.RuntimeInfo"
         },
         "version": {
-          "const": 4
+          "const": 5
         },
         "runtime": {
           "type": "string",
@@ -292,6 +292,18 @@
         "fixed_period": {
           "type": "boolean",
           "description": "Whether the period holds for the lifetime of the context."
+        },
+        "goal_tolerance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How close, per joint, a trajectory's end must be reached for it to succeed; None when the runtime declares none.",
+          "x-unit": "joint"
         }
       },
       "required": [
