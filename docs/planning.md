@@ -105,26 +105,26 @@ evidence at another (`validation_mismatch`). A skill that wants one clearance fo
 stages holds it as configuration and puts it in each request; there is no runtime-wide
 default.
 
-What it keeps clear, as measured on Geodude's recycling demo before it was adopted:
-- **The environment** is every colliding geometry no robot joint moves: the world,
-  fixed structure (including a robot's own fixed base and mounting, such as Geodude's
-  table), fixtures, and free objects. Within `clearance_m` of it, a robot body or a
-  held object is in disallowed contact, unless that contact is allowed.
+What it keeps clear is sscbirrt's clearance (sscbirrt#256):
+- **The moving set** is the group's bodies and the objects they hold. **The
+  environment** is everything else: the world, fixtures, resting objects, and robot
+  bodies the group does not move, such as a robot's fixed base, its table (Geodude's is
+  part of its model), or the other arm. Within `clearance_m` of the environment, the
+  moving set is in disallowed contact, unless that contact is allowed.
 - **Allowed contacts stay allowed:** the description's collision allowances, and each
   attachment's allowed bodies, such as the support a held object is lifted from.
-- **Robot bodies keep no clearance from each other.** Contact between bodies robot
-  joints move, such as an arm's own links or the other arm, is checked exactly as at 0.
-- **A held object is a free object,** so it keeps the clearance from the robot bodies
-  its attachment does not allow, as well as from the environment.
+- **The moving set keeps no clearance from itself.** An arm's own links, and a held
+  object against the arm holding it, are checked exactly as at 0.
 - **A larger authored margin is kept;** a clearance never reduces one.
 - **0, the default, counts only touching,** exactly as before clearances existed.
 
-**Cost.** Recording the clearance per request does not mean compiling per request. A
-runtime prepares each clearance once, at its first use, and reuses it (for MuJoCo, see
+**Cost.** Recording the clearance per request does not mean compiling per request: a
+clearance belongs to each planning scene's collision checker, never to the planning
+model or its native scene, so one of each serves every clearance (for MuJoCo, see
 *Snapshots and planning scenes* in [mujoco.md](mujoco.md)). The recurring cost is the
-collision check at that margin, which stays small because sscbirrt 3.12.0 does not
-check pairs that cannot change (sscbirrt#254): on Geodude's four-can recycling scene, a
-5 mm check of the right arm costs about 1.3x a check at 0 (25 µs against 33 µs).
+collision check at that margin, which stays small because sscbirrt does not check
+pairs that cannot change (sscbirrt#254): on Geodude's four-can recycling scene, a 5 mm
+check of the right arm costs about 1.3x a check at 0.
 
 ## The planner
 

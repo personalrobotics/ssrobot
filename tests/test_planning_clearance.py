@@ -7,7 +7,7 @@ Four scenarios, each answered at clearance 0 and 5 mm:
 - the box held on the pedestal (the pedestal allowed), planned, prepared and executed at
   5 mm, and its evidence offered for clearance 0;
 - the planning-model cache counted across many requests, alternating clearances, a second
-  group, and more distinct clearances than it keeps.
+  group, and several clearances.
 
 The scenario runs twice and writes clearance.json under $SSROBOT_ARTIFACTS; the two runs
 are byte-identical. Reproduce with ``uv run pytest tests/test_planning_clearance.py``.
@@ -148,8 +148,8 @@ def _self_collision(tmp: Path) -> dict[str, Any]:
 
 def _counted(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     """Count every expensive step a planning scene can take: compiling the planning model,
-    rehashing the package, copying a model for a clearance, and building a native scene."""
-    counts = {"compiled": 0, "package_checked": 0, "clearance_copies": 0, "native_scenes": 0}
+    rehashing the package, and building a native scene."""
+    counts = {"compiled": 0, "package_checked": 0, "native_scenes": 0}
 
     def counting(name: str, fn: Any) -> Any:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -161,9 +161,6 @@ def _counted(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     monkeypatch.setattr(_planning, "planning_model", counting("compiled", _planning.planning_model))
     # The runtime checks its package through its own module's name, before and after a compile.
     monkeypatch.setattr("ssrobot.mujoco._runtime.unchanged", counting("package_checked", unchanged))
-    monkeypatch.setattr(
-        _planning, "with_clearance", counting("clearance_copies", _planning.with_clearance)
-    )
     native = native_mujoco.NativeScene
     monkeypatch.setattr(
         native, "from_model", staticmethod(counting("native_scenes", native.from_model))
@@ -268,12 +265,10 @@ def _held(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
                 refusals[name] = e.code
         report["refused"] = refusals
 
-        # More distinct clearances than are kept, then 5 mm again, then another group.
+        # Five more clearances, then another group.
         for mm in (1, 2, 3, 4, 6):
             ctx.planning_scene(snapshot, "arm", clearance_m=mm / 1000).is_valid(q0)
         step("then_5_more_clearances")
-        ctx.planning_scene(snapshot, "arm", clearance_m=CLEARANCE).is_valid(q0)
-        step("then_5mm_again")
         ctx.planning_scene(snapshot, "wrist_only", clearance_m=CLEARANCE)
         step("then_wrist_only_at_5mm")
         report["cache"] = steps
@@ -338,36 +333,17 @@ def test_planning_keeps_the_requested_clearance(
         "validator_for_5mm_request_in_0mm_scene": "validation_mismatch",
     }
 
-    # One compile, checked before and after; one copy and one native scene per clearance
-    # and group, made at first use and reused; a dropped clearance is rebuilt once.
-    assert _planning._CLEARANCES == 4, "the counts below assume four clearances kept"
+    # One compile, checked before and after, and one native scene per group, whatever the
+    # clearance: a clearance is the checker's, not the scene's (sscbirrt#256).
     cache = held["cache"]
-    assert cache["first_5mm_then_0mm"] == {
-        "compiled": 1,
-        "package_checked": 2,
-        "clearance_copies": 1,
-        "native_scenes": 2,
-    }
-    assert cache["then_20_at_5mm"] == cache["first_5mm_then_0mm"]
-    assert cache["then_10_alternating"] == cache["first_5mm_then_0mm"]
-    assert cache["then_plan_and_execute_at_5mm"] == cache["first_5mm_then_0mm"]
-    assert cache["then_5_more_clearances"] == {
-        "compiled": 1,
-        "package_checked": 2,
-        "clearance_copies": 6,
-        "native_scenes": 7,
-    }
-    # 5 mm, the least recently used of six, was dropped with its scene: rebuilt once.
-    assert cache["then_5mm_again"] == {
-        "compiled": 1,
-        "package_checked": 2,
-        "clearance_copies": 7,
-        "native_scenes": 8,
-    }
-    assert cache["then_wrist_only_at_5mm"] == {
-        "compiled": 1,
-        "package_checked": 2,
-        "clearance_copies": 7,
-        "native_scenes": 9,
-    }
+    one = {"compiled": 1, "package_checked": 2, "native_scenes": 1}
+    for name in (
+        "first_5mm_then_0mm",
+        "then_20_at_5mm",
+        "then_10_alternating",
+        "then_plan_and_execute_at_5mm",
+        "then_5_more_clearances",
+    ):
+        assert cache[name] == one, name
+    assert cache["then_wrist_only_at_5mm"] == {**one, "native_scenes": 2}
     assert held["runtime_model_unchanged"]
