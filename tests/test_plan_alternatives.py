@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -365,3 +366,90 @@ def test_alternatives_hold_their_own_inputs_and_classify_outranked_attempts(
         "right_arm": ["valid"],
     }
     assert defect == "propagated: a defect in the planner"
+
+
+def _alternatives(ctx: RobotContext, priorities: dict[str, int], planner: Any) -> list[Alternative]:
+    d = ctx.description
+    snapshot = ctx.snapshot()
+    goals = {"left_arm": LEFT_GOAL, "right_arm": RIGHT_GOAL}
+    return [
+        Alternative(
+            request=build_request(
+                d,
+                snapshot,
+                component=arm,
+                group=arm,
+                frame=d.end_effector(tool).frame,
+                goal=ConfigurationGoal(configurations=(goals[arm],)),
+            ),
+            attempts=(PlanAttempt(planner=planner(d), seed=0),),
+            priority=priorities[arm],
+            label=arm,
+        )
+        for arm, tool in ARMS.items()
+    ]
+
+
+def test_alternatives_plan_passively_while_the_robot_moves(artifacts: Path, tmp_path: Path) -> None:
+    """#191: a passive run answers exactly as plan_alternatives, while the context keeps
+    stepping a motion; cancel and close stop its work, and may be called again."""
+    package_root, scene = colliding_bimanual(tmp_path)
+    package = load_package(package_root)
+    d = package.description
+    report: dict[str, Any] = {}
+    with RobotContext(d, MujocoRuntime(package, scene=scene)) as ctx:
+        equal = {"left_arm": 0, "right_arm": 0}
+        snapshot = ctx.snapshot()
+        blocking = plan_alternatives(
+            ctx, _alternatives(ctx, equal, CBiRRT), snapshot=snapshot, workers=2
+        )
+        # The left arm moves while the race plans: the context steps every tick.
+        moving = build_request(
+            d,
+            snapshot,
+            component="left_arm",
+            group="left_arm",
+            frame=d.end_effector("left_tool").frame,
+            goal=ConfigurationGoal(configurations=((0.4, 0.0),)),
+        )
+        motion = ctx.plan(moving, snapshot=snapshot, planner=CBiRRT(d))
+        execution = ctx.execute(motion, planner=CBiRRT(d))
+        run = ctx.start_alternatives(
+            _alternatives(ctx, equal, CBiRRT), snapshot=snapshot, workers=2
+        )
+        ticks = stepped_while_planning = 0
+        while not run.advance():
+            ctx.step()
+            ticks += 1
+            stepped_while_planning += bool(run.planning)
+        ctx.run_until(execution, max_ticks=5_000)
+        passive = run.result
+        report["same_report"] = dumps(passive.report) == dumps(blocking.report)
+        report["selected"] = _selected(json.loads(dumps(passive.report)))
+        report["stepped_while_planning"] = stepped_while_planning > 0
+        # Cancel and close: twice each, then nothing of the run is left running.
+        patient = ctx.start_alternatives(
+            _alternatives(ctx, equal, lambda d: _Patient(CBiRRT(d))),
+            snapshot=ctx.snapshot(),
+            workers=2,
+        )
+        patient.advance()
+        patient.cancel()
+        patient.cancel()
+        patient.close()
+        patient.close()
+        report["canceled"] = {
+            "done": patient.done,
+            "stopped": patient.result.report.stopped,
+            "outcomes": _outcomes(json.loads(dumps(patient.result.report))),
+            "workers_left": [
+                t.name for t in threading.enumerate() if t.name.startswith("ssrobot-portfolio")
+            ],
+        }
+    (artifacts / "passive.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
+    assert report["same_report"] and report["selected"] == "right_arm"
+    assert report["stepped_while_planning"]
+    canceled = report["canceled"]
+    assert canceled["done"] and canceled["stopped"] == "aborted"
+    assert canceled["workers_left"] == []
+    assert {o for row in canceled["outcomes"].values() for o in row} <= {"not_started", "failed"}
