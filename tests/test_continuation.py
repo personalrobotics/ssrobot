@@ -35,6 +35,7 @@ many of the source motion's ticks the context stepped while the worker planned.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import time
@@ -51,6 +52,7 @@ from ssrobot import (
     PlannerCapabilities,
     PlanningRequest,
     PlanResult,
+    PlanStatus,
     Pose,
     RobotContext,
     SsrobotError,
@@ -61,6 +63,7 @@ from ssrobot import (
     dumps,
     load_package,
 )
+from ssrobot._wire import fingerprint
 from ssrobot.mujoco import MujocoRuntime
 from ssrobot.planning import CBiRRT
 from ssrobot.planning_contracts import build_request
@@ -663,3 +666,181 @@ def test_continuations_check_what_they_reconcile(artifacts: Path, tmp_path: Path
     assert stale_rest["report"]["refusal"] == "rest_unobservable", stale_rest["report"]
     assert "before the arrival" in stale_rest["report"]["detail"]
     assert stale_rest["submitted_nothing"]
+
+
+def _projected(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
+    """Plan rest -> A on a captured snapshot, project it, plan A -> B on the projection,
+    execute A, and continue B from that execution; then each way binding is refused."""
+    snapshot = ctx.snapshot()
+    plan_a = ctx.plan(_request(ctx, A, snapshot), snapshot=snapshot, planner=planner)
+    assert plan_a.succeeded, plan_a.status
+    projection = ctx.project(plan_a, snapshot=snapshot)
+    ahead = CBiRRT(ctx.description)
+    plan_b = ctx.plan(_request(ctx, B, projection), snapshot=projection, planner=ahead)
+    assert plan_b.succeeded, plan_b.status
+    out: dict[str, Any] = {
+        "projection": {
+            "plan": projection.plan == fingerprint(plan_a),
+            "basis": projection.basis == snapshot.fingerprint(),
+            "stamp_is_the_basis": projection.state.stamp == snapshot.stamp,
+            "start_of_b": [round(v, 6) for v in plan_b.request.start],
+        }
+    }
+    refused: dict[str, str] = {}
+
+    def attempt(name: str, call: Any) -> None:
+        try:
+            call()
+            refused[name] = "accepted"
+        except SsrobotError as e:
+            refused[name] = e.code
+
+    # A projection is not a captured snapshot: nothing made on it executes directly.
+    attempt("execute_plan_on_projection", lambda: ctx.execute(plan_b, planner=ahead))
+    other = ctx.plan(_request(ctx, (0.5, 0.0), snapshot), snapshot=snapshot, planner=planner)
+    assert other.succeeded
+    projection_other = ctx.project(other, snapshot=snapshot)
+    attempt(
+        "unsuccessful_plan_projected",
+        lambda: ctx.project(
+            dataclasses.replace(
+                plan_a, status=PlanStatus.TIMEOUT, path=None, trajectory=None, validation=()
+            ),
+            snapshot=snapshot,
+        ),
+    )
+    # A second plan to exactly the same endpoint: the same request with another time
+    # budget plans the same motion, but is another plan. Its projection is the same state;
+    # each projection binds to an execution of its own plan, independently.
+    twin = ctx.plan(
+        dataclasses.replace(_request(ctx, A, snapshot), timeout_s=9.0),
+        snapshot=snapshot,
+        planner=planner,
+    )
+    assert twin.succeeded, twin.status
+    projection_twin = ctx.project(twin, snapshot=snapshot)
+    twin_execution = ctx.execute(twin, planner=planner)
+    twin_bound = ctx.continuation(
+        plan_b, planner=ahead, projection=projection_twin, source=twin_execution
+    )
+    execution = ctx.execute(plan_a, planner=planner)  # supersedes the twin's
+    attempt(
+        "twin_projection_to_another_plans_execution",
+        lambda: ctx.continuation(
+            plan_b, planner=ahead, projection=projection_twin, source=execution
+        ),
+    )
+    out["same_endpoint"] = {
+        "distinct_plans": fingerprint(twin) != fingerprint(plan_a),
+        "same_projected_state": projection_twin.state == projection.state,
+        "twin_bound_to_its_execution": twin_bound.prediction.source == twin_execution.id,
+    }
+    # Only this execution of the projected plan binds, and only to a plan on its projection.
+    attempt(
+        "plan_not_on_the_projection",
+        lambda: ctx.continuation(other, planner=planner, projection=projection, source=execution),
+    )
+    attempt(
+        "another_plans_projection",
+        lambda: ctx.continuation(
+            plan_b, planner=ahead, projection=projection_other, source=execution
+        ),
+    )
+    attempt(
+        "tampered_projection",
+        lambda: ctx.continuation(
+            plan_b,
+            planner=ahead,
+            projection=dataclasses.replace(projection, basis="0" * 64),
+            source=execution,
+        ),
+    )
+    continuation = ctx.continuation(plan_b, planner=ahead, projection=projection, source=execution)
+    out["same_endpoint"]["first_bound_to_its_execution"] = (
+        continuation.prediction.source == execution.id
+    )
+    _settle(ctx, execution)
+    result = ctx.execute_continuation(continuation, rest_tolerance=1.0)
+    assert result.execution is not None, result.report
+    out["continued"] = ctx.run_until(result.execution, max_ticks=MAX_TICKS).state.value
+    out["reached"] = _arm(ctx)
+    out["report"] = json.loads(dumps(result.report))
+    # The continuation's own execution ran B rebased, not the projected A.
+    continued = result.execution
+    attempt(
+        "rebased_source",
+        lambda: ctx.continuation(plan_b, planner=ahead, projection=projection, source=continued),
+    )
+    # A later execution of another plan, from the actual state, is not that occurrence.
+    again = ctx.snapshot()
+    replanned = ctx.plan(_request(ctx, A, again), snapshot=again, planner=planner)
+    assert replanned.succeeded
+    second = ctx.execute(replanned, planner=planner)
+    attempt(
+        "replanned_source",
+        lambda: ctx.continuation(plan_b, planner=ahead, projection=projection, source=second),
+    )
+    out["refused"] = refused
+    return out
+
+
+def test_a_plan_made_on_a_projection_continues_that_execution(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    """#190: a plan made on where an unexecuted plan ends continues from the execution of
+    exactly that plan, and binding refuses every other occurrence."""
+    first = json.dumps(_session(tmp_path / "first", _projected), indent=2) + "\n"
+    again = json.dumps(_session(tmp_path / "again", _projected), indent=2) + "\n"
+    (artifacts / "projection.json").write_text(first)
+    assert first == again  # deterministic
+    out = json.loads(first)
+    assert out["projection"] == {
+        "plan": True,
+        "basis": True,
+        "stamp_is_the_basis": True,
+        "start_of_b": pytest.approx(list(A), abs=1e-9),
+    }
+    assert out["report"]["accepted"] and out["continued"] == "succeeded", out["report"]
+    assert out["reached"] == pytest.approx(list(B), abs=0.02)
+    assert out["refused"] == {
+        "execute_plan_on_projection": "projected_plan",
+        "unsuccessful_plan_projected": "unsuccessful_plan",
+        "plan_not_on_the_projection": "snapshot_mismatch",
+        "another_plans_projection": "unprojected_source",
+        "tampered_projection": "unknown_projection",
+        "replanned_source": "unprojected_source",
+        "rebased_source": "unprojected_source",
+        "twin_projection_to_another_plans_execution": "unprojected_source",
+    }
+    assert out["same_endpoint"] == {
+        "distinct_plans": True,
+        "same_projected_state": True,
+        "twin_bound_to_its_execution": True,
+        "first_bound_to_its_execution": True,
+    }
+    # Binding predicts its source: the twin's, then this one's; then the continuation.
+    assert [k for k, _, _ in out["traced"]] == ["predicted", "predicted", "continued"]
+
+
+def test_the_manipulator_view_plans_on_a_projection(artifacts: Path) -> None:
+    """#190: a manipulator view plans on a projection as on any snapshot; the result is
+    a plan made on the projection's state."""
+    from tests.test_mujoco_scene import OPTIONS, PACKAGE
+
+    package = load_package(PACKAGE)
+    planner = CBiRRT(package.description)
+    with RobotContext(package.description, MujocoRuntime(package, **OPTIONS)) as ctx:
+        arm = ctx.manipulator()
+        snapshot = ctx.snapshot()
+        first = arm.plan_to_configuration((0.3, -0.8, 0.25), snapshot=snapshot, planner=planner)
+        assert first.succeeded, first.status
+        projection = ctx.project(first, snapshot=snapshot)
+        then = arm.plan_to_configuration((0.0, -0.4, 0.0), snapshot=projection, planner=planner)
+        report = {
+            "planned": then.status.value,
+            "on_the_projection": then.request.snapshot == projection.state.fingerprint(),
+            "starts_where_the_first_ends": [round(v, 6) for v in then.request.start],
+        }
+    (artifacts / "view.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert report["planned"] == "succeeded" and report["on_the_projection"]
+    assert report["starts_where_the_first_ends"] == pytest.approx([0.3, -0.8, 0.25], abs=1e-6)

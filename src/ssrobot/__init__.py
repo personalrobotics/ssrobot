@@ -50,6 +50,7 @@ from ssrobot.continuation import (
     ContinuationReport,
     ContinuationResult,
     Discrepancy,
+    PlanProjection,
     PredictedSnapshot,
 )
 from ssrobot.conventions import ClockMode, Pose, Timestamp
@@ -258,6 +259,7 @@ __all__ = [
     "PackageManifest",
     "PackageReport",
     "PlanAttempt",
+    "PlanProjection",
     "PlanResult",
     "PlanStatus",
     "Planner",

@@ -290,6 +290,24 @@ class ContinuationReport(Record):
 
 
 @dataclass(frozen=True, slots=True)
+class PlanProjection:
+    """Where a successful plan that has not run would leave the robot: a planning state,
+    not a prediction or an observation, made by ``RobotContext.project``.
+
+    ``state`` is the plan's snapshot with the plan's joints at its end and every held
+    object its hand moves carried with it. It keeps the snapshot's stamp: a projection is
+    never accepted or timed. Planning accepts it; nothing made on it executes except as a
+    continuation of an execution of exactly that plan (``RobotContext.continuation(...,
+    projection=, source=)``). A projection confers no validity by itself."""
+
+    state: SceneSnapshot
+    plan: str
+    """Fingerprint of the plan projected."""
+    basis: str
+    """Fingerprint of the snapshot the plan was made on."""
+
+
+@dataclass(frozen=True, slots=True)
 class Continuation:
     """A plan made on a prediction, bound to that prediction and the planner that made it;
     run it with ``RobotContext.execute_continuation`` once its source has finished."""
