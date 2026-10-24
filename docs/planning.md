@@ -512,17 +512,29 @@ motion not yet run would end, and that check plan can be kept:
 - Once the plan runs, `ctx.continuation(next_plan, planner=..., projection=..., source=
   execution)` binds the next plan to that particular execution. It refuses each case with
   its own code:
-  - `source` wasn't submitted by `execute` from exactly the projected plan and its
-    snapshot, for example another plan, a replanned one, or a continuation's rebased plan
-    (`unprojected_source`);
+  - `source` is neither an execution of exactly the projected plan, submitted by
+    `execute` with its snapshot, nor a continuation of it, submitted by
+    `execute_continuation` from the prediction it was made on. Examples are another plan,
+    a replanned one, or a continuation of another plan (`unprojected_source`);
   - the next plan wasn't made on the projection (`snapshot_mismatch`);
   - the projection isn't this context's, or was changed (`unknown_projection`).
 - The binding is per execution, not by content. The context records what each execution
   ran, and keeps each projection by its plan as well as its state: two plans that end in
   the same state each keep their own projection.
-- The continuation is then an ordinary one, over `ctx.predict(source)`, whose state the
-  projection must equal but for its stamp (`projection_mismatch`). `execute_continuation`
-  checks and rebases it as any other.
+- The continuation is then an ordinary one, over `ctx.predict(source)`. For an
+  `execute` source, the projection must equal that state but for its stamp
+  (`projection_mismatch`).
+- **A continued source** was rebased onto the actual state, so it is not the projected
+  plan itself, only an occurrence of it with the same end. Binding checks that end
+  instead (`projection_mismatch` otherwise):
+  - its submitted motion ends at the projected joints, a continuous joint modulo a turn;
+  - it holds the same attachments;
+  - its held objects are where the projection carries them, within the object
+    tolerances it was accepted under.
+
+  The rest of the scene is the actual one. A rebase that moved the end is refused.
+- `execute_continuation` checks and rebases the bound plan as any other: rest, arrival,
+  scene, rebase, and fresh-scene validation. Every hop returns to an actual snapshot.
 
 **sscbirrt's rebase** keeps the planned path exactly, but for whole turns of a continuous
 joint: the path moves to the turn nearest the actual start, the same motion. When the
@@ -588,6 +600,7 @@ Every failed check is named in one `execution_unready` error. A successful
 | `artifacts/test_a_plan_made_on_a_prediction_continues_on_arrival/continuation.json` | The right arm of the colliding two-arm robot moves to A. Its move on to B is planned on `ctx.predict` of that motion, on a worker, while the context steps every tick of the source motion. Ordinary `execute` refuses the plan (`predicted_plan`); planned on the context's thread it is identical. Once the arm is at rest at A, about 5 mm (rad) from the predicted start, the continuation is rebased by sscbirrt (a straight bridge, retimed), validated, and executed to B. From fresh runs, each refusal submits nothing: a canceled source, an arm still moving, an arrival outside a tight tolerance, a block attached after the prediction, and a planner that cannot rebase. A second run is byte-identical. `timeline.json` holds the wall-clock overlap, apart. |
 | `artifacts/test_continuations_check_what_they_reconcile/reconciliation.json` | What a continuation refuses to take on trust (#185). NaN, negative and infinite tolerances are refused before anything is compared, and nothing is submitted. A continuous joint arriving across +pi, reported as -2.98 a full turn from the predicted 3.3, continues the short way round: its bridge is 8e-11, not a full turn. A block turned 0.3 rad in place is an `unpredicted_scene_change` (`object block rotation`). A block that left the grasp is not carried by the prediction. A source accepted 0.25 s after its snapshot is predicted to end its duration after that. The default arrival tolerance is the runtime's declared goal tolerance (0.02). A bridge through an obstacle is `rebase_failed`, with nothing submitted. A velocity reading from before the arrival snapshot doesn't establish rest (`rest_unobservable`). |
 | `artifacts/test_a_plan_made_on_a_projection_continues_that_execution/projection.json` | A plan made on where an unexecuted plan ends (#190). Rest to A is planned on a captured snapshot and projected, and A to B is planned on the projection. Then A is executed, and B, bound to that execution, continues on arrival and reaches B. The projection keeps the snapshot's stamp and names the plan and snapshot. Binding refuses: an execution of another plan, of a replanned A, or a continuation's rebased run (`unprojected_source`); a plan not made on the projection (`snapshot_mismatch`); a changed projection (`unknown_projection`). Two plans to exactly the same end (the same request with another time budget) project to the same state, and each binds to an execution of its own plan, but not to the other's (`unprojected_source`). `execute` refuses a plan made on a projection (`projected_plan`), and `project` refuses an unsuccessful plan. A second run is byte-identical. |
+| `artifacts/test_a_plan_on_a_projection_continues_a_continued_occurrence/continued_projection.json` | A plan made on a projection, continued from a continuation of the projected plan (#200). As at the seam, the right arm's continuous joint runs past pi and its arrival is reported wrapped. B is planned on the source's prediction and projected, and C is planned on the projection. B runs as a continuation, rebased a whole turn onto the arrival; C binds to that occurrence and continues. A twin of B to the same end has the same projected state, but B's occurrence does not bind to it (`unprojected_source`). A rebase that ends 1e-5 rad away is refused (`projection_mismatch`). A second run is byte-identical. |
 | `artifacts/test_the_manipulator_view_plans_on_a_projection/view.json` | The example arm's manipulator view plans on a projection as on any snapshot: the plan is made on the projected state and starts where the projected plan ends. |
 | `artifacts/test_a_report_cannot_claim_an_impossible_outcome/refusals.json` | Edits of a real report that decoding refuses: a selection of an invalid or a non-selected valid attempt, or of none; an unknown stop; a cancellation without a stop; a valid attempt without a duration; an invalid one without its validation; a malformed fingerprint; reordered attempts; another selection rule. |
 | `artifacts/test_a_timeout_aborts_running_attempts_and_cancels_pending_ones/canceled.json` | Three attempts that only wait for the abort signal, on one worker, with a 0.2 s timeout: the running one is aborted (`cancelled`), the two pending ones are `canceled` before they start, and nothing is selected. The same attempts, sharing one planner, are refused with two workers (`shared_planner`). |

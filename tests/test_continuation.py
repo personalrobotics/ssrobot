@@ -822,6 +822,141 @@ def test_a_plan_made_on_a_projection_continues_that_execution(
     assert [k for k, _, _ in out["traced"]] == ["predicted", "predicted", "continued"]
 
 
+class _ShiftedRebase:
+    """sscbirrt whose rebase ends a hair from where the plan ends: it rebases ``instead``,
+    another plan from the same start to 1e-5 rad away on right_j2, a rebase that changes
+    the endpoint."""
+
+    name = "shifted-rebase"
+
+    def __init__(self, inner: CBiRRT) -> None:
+        self._inner = inner
+        self.instead: PlanResult | None = None
+
+    def capabilities(self, request: PlanningRequest) -> PlannerCapabilities:
+        return self._inner.capabilities(request)
+
+    def validator(self, request: PlanningRequest, scene: PlanningScene) -> Any:
+        return self._inner.validator(request, scene)
+
+    def plan(
+        self, request: PlanningRequest, scene: PlanningScene, *, abort: Any = None
+    ) -> PlanResult:
+        return self._inner.plan(request, scene, abort=abort)
+
+    def rebase(self, plan: PlanResult, request: PlanningRequest, scene: PlanningScene) -> Any:
+        assert self.instead is not None
+        return self._inner.rebase(self.instead, request, scene)
+
+
+def _continued_projection(
+    ctx: RobotContext, planner: CBiRRT, *, shifted: bool = False
+) -> dict[str, Any]:
+    """As at the seam: right_j1 to 3.0, then the source on across +pi to 3.3, its arrival
+    reported wrapped. On the source's prediction, plan B, 3.3 -> (3.6, 0.3); project it;
+    plan C, back to (3.3, 0.0), on the projection. B runs as a continuation, rebased a
+    whole turn onto the arrival; C binds to that occurrence of B, and continues."""
+    first = ctx.snapshot()
+    to = ctx.plan(_request(ctx, (3.0, 0.0), first), snapshot=first, planner=planner)
+    assert to.succeeded, to.status
+    _settle(ctx, ctx.execute(to, planner=planner))
+    snapshot = ctx.snapshot()
+    plan = ctx.plan(_request(ctx, (3.3, 0.0), snapshot), snapshot=snapshot, planner=planner)
+    assert plan.succeeded, plan.status
+    source = ctx.execute(plan, planner=planner)
+    prediction = ctx.predict(source)
+    b_planner: Any = _ShiftedRebase(CBiRRT(ctx.description)) if shifted else planner
+    request_b = _request(ctx, (3.6, 0.3), prediction)
+    plan_b = ctx.plan(request_b, snapshot=prediction, planner=b_planner)
+    assert plan_b.succeeded, plan_b.status
+    projection = ctx.project(plan_b, snapshot=prediction)
+    if isinstance(b_planner, _ShiftedRebase):
+        b_planner.instead = ctx.plan(
+            _request(ctx, (3.6, 0.3 + 1e-5), prediction), snapshot=prediction, planner=planner
+        )
+        assert b_planner.instead.succeeded, b_planner.instead.status
+    # Another plan of B to exactly the same endpoint: its projection is the same state.
+    twin = ctx.plan(
+        dataclasses.replace(request_b, timeout_s=9.0), snapshot=prediction, planner=b_planner
+    )
+    assert twin.succeeded, twin.status
+    projection_twin = ctx.project(twin, snapshot=prediction)
+    ahead = CBiRRT(ctx.description)
+    plan_c = ctx.plan(_request(ctx, (3.3, 0.0), projection), snapshot=projection, planner=ahead)
+    assert plan_c.succeeded, plan_c.status
+    _settle(ctx, source)
+    arrived = ctx.snapshot().position("right_j1")
+    b = ctx.execute_continuation(
+        ctx.continuation(plan_b, planner=b_planner, prediction=prediction), rest_tolerance=1.0
+    )
+    assert b.execution is not None, b.report
+    occurrence = b.execution
+    out: dict[str, Any] = {
+        "projected_end": [round(v, 4) for v in projection.state.positions[:2]],
+        "reported_arrival": round(arrived, 4),
+        "b_rebase": b.report.rebase,
+        "same_projected_state": projection_twin.state == projection.state,
+    }
+    refused: dict[str, str] = {}
+    try:
+        ctx.continuation(plan_c, planner=ahead, projection=projection_twin, source=occurrence)
+        refused["twin_projection"] = "accepted"
+    except SsrobotError as e:
+        refused["twin_projection"] = e.code
+    out["refused"] = refused
+    try:
+        bound = ctx.continuation(plan_c, planner=ahead, projection=projection, source=occurrence)
+    except SsrobotError as e:
+        out["bound"] = e.code
+        return out
+    out["bound"] = "accepted"
+    out["bound_to_the_occurrence"] = bound.prediction.source == occurrence.id
+    _settle(ctx, occurrence)
+    c = ctx.execute_continuation(bound, rest_tolerance=1.0)
+    out["c_accepted"] = c.report.accepted
+    if c.execution is not None:
+        out["continued"] = ctx.run_until(c.execution, max_ticks=MAX_TICKS).state.value
+        out["reached"] = _arm(ctx)
+    return out
+
+
+def test_a_plan_on_a_projection_continues_a_continued_occurrence(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    """#200: a plan made on a projection continues from a continuation of exactly the
+    projected plan, rebased onto the actual arrival, when it ends where the projection
+    does (a continuous joint modulo a turn); a twin's projection, or a rebase that moves
+    the end, is refused."""
+
+    def evidence(tmp: Path) -> dict[str, Any]:
+        def session(name: str, **kw: Any) -> Any:
+            return _session(
+                tmp / name,
+                lambda c, p: _continued_projection(c, p, **kw),
+                reported=_Reported(wrap=("right_j1",)),
+                continuous=True,
+            )
+
+        return {"continued": session("continued"), "shifted": session("shifted", shifted=True)}
+
+    first = json.dumps(evidence(tmp_path / "first"), indent=2) + "\n"
+    assert json.dumps(evidence(tmp_path / "again"), indent=2) + "\n" == first
+    (artifacts / "continued_projection.json").write_text(first)
+    out = json.loads(first)
+    continued = out["continued"]
+    # B was rebased a whole turn onto the wrapped arrival, yet ends where it is projected.
+    assert continued["reported_arrival"] == pytest.approx(3.3 - 2 * math.pi, abs=0.02)
+    assert continued["same_projected_state"]
+    assert continued["refused"] == {"twin_projection": "unprojected_source"}
+    assert continued["bound"] == "accepted" and continued["bound_to_the_occurrence"]
+    assert continued["c_accepted"] and continued["continued"] == "succeeded"
+    assert continued["reached"] == pytest.approx([3.3 - 2 * math.pi, 0.0], abs=0.02)
+    # A rebase that moves the end, however little, is not that occurrence's motion.
+    shifted = out["shifted"]
+    assert shifted["refused"] == {"twin_projection": "unprojected_source"}
+    assert shifted["bound"] == "projection_mismatch"
+
+
 def test_the_manipulator_view_plans_on_a_projection(artifacts: Path) -> None:
     """#190: a manipulator view plans on a projection as on any snapshot; the result is
     a plan made on the projection's state."""
