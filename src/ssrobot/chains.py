@@ -13,7 +13,10 @@ Selection is two-level:
    chain's choice is the first seed all of whose stages are valid, its cost the sum of
    that attempt's validated stage durations. A seed is attempted only once every earlier
    seed of its chain has failed, so no later seed is planned; failed seeds stay in the
-   report and cost nothing.
+   report and cost nothing. A later stage may also have seeds of its own: tried in order
+   from the same previous stage's result, the first valid try is the stage's, so a failed
+   stage is retried without planning the prefix again. Only when every one fails does the
+   attempt fail, and the chain's next seed plan the prefix again. Only the valid try costs.
 2. Across chains: the highest priority, then the lowest cost, then declaration order.
    With ``cancel_lower``, once a chain's choice is made, every chain of a strictly lower
    priority is stopped.
@@ -100,10 +103,15 @@ class StageResult:
 @dataclass(frozen=True, slots=True)
 class Stage:
     """One stage: its name, and how its request is built from the previous stage's
-    result (None for the first stage). ``build`` runs on the context's thread."""
+    result (None for the first stage). ``build`` runs on the context's thread.
+
+    ``seeds``, for a later stage, are its own: each try plans the request built once with
+    the next of them, from the same previous result, until one is valid. None plans the
+    request's own seed once. The first stage's seeds are the chain's."""
 
     name: str
     build: Callable[[StageResult | None], StageRequest]
+    seeds: Sequence[int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,13 +151,37 @@ _STAGE_OUTCOMES = {
     _Ended.INVALID: StageOutcome.INVALID,
     _Ended.VALID: StageOutcome.VALID,
 }
+_RETRIED = (StageOutcome.FAILED, StageOutcome.INVALID)
+"""The outcomes after which a stage with seeds of its own is tried again."""
+
+
+def _tries(stages: Sequence[StageAttempt]) -> list[tuple[int, tuple[StageAttempt, ...]]]:
+    """An attempt's tries grouped by stage: each group's position and its tries."""
+    groups: list[tuple[int, list[StageAttempt]]] = []
+    for n, stage in enumerate(stages):
+        if groups and groups[-1][1][0].name == stage.name:
+            groups[-1][1].append(stage)
+        else:
+            groups.append((n, [stage]))
+    return [(n, tuple(g)) for n, g in groups]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StageAttempt(Value):
-    """What one stage of one attempt did, without wall-clock time."""
+    """What one try of one stage of one attempt did, without wall-clock time."""
 
     name: str = field(metadata=meta("The stage's name."))
+    trial: int = field(
+        default=0, metadata=meta("Position of this try in the stage's own seeds.", unit="count")
+    )
+    seed: int | None = field(
+        default=None,
+        metadata=meta(
+            "The stage's own seed this try planned with; none for a stage without seeds of "
+            "its own.",
+            unit="1",
+        ),
+    )
     planner: str = field(default="", metadata=meta("The planner's name, if it was built."))
     processor: str | None = field(default=None, metadata=meta("The processor's name, if any."))
     snapshot: str | None = field(
@@ -194,6 +226,10 @@ class StageAttempt(Value):
 
     def _validate(self) -> None:
         check_name(self.name, path="name")
+        if self.trial < 0 or (self.seed is None and self.trial):
+            raise ValidationError(
+                "out_of_limits", "a try of a stage's own seeds, from 0", path="trial"
+            )
         if self.planner:
             check_name(self.planner, path="planner")
         if self.processor is not None:
@@ -242,7 +278,9 @@ class ChainAttempt(Value):
 
     index: int = field(metadata=meta("Position in its chain's seeds.", unit="count"))
     seed: int = field(metadata=meta("The seed its first stage planned with.", unit="1"))
-    stages: tuple[StageAttempt, ...] = field(metadata=meta("Every stage it reached, in order."))
+    stages: tuple[StageAttempt, ...] = field(
+        metadata=meta("Every try of every stage it reached, in order.")
+    )
     feasible: bool = field(metadata=meta("Whether every stage of the chain is valid."))
     duration_s: float | None = field(
         default=None,
@@ -254,28 +292,46 @@ class ChainAttempt(Value):
             raise ValidationError("out_of_limits", "index is negative", path="index")
         if not self.stages:
             raise ValidationError("out_of_limits", "at least the first stage", path="stages")
-        first = self.stages[0]
-        if first.after is not None or first.declared:
-            raise ValidationError(
-                "inconsistent_outcome",
-                "the first stage plans in the run's state",
-                path="stages[0].after",
-            )
-        for n in range(1, len(self.stages)):
-            stage, previous = self.stages[n], self.stages[n - 1]
-            if stage.after is None or stage.after != previous.projection:
-                raise ValidationError(
-                    "inconsistent_outcome",
-                    "a later stage is built from the previous stage's projection",
-                    path=f"stages[{n}].after",
-                )
-            if stage.snapshot is not None and not stage.declared and stage.snapshot != stage.after:
-                raise ValidationError(
-                    "inconsistent_outcome",
-                    "a later stage plans in the previous stage's projection",
-                    path=f"stages[{n}].snapshot",
-                )
-        reached = all(s.outcome is StageOutcome.VALID for s in self.stages[:-1])
+        groups = _tries(self.stages)
+        for n, (start, group) in enumerate(groups):
+            for t, stage in enumerate(group):
+                path = f"stages[{start + t}]"
+                if stage.trial != t:
+                    raise ValidationError(
+                        "inconsistent_outcome", "a stage's tries are in order", path=path
+                    )
+                if t < len(group) - 1 and stage.outcome not in _RETRIED:
+                    raise ValidationError(
+                        "inconsistent_outcome",
+                        "a stage is tried again only after a failed or invalid try",
+                        path=path,
+                    )
+                if n == 0:
+                    if stage.after is not None or stage.declared:
+                        raise ValidationError(
+                            "inconsistent_outcome",
+                            "the first stage plans in the run's state",
+                            path=f"{path}.after",
+                        )
+                    continue
+                previous = groups[n - 1][1][-1]
+                if stage.after is None or stage.after != previous.projection:
+                    raise ValidationError(
+                        "inconsistent_outcome",
+                        "a later stage is built from the previous stage's projection",
+                        path=f"{path}.after",
+                    )
+                if (
+                    stage.snapshot is not None
+                    and not stage.declared
+                    and stage.snapshot != stage.after
+                ):
+                    raise ValidationError(
+                        "inconsistent_outcome",
+                        "a later stage plans in the previous stage's projection",
+                        path=f"{path}.snapshot",
+                    )
+        reached = all(g[-1].outcome is StageOutcome.VALID for _, g in groups[:-1])
         if not reached:
             raise ValidationError(
                 "inconsistent_outcome",
@@ -308,6 +364,13 @@ class ChainRecord(Value):
     label: str = field(default="", metadata=meta("The caller's label, if any."))
     priority: int = field(metadata=meta("Its declared priority; higher is preferred.", unit="1"))
     stages: tuple[str, ...] = field(metadata=meta("Its stages' names, in order."))
+    stage_seeds: tuple[tuple[int, ...] | None, ...] = field(
+        metadata=meta(
+            "Each stage's own seeds, in order of preference; none for a stage that plans its "
+            "request's seed once, as the first stage does (its seeds are the chain's).",
+            unit="1",
+        )
+    )
     attempts: tuple[ChainAttempt, ...] = field(metadata=meta("Every attempt, in seed order."))
     chosen: int | None = field(
         default=None, metadata=meta("Its first feasible attempt, if any.", unit="count")
@@ -323,20 +386,43 @@ class ChainRecord(Value):
             raise ValidationError(
                 "out_of_limits", "at least one stage and one attempt", path="attempts"
             )
+        if len(self.stage_seeds) != len(self.stages) or any(
+            s is not None and not s for s in self.stage_seeds
+        ):
+            raise ValidationError(
+                "out_of_limits", "each stage's seeds, none or at least one", path="stage_seeds"
+            )
+        if self.stage_seeds[0] is not None:
+            raise ValidationError(
+                "inconsistent_outcome",
+                "the first stage's seeds are the chain's",
+                path="stage_seeds[0]",
+            )
         for i, a in enumerate(self.attempts):
             if a.index != i:
                 raise ValidationError(
                     "noncanonical_order", "attempts are in seed order", path=f"attempts[{i}]"
                 )
-            names = tuple(s.name for s in a.stages)
+            groups = _tries(a.stages)
+            names = tuple(g[0].name for _, g in groups)
             if names != self.stages[: len(names)]:
                 raise ValidationError(
                     "inconsistent_outcome",
                     "an attempt's stages are a prefix of the chain's",
                     path=f"attempts[{i}].stages",
                 )
-            complete = len(a.stages) == len(self.stages) and all(
-                s.outcome is StageOutcome.VALID for s in a.stages
+            for n, (start, group) in enumerate(groups):
+                seeds = self.stage_seeds[n]
+                for t, stage in enumerate(group):
+                    expected = None if seeds is None else seeds[t] if t < len(seeds) else -1
+                    if stage.seed != expected or (seeds is None and t):
+                        raise ValidationError(
+                            "inconsistent_outcome",
+                            "a stage's tries plan its own seeds, in order",
+                            path=f"attempts[{i}].stages[{start + t}].seed",
+                        )
+            complete = len(groups) == len(self.stages) and all(
+                g[-1].outcome is StageOutcome.VALID for _, g in groups
             )
             if a.feasible != complete:
                 raise ValidationError(
@@ -401,6 +487,21 @@ class ChainsReport(Record):
                         "every first stage plans in the run's state",
                         path=f"chains[{i}].attempts[{a.index}].stages[0].snapshot",
                     )
+                # Unless the run was aborted, a stage that failed tried every seed it has.
+                groups = _tries(a.stages)
+                last = groups[-1][1][-1]
+                seeds = c.stage_seeds[len(groups) - 1]
+                if (
+                    self.stopped is None
+                    and seeds is not None
+                    and last.outcome in _RETRIED
+                    and last.trial < len(seeds) - 1
+                ):
+                    raise ValidationError(
+                        "inconsistent_outcome",
+                        "a stage fails only once every seed of its own has",
+                        path=f"chains[{i}].attempts[{a.index}].stages",
+                    )
         if self.stopped not in (None, StopReason.ABORTED):
             raise ValidationError(
                 "unsupported_value", "only an abort stops a run of chains", path="stopped"
@@ -433,17 +534,30 @@ class Chains:
 
 
 @dataclass(slots=True)
+class _Try:
+    stage: int
+    trial: int
+    seed: int | None
+    after: str | None
+    """The previous stage's projected state it was built from; none for the first."""
+    declared: bool
+    """Whether it declared attachments."""
+    job: int | None = None
+    """The engine's job; none if the stage's request could not be built."""
+    refused: str = ""
+    """Why its request could not be built, recorded as refused."""
+    taken: bool = False
+
+
+@dataclass(slots=True)
 class _Attempt:
     chain: int
     index: int
     seed: int
-    jobs: list[int] = field(default_factory=list)
-    """The engine's job of each stage reached, in order."""
-    links: list[tuple[str | None, bool]] = field(default_factory=list)
-    """For each stage reached, the previous projected state it was built from (none for
-    the first), and whether it declared attachments."""
-    built: list[str] = field(default_factory=list)
-    """A stage whose request could not be built: its detail, recorded as refused."""
+    tries: list[_Try] = field(default_factory=list)
+    """Every try of every stage reached, in order."""
+    built: tuple[StageRequest, SceneSnapshot] | None = None
+    """The current stage's request and the state it plans in, for its next try."""
     results: list[StageResult] = field(default_factory=list)
     started: bool = False
     settled: bool = False
@@ -486,7 +600,30 @@ class ChainsRun:
                 "seeds in all",
                 path="chains",
             )
+        chains = tuple(
+            replace(
+                c,
+                stages=tuple(
+                    st if st.seeds is None else replace(st, seeds=tuple(st.seeds))
+                    for st in c.stages
+                ),
+            )
+            for c in chains
+        )
         for i, c in enumerate(chains):
+            if c.stages[0].seeds is not None:
+                raise ValidationError(
+                    "out_of_limits",
+                    "the first stage's seeds are the chain's",
+                    path=f"chains[{i}].stages[0].seeds",
+                )
+            for n, st in enumerate(c.stages):
+                if st.seeds is not None and not 1 <= len(st.seeds) <= MAX_ATTEMPTS:
+                    raise ValidationError(
+                        "out_of_limits",
+                        f"a stage's own seeds, none or 1 to {MAX_ATTEMPTS}",
+                        path=f"chains[{i}].stages[{n}].seeds",
+                    )
             if c.label:
                 check_name(c.label, path=f"chains[{i}].label")
             if len({s.name for s in c.stages}) != len(c.stages):
@@ -533,11 +670,12 @@ class ChainsRun:
         return self._run.planning
 
     def _start(self, attempt: _Attempt, previous: StageResult | None) -> None:
-        """Build the attempt's next stage from ``previous`` and queue it."""
-        chain = self._chains[attempt.chain]
-        stage = chain.stages[len(attempt.jobs) + len(attempt.built)]
+        """Build the attempt's next stage from ``previous`` and queue its first try."""
+        n = len(attempt.results)
+        stage = self._chains[attempt.chain].stages[n]
         attempt.started = True
         after = None if previous is None else previous.projection.state.fingerprint()
+        seed = None if stage.seeds is None else stage.seeds[0]
         declared = False
         try:
             built = stage.build(previous)
@@ -545,25 +683,41 @@ class ChainsRun:
                 raise ValidationError("wrong_type", f"{stage.name} built {built!r}")
             state = self._linked(built, previous)
             declared = built.attachments is not None
-            request = built.request
-            if previous is None:
-                request = replace(request, seed=attempt.seed)
-            job = _Job(
-                attempt.chain,
-                attempt.index,
-                chain.priority,
-                request,
-                PlanAttempt(planner=built.planner, processor=built.processor),
-                snapshot=state,
-            )
-            (k,) = self._run.add([job])
         except SsrobotError as e:
-            attempt.links.append((after, declared))
-            attempt.built.append(f"{e.code}: {e.message}")
+            attempt.tries.append(
+                _Try(n, 0, seed, after, declared, refused=f"{e.code}: {e.message}")
+            )
             attempt.settled = True
             return
-        attempt.links.append((after, declared))
-        attempt.jobs.append(k)
+        attempt.built = (built, state)
+        self._try(attempt, _Try(n, 0, seed, after, declared))
+
+    def _try(self, attempt: _Attempt, attempt_try: _Try) -> None:
+        """Queue one try of the attempt's current stage: its built request, with the
+        chain's seed for the first stage or the stage's own seed for a later one."""
+        assert attempt.built is not None
+        built, state = attempt.built
+        request = built.request
+        if attempt_try.stage == 0:
+            request = replace(request, seed=attempt.seed)
+        elif attempt_try.seed is not None:
+            request = replace(request, seed=attempt_try.seed)
+        job = _Job(
+            attempt.chain,
+            attempt.index,
+            self._chains[attempt.chain].priority,
+            request,
+            PlanAttempt(planner=built.planner, processor=built.processor),
+            snapshot=state,
+        )
+        try:
+            (attempt_try.job,) = self._run.add([job])
+        except SsrobotError as e:
+            attempt_try.refused = f"{e.code}: {e.message}"
+            attempt.tries.append(attempt_try)
+            attempt.settled = True
+            return
+        attempt.tries.append(attempt_try)
 
     def _linked(self, built: StageRequest, previous: StageResult | None) -> SceneSnapshot:
         """The state ``built`` plans in, if it continues the chain: the run's own for the
@@ -619,27 +773,49 @@ class ChainsRun:
         return started
 
     def _take(self, attempt: _Attempt, *, build: bool) -> None:
-        """If the attempt's current stage has ended: settle it when it is not valid, or
-        when the attempt was stopped; otherwise keep its result and, with ``build``,
-        queue the next stage, or settle it as feasible after the last."""
-        if attempt.settled or not attempt.jobs:
+        """If the attempt's current try has ended: try the stage's next seed after a
+        failed or invalid try, if it has one (stopped at once if the attempt was);
+        settle it when it is not valid, or when the attempt was stopped; otherwise keep
+        its result and, with ``build``, queue the next stage, or settle it as feasible
+        after the last."""
+        if attempt.settled or not attempt.tries:
             return
-        k = attempt.jobs[-1]
-        if not self._run.settled(k) or len(attempt.results) == len(attempt.jobs):
+        current = attempt.tries[-1]
+        if current.taken or current.job is None or not self._run.settled(current.job):
             return
-        end = self._run.ends[k]
-        if end.ended is not _Ended.VALID or attempt.stopped is not None:
+        current.taken = True
+        end = self._run.ends[current.job]
+        stage = self._chains[attempt.chain].stages[current.stage]
+        if end.ended is not _Ended.VALID:
+            following = current.trial + 1
+            if (
+                build
+                and _STAGE_OUTCOMES[end.ended] in _RETRIED
+                and stage.seeds is not None
+                and following < len(stage.seeds)
+            ):
+                again = replace(current, trial=following, seed=stage.seeds[following], job=None)
+                again.taken = False
+                self._try(attempt, again)
+                if attempt.stopped is not None and again.job is not None:
+                    # Recorded as never started, so the report shows why it ended there.
+                    self._run.cancel_jobs([again.job], attempt.stopped)
+                return
+            attempt.settled = True
+            return
+        if attempt.stopped is not None:
             attempt.settled = True
             return
         assert end.candidate is not None
         state = end.job.snapshot or self._basis
         result = StageResult(
-            name=self._chains[attempt.chain].stages[len(attempt.results)].name,
+            name=stage.name,
             plan=end.candidate,
             snapshot=state,
             projection=self._ctx.project(end.candidate, snapshot=state),
         )
         attempt.results.append(result)
+        attempt.built = None
         if len(attempt.results) == len(self._chains[attempt.chain].stages):
             attempt.settled = attempt.feasible = True
         elif build:
@@ -672,7 +848,8 @@ class ChainsRun:
             if attempt.settled or attempt.stopped is not None:
                 continue
             attempt.stopped = detail
-            self._run.cancel_jobs(attempt.jobs[-1:], detail)
+            job = attempt.tries[-1].job if attempt.tries else None
+            self._run.cancel_jobs([] if job is None else [job], detail)
 
     def advance(self) -> bool:
         """Start, validate, and build stages; never waits. True once the run is done."""
@@ -726,28 +903,29 @@ class ChainsRun:
             attempts = []
             for attempt in self._made(i):
                 stages = [
-                    _stage_attempt(
-                        chain.stages[n].name,
-                        ends[k],
-                        after=attempt.links[n][0],
-                        declared=attempt.links[n][1],
-                        projection=attempt.results[n].projection.state.fingerprint()
-                        if n < len(attempt.results)
+                    StageAttempt(
+                        name=chain.stages[t.stage].name,
+                        trial=t.trial,
+                        seed=t.seed,
+                        outcome=StageOutcome.REFUSED,
+                        detail=t.refused,
+                        after=t.after,
+                        declared=t.declared,
+                    )
+                    if t.job is None
+                    else _stage_attempt(
+                        chain.stages[t.stage].name,
+                        ends[t.job],
+                        trial=t.trial,
+                        seed=t.seed,
+                        after=t.after,
+                        declared=t.declared,
+                        projection=attempt.results[t.stage].projection.state.fingerprint()
+                        if t.stage < len(attempt.results) and ends[t.job].ended is _Ended.VALID
                         else None,
                     )
-                    for n, k in enumerate(attempt.jobs)
+                    for t in attempt.tries
                 ]
-                for detail in attempt.built:
-                    after, declared = attempt.links[len(stages)]
-                    stages.append(
-                        StageAttempt(
-                            name=chain.stages[len(stages)].name,
-                            outcome=StageOutcome.REFUSED,
-                            detail=detail,
-                            after=after,
-                            declared=declared,
-                        )
-                    )
                 feasible = attempt.feasible
                 attempts.append(
                     ChainAttempt(
@@ -767,6 +945,9 @@ class ChainsRun:
                     label=chain.label,
                     priority=chain.priority,
                     stages=tuple(s.name for s in chain.stages),
+                    stage_seeds=tuple(
+                        None if s.seeds is None else tuple(s.seeds) for s in chain.stages
+                    ),
                     attempts=tuple(attempts),
                     chosen=chosen,
                     cost_s=None if chosen is None else attempts[chosen].duration_s,
@@ -790,11 +971,20 @@ class ChainsRun:
 
 
 def _stage_attempt(
-    name: str, end: _End, *, after: str | None, declared: bool, projection: str | None
+    name: str,
+    end: _End,
+    *,
+    trial: int,
+    seed: int | None,
+    after: str | None,
+    declared: bool,
+    projection: str | None,
 ) -> StageAttempt:
     job = end.job
     return StageAttempt(
         name=name,
+        trial=trial,
+        seed=seed,
         after=after,
         declared=declared,
         projection=projection,

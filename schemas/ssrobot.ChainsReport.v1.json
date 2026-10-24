@@ -22,7 +22,7 @@
           "items": {
             "$ref": "#/$defs/StageAttempt"
           },
-          "description": "Every stage it reached, in order."
+          "description": "Every try of every stage it reached, in order."
         },
         "feasible": {
           "type": "boolean",
@@ -74,6 +74,24 @@
           },
           "description": "Its stages' names, in order."
         },
+        "stage_seeds": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": "Each stage's own seeds, in order of preference; none for a stage that plans its request's seed once, as the first stage does (its seeds are the chain's).",
+          "x-unit": "1"
+        },
         "attempts": {
           "type": "array",
           "items": {
@@ -110,6 +128,7 @@
         "index",
         "priority",
         "stages",
+        "stage_seeds",
         "attempts"
       ],
       "additionalProperties": false
@@ -181,11 +200,28 @@
     },
     "StageAttempt": {
       "type": "object",
-      "description": "What one stage of one attempt did, without wall-clock time.",
+      "description": "What one try of one stage of one attempt did, without wall-clock time.",
       "properties": {
         "name": {
           "type": "string",
           "description": "The stage's name."
+        },
+        "trial": {
+          "type": "integer",
+          "description": "Position of this try in the stage's own seeds.",
+          "x-unit": "count"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The stage's own seed this try planned with; none for a stage without seeds of its own.",
+          "x-unit": "1"
         },
         "planner": {
           "type": "string",

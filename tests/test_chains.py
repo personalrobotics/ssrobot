@@ -16,6 +16,12 @@ Its validator is the honest one.
 - ``disconnected``: the right preferred, its onward stage a valid motion on its own but
   planned from the start instead of the reach's projection: refused on every seed
   (``disconnected_stage``), so the left is selected.
+- ``stage_seeds``: the right preferred, its onward stage with seeds 5 and 6 of its own,
+  lying for 5: the onward stage tries 5, then 6 from the same reach, so the reach plans
+  once and the right is selected on its seed 0. Its cost is the reach and the valid
+  onward try alone.
+- ``stage_seeds_exhausted``: the same, lying for 5 and 6: each chain seed's onward stage
+  tries both, then the next chain seed plans the reach again; the left is selected.
 Every stage records the projected state it was built from, the previous stage's own.
 
 The evidence is ``chains.json``: each scenario's report, the selected chain's stages, and
@@ -106,6 +112,7 @@ def _chain(
     seeds: Sequence[int],
     onward_planner: Any,
     disconnected: bool = False,
+    stage_seeds: Sequence[int] | None = None,
 ) -> Chain:
     d = ctx.description
     first, then = GOALS[arm]
@@ -142,7 +149,10 @@ def _chain(
 
     return Chain(
         label=arm,
-        stages=(Stage(name="reach", build=reach), Stage(name="onward", build=onward)),
+        stages=(
+            Stage(name="reach", build=reach),
+            Stage(name="onward", build=onward, seeds=stage_seeds),
+        ),
         seeds=tuple(seeds),
         priority=priority,
     )
@@ -155,6 +165,7 @@ def _scenario(
     lies: Sequence[int],
     workers: int,
     disconnected: bool = False,
+    stage_seeds: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     package_root, scene = colliding_bimanual(tmp / "cube", blocked=CUBE)
     twin_root, twin_scene = colliding_bimanual(tmp / "twin")
@@ -175,6 +186,7 @@ def _scenario(
                 seeds=(0, 1, 2),
                 onward_planner=liar,
                 disconnected=disconnected,
+                stage_seeds=stage_seeds,
             ),
             _chain(ctx, "left_arm", priority=0, seeds=(0,), onward_planner=CBiRRT(d)),
         ]
@@ -208,6 +220,12 @@ def test_chains_race_staged_prefixes_and_select_deterministically(
             "liar_preferred": _scenario(tmp / "lp", liar_priority=1, lies=(0, 1, 2), workers=1),
             "disconnected": _scenario(
                 tmp / "dc", liar_priority=1, lies=(), workers=1, disconnected=True
+            ),
+            "stage_seeds": _scenario(
+                tmp / "ss", liar_priority=1, lies=(5,), workers=1, stage_seeds=(5, 6)
+            ),
+            "stage_seeds_exhausted": _scenario(
+                tmp / "sx", liar_priority=1, lies=(5, 6), workers=1, stage_seeds=(5, 6)
             ),
         }
 
@@ -256,6 +274,32 @@ def test_chains_race_staged_prefixes_and_select_deterministically(
     preferred = first["liar_preferred"]
     assert preferred["report"]["chains"][0]["chosen"] is None
     assert len(preferred["report"]["chains"][0]["attempts"]) == 3
+
+    def tries(attempt: dict[str, Any]) -> list[tuple[str, str, int | None, int]]:
+        return [(s["name"], s["outcome"], s["seed"], s["trial"]) for s in attempt["stages"]]
+
+    # A stage's own seeds retry it from the same reach: the reach plans once.
+    seeded = first["stage_seeds"]
+    right = seeded["report"]["chains"][0]
+    assert right["stage_seeds"] == [None, [5, 6]]
+    (only,) = right["attempts"]
+    assert tries(only) == [
+        ("reach", "valid", None, 0),
+        ("onward", "invalid", 5, 0),
+        ("onward", "valid", 6, 1),
+    ]
+    reach, _, onward = only["stages"]
+    assert onward["after"] == reach["projection"]
+    assert right["cost_s"] == reach["duration_s"] + onward["duration_s"]
+    assert seeded["selected"]["label"] == "right_arm" and seeded["selected"]["attempt"] == 0
+
+    # When every stage seed fails, the next chain seed plans the prefix again.
+    exhausted = first["stage_seeds_exhausted"]
+    right = exhausted["report"]["chains"][0]
+    assert [tries(a) for a in right["attempts"]] == [
+        [("reach", "valid", None, 0), ("onward", "invalid", 5, 0), ("onward", "invalid", 6, 1)]
+    ] * 3
+    assert right["chosen"] is None and exhausted["selected"]["label"] == "left_arm"
     assert preferred["selected"]["label"] == "left_arm"
 
 
@@ -263,11 +307,17 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
     artifacts: Path, tmp_path: Path
 ) -> None:
     """A decoded report must be one the rule could have produced."""
-    genuine = _scenario(tmp_path, liar_priority=0, lies=(0,), workers=1)["report"]
+    genuine = _scenario(tmp_path / "eq", liar_priority=0, lies=(0,), workers=1)["report"]
+    seeded = _scenario(tmp_path / "ss", liar_priority=1, lies=(5,), workers=1, stage_seeds=(5, 6))[
+        "report"
+    ]
+    exhausted = _scenario(
+        tmp_path / "sx", liar_priority=1, lies=(5, 6), workers=1, stage_seeds=(5, 6)
+    )["report"]
     forged: dict[str, Any] = {}
 
-    def forge(name: str, change: Any) -> None:
-        data = json.loads(json.dumps(genuine))
+    def forge(name: str, change: Any, report: dict[str, Any] = genuine) -> None:
+        data = json.loads(json.dumps(report))
         change(data)
         try:
             loads(json.dumps(data), ChainsReport)
@@ -298,6 +348,27 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
         a["stages"] = a["stages"][:1]
         a["feasible"], a["duration_s"] = True, a["stages"][0]["duration_s"]
 
+    def skip_a_stage_seed(d: dict[str, Any]) -> None:
+        stages = d["chains"][0]["attempts"][0]["stages"]
+        del stages[1]
+        stages[1]["trial"] = 0
+
+    def give_up_with_a_stage_seed_left(d: dict[str, Any]) -> None:
+        del d["chains"][0]["attempts"][0]["stages"][2]
+
+    def seed_the_first_stage(d: dict[str, Any]) -> None:
+        d["chains"][0]["stage_seeds"][0] = [1]
+
+    def retry_after_a_valid_try(d: dict[str, Any]) -> None:
+        stages = d["chains"][0]["attempts"][0]["stages"]
+        stages[1], stages[2] = stages[2], stages[1]
+        stages[1]["trial"], stages[2]["trial"] = 0, 1
+        stages[1]["seed"], stages[2]["seed"] = 5, 6
+
+    forge("a_stage_seed_skipped", skip_a_stage_seed, seeded)
+    forge("a_stage_retried_after_a_valid_try", retry_after_a_valid_try, seeded)
+    forge("the_first_stage_seeded", seed_the_first_stage, seeded)
+    forge("a_stage_failed_with_a_seed_left", give_up_with_a_stage_seed_left, exhausted)
     for name, change in (
         ("selected_not_by_the_rule", select_the_dearer),
         ("chosen_not_the_first_feasible_seed", choose_a_later_seed),
@@ -309,6 +380,10 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
         forge(name, change)
     (artifacts / "refusals.json").write_text(json.dumps(forged, indent=2) + "\n")
     assert forged == {
+        "a_stage_seed_skipped": "inconsistent_outcome",
+        "a_stage_retried_after_a_valid_try": "inconsistent_outcome",
+        "the_first_stage_seeded": "inconsistent_outcome",
+        "a_stage_failed_with_a_seed_left": "inconsistent_outcome",
         "selected_not_by_the_rule": "inconsistent_outcome",
         "chosen_not_the_first_feasible_seed": "inconsistent_outcome",
         "cost_counts_a_failed_seed": "inconsistent_outcome",
