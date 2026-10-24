@@ -905,12 +905,22 @@ def _continued_projection(
         refused["twin_projection"] = e.code
     out["refused"] = refused
     try:
-        bound = ctx.continuation(plan_c, planner=ahead, projection=projection, source=occurrence)
+        ctx.continuation(plan_b, planner=b_planner, prediction=prediction, unsettled=("block",))
+        refused["unsettled_on_a_prediction"] = "accepted"
+    except SsrobotError as e:
+        refused["unsettled_on_a_prediction"] = e.code
+    try:
+        bound = ctx.continuation(
+            plan_c, planner=ahead, projection=projection, source=occurrence, unsettled=("block",)
+        )
     except SsrobotError as e:
         out["bound"] = e.code
         return out
     out["bound"] = "accepted"
     out["bound_to_the_occurrence"] = bound.prediction.source == occurrence.id
+    # Binding predicts the occurrence; like predict, it may name objects it makes no claim
+    # about, such as one just dropped.
+    out["bound_unsettled"] = list(bound.prediction.unsettled)
     _settle(ctx, occurrence)
     c = ctx.execute_continuation(bound, rest_tolerance=1.0)
     out["c_accepted"] = c.report.accepted
@@ -935,6 +945,7 @@ def test_a_plan_on_a_projection_continues_a_continued_occurrence(
                 lambda c, p: _continued_projection(c, p, **kw),
                 reported=_Reported(wrap=("right_j1",)),
                 continuous=True,
+                block=BLOCK,
             )
 
         return {"continued": session("continued"), "shifted": session("shifted", shifted=True)}
@@ -947,13 +958,20 @@ def test_a_plan_on_a_projection_continues_a_continued_occurrence(
     # B was rebased a whole turn onto the wrapped arrival, yet ends where it is projected.
     assert continued["reported_arrival"] == pytest.approx(3.3 - 2 * math.pi, abs=0.02)
     assert continued["same_projected_state"]
-    assert continued["refused"] == {"twin_projection": "unprojected_source"}
+    assert continued["refused"] == {
+        "twin_projection": "unprojected_source",
+        "unsettled_on_a_prediction": "wrong_type",
+    }
     assert continued["bound"] == "accepted" and continued["bound_to_the_occurrence"]
+    assert continued["bound_unsettled"] == ["block"]
     assert continued["c_accepted"] and continued["continued"] == "succeeded"
     assert continued["reached"] == pytest.approx([3.3 - 2 * math.pi, 0.0], abs=0.02)
     # A rebase that moves the end, however little, is not that occurrence's motion.
     shifted = out["shifted"]
-    assert shifted["refused"] == {"twin_projection": "unprojected_source"}
+    assert shifted["refused"] == {
+        "twin_projection": "unprojected_source",
+        "unsettled_on_a_prediction": "wrong_type",
+    }
     assert shifted["bound"] == "projection_mismatch"
 
 

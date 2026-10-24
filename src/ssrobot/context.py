@@ -986,6 +986,7 @@ class RobotContext:
         prediction: PredictedSnapshot | None = None,
         projection: PlanProjection | None = None,
         source: Execution | None = None,
+        unsettled: Iterable[str] = (),
     ) -> Continuation:
         """Bind a successful plan to what it was planned on and to the planner that made
         it, for ``execute_continuation``: either ``prediction``, a prediction this context
@@ -1005,7 +1006,15 @@ class RobotContext:
         A rebase that moved the end is refused (``projection_mismatch``). The plan must
         have been made on the projection, which must be this context's and unchanged
         (``unknown_projection``). The prediction of ``source``, which this makes, is the
-        returned continuation's."""
+        returned continuation's; ``unsettled`` names free objects it makes no claim about,
+        as for ``predict``."""
+        unsettled = tuple(unsettled)
+        if unsettled and projection is None:
+            raise ValidationError(
+                "wrong_type",
+                "unsettled is for a projection's prediction; a prediction records its own",
+                path="unsettled",
+            )
         if projection is not None or source is not None:
             if prediction is not None or projection is None or source is None:
                 raise ValidationError(
@@ -1013,7 +1022,7 @@ class RobotContext:
                     "bind either a prediction, or a projection with its source execution",
                     path="projection",
                 )
-            prediction = self._bind(plan, projection, source)
+            prediction = self._bind(plan, projection, source, unsettled)
         if not isinstance(prediction, PredictedSnapshot):
             raise ValidationError(
                 "wrong_type", "prediction must be a PredictedSnapshot", path="prediction"
@@ -1036,7 +1045,11 @@ class RobotContext:
         return Continuation(plan=plan, planner=planner, prediction=prediction)
 
     def _bind(
-        self, plan: PlanResult, projection: PlanProjection, source: Execution
+        self,
+        plan: PlanResult,
+        projection: PlanProjection,
+        source: Execution,
+        unsettled: tuple[str, ...] = (),
     ) -> PredictedSnapshot:
         """The prediction of ``source`` that ``plan``, made on ``projection``, continues
         from; see ``continuation``."""
@@ -1068,7 +1081,7 @@ class RobotContext:
                 "snapshot_mismatch", "the plan was made on another snapshot", path="plan"
             )
         check_planned_in(plan.request, self._description, projection.state)
-        prediction = self.predict(source)
+        prediction = self.predict(source, unsettled=unsettled)
         if ran:
             if replace(prediction.state, stamp=projection.state.stamp) != projection.state:
                 raise ValidationError(

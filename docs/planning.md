@@ -521,9 +521,10 @@ motion not yet run would end, and that check plan can be kept:
 - The binding is per execution, not by content. The context records what each execution
   ran, and keeps each projection by its plan as well as its state: two plans that end in
   the same state each keep their own projection.
-- The continuation is then an ordinary one, over `ctx.predict(source)`. For an
-  `execute` source, the projection must equal that state but for its stamp
-  (`projection_mismatch`).
+- The continuation is then an ordinary one, over `ctx.predict(source)`. Like `predict`,
+  binding takes `unsettled`: free objects the prediction makes no claim about, such as
+  one just dropped. For an `execute` source, the projection must equal that state but
+  for its stamp (`projection_mismatch`).
 - **A continued source** was rebased onto the actual state, so it is not the projected
   plan itself, only an occurrence of it with the same end. Binding checks that end
   instead (`projection_mismatch` otherwise):
