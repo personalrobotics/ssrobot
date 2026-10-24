@@ -1,0 +1,304 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.ChainsReport v1",
+  "$ref": "#/$defs/ChainsReport",
+  "$defs": {
+    "ChainAttempt": {
+      "type": "object",
+      "description": "One attempt at a chain, with one seed: every stage it reached, in order.",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "description": "Position in its chain's seeds.",
+          "x-unit": "count"
+        },
+        "seed": {
+          "type": "integer",
+          "description": "The seed its first stage planned with.",
+          "x-unit": "1"
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StageAttempt"
+          },
+          "description": "Every stage it reached, in order."
+        },
+        "feasible": {
+          "type": "boolean",
+          "description": "Whether every stage of the chain is valid."
+        },
+        "duration_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The sum of its stages' validated durations, if feasible.",
+          "x-unit": "s"
+        }
+      },
+      "required": [
+        "index",
+        "seed",
+        "stages",
+        "feasible"
+      ],
+      "additionalProperties": false
+    },
+    "ChainRecord": {
+      "type": "object",
+      "description": "One chain: its stages' names, every attempt, its choice and its cost.",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "description": "Position in the declared chains.",
+          "x-unit": "count"
+        },
+        "label": {
+          "type": "string",
+          "description": "The caller's label, if any."
+        },
+        "priority": {
+          "type": "integer",
+          "description": "Its declared priority; higher is preferred.",
+          "x-unit": "1"
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Its stages' names, in order."
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChainAttempt"
+          },
+          "description": "Every attempt, in seed order."
+        },
+        "chosen": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its first feasible attempt, if any.",
+          "x-unit": "count"
+        },
+        "cost_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The chosen attempt's duration, if any.",
+          "x-unit": "s"
+        }
+      },
+      "required": [
+        "index",
+        "priority",
+        "stages",
+        "attempts"
+      ],
+      "additionalProperties": false
+    },
+    "ChainsReport": {
+      "type": "object",
+      "description": "Every chain's attempts and stages, and the selection; no wall-clock time.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.ChainsReport"
+        },
+        "version": {
+          "const": 1
+        },
+        "snapshot": {
+          "type": "string",
+          "description": "Fingerprint of the state every chain started in."
+        },
+        "chains": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChainRecord"
+          },
+          "description": "Every chain, in declared order."
+        },
+        "selected": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The selected chain, if any chain is feasible.",
+          "x-unit": "count"
+        },
+        "cancel_lower": {
+          "type": "boolean",
+          "description": "Whether a chosen chain stopped strictly lower priorities."
+        },
+        "stopped": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "timeout",
+                "aborted"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What stopped the run early, if anything."
+        },
+        "rule": {
+          "type": "string",
+          "description": "How the selection is made."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "snapshot",
+        "chains"
+      ],
+      "additionalProperties": false
+    },
+    "StageAttempt": {
+      "type": "object",
+      "description": "What one stage of one attempt did, without wall-clock time.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The stage's name."
+        },
+        "planner": {
+          "type": "string",
+          "description": "The planner's name, if it was built."
+        },
+        "processor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The processor's name, if any."
+        },
+        "snapshot": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the state it planned in, if it was built."
+        },
+        "request": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of its request, if it was built."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "refused",
+            "not_started",
+            "canceled",
+            "failed",
+            "invalid",
+            "valid"
+          ],
+          "description": "How it ended."
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "succeeded",
+                "infeasible",
+                "timeout",
+                "cancelled",
+                "invalid_input",
+                "backend_failure"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The planner's status, if it returned a result."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Why it ended so: a code or a witness."
+        },
+        "duration_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its validated duration, if it is valid.",
+          "x-unit": "s"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the planner's PlanResult, if it returned one."
+        },
+        "validation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the fresh MotionValidation of its motion, if validated."
+        }
+      },
+      "required": [
+        "name",
+        "outcome"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
