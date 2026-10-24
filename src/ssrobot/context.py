@@ -35,6 +35,7 @@ from ssrobot.continuation import (
     ContinuationReport,
     ContinuationResult,
     Discrepancy,
+    PlanProjection,
     PredictedSnapshot,
     check_tolerance,
 )
@@ -134,6 +135,7 @@ ALLOWED_STATES: dict[str, frozenset[ContextState]] = {
     "planning_scene": frozenset({_S.OPEN, _S.FAULTED}),
     "detach": frozenset({_S.OPEN, _S.FAULTED}),
     "predict": frozenset({_S.OPEN}),
+    "project": frozenset({_S.OPEN, _S.FAULTED}),
     "execute_continuation": frozenset({_S.OPEN}),
 }
 """Context states in which each operation is allowed."""
@@ -209,9 +211,12 @@ class Ownership:
     """Whether it holds every resource of the component."""
 
 
-def _state(snapshot: SceneSnapshot | PredictedSnapshot) -> SceneSnapshot:
-    """The snapshot to plan in: a prediction's predicted state, or the snapshot itself."""
-    return snapshot.state if isinstance(snapshot, PredictedSnapshot) else snapshot
+def _state(snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection) -> SceneSnapshot:
+    """The snapshot to plan in: a prediction's predicted state, a projection's projected
+    state, or the snapshot itself."""
+    if isinstance(snapshot, PredictedSnapshot | PlanProjection):
+        return snapshot.state
+    return snapshot
 
 
 def _compose(a: Pose, b: Pose) -> Pose:
@@ -346,6 +351,9 @@ class RobotContext:
         # Predictions this context made, by their state's fingerprint: a plan made on one
         # executes only as a continuation.
         self._predicted: dict[str, PredictedSnapshot] = {}
+        self._projected: dict[str, PlanProjection] = {}  # by projected state's fingerprint
+        # Each execution's own plan and snapshot, by execution id: what it ran.
+        self._ran: dict[str, tuple[str, str]] = {}
         self._accepted: dict[str, Timestamp] = {}  # when the runtime accepted each execution
         self._planning_pool: ThreadPoolExecutor | None = None
 
@@ -669,7 +677,7 @@ class RobotContext:
         self,
         request: PlanningRequest,
         *,
-        snapshot: SceneSnapshot | PredictedSnapshot,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection,
         planner: Planner,
         processor: TrajectoryProcessor | None = None,
         abort: Callable[[], bool] | None = None,
@@ -679,8 +687,9 @@ class RobotContext:
 
         Nothing is planned unless negotiation succeeds. The result is checked against
         the request; a planner answering another request, start, or limits is refused.
-        A ``PredictedSnapshot`` plans in its predicted state; the result executes only as
-        a continuation (``continuation``, ``execute_continuation``).
+        A ``PredictedSnapshot`` plans in its predicted state, and a ``PlanProjection`` in
+        its projected state; the result executes only as a continuation
+        (``continuation``, ``execute_continuation``).
         """
         scene = self._negotiated_scene(request, snapshot, planner, processor)
         result = planner.plan(request, scene, abort=abort)
@@ -693,7 +702,7 @@ class RobotContext:
         self,
         request: PlanningRequest,
         *,
-        snapshot: SceneSnapshot | PredictedSnapshot,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection,
         planner: Planner,
         processor: TrajectoryProcessor | None = None,
         abort: Callable[[], bool] | None = None,
@@ -719,7 +728,7 @@ class RobotContext:
     def _negotiated_scene(
         self,
         request: PlanningRequest,
-        snapshot: SceneSnapshot | PredictedSnapshot,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection,
         planner: Planner,
         processor: TrajectoryProcessor | None,
     ) -> PlanningScene:
@@ -816,19 +825,7 @@ class RobotContext:
             )
         end.update(expected)
         positions = tuple(end.get(j, v) for j, v in zip(base.joints, base.positions, strict=True))
-        # Held objects on an end effector this motion moves go with it.
-        scene = self.planning_scene(base, command.group)
-        start_q = tuple(base.position(j) for j in command.joints)
-        end_q = tuple(command.positions[-1])
-        moved: dict[str, Pose] = {}
-        for attachment in base.attachments:
-            if not attachment.held:
-                continue  # left the grasp: a free object, where it is
-            frame = self._description.end_effector(attachment.end_effector).frame
-            before = scene.forward_kinematics(start_q, frame)
-            after = scene.forward_kinematics(end_q, frame)
-            if before != after:
-                moved[attachment.object] = _compose(after, attachment.transform)
+        moved = self._carried(base, command.group, command.joints, command.positions[-1])
         releases = dict(releases or {})
         held_now = {a.object for a in base.attachments}
         for name in releases:
@@ -870,11 +867,96 @@ class RobotContext:
         self._emit(TraceKind.PREDICTED, "context", prediction)
         return prediction
 
+    def _carried(
+        self,
+        base: SceneSnapshot,
+        group: str,
+        joints: Sequence[str],
+        end: Sequence[float],
+    ) -> dict[str, Pose]:
+        """Where each held object on an end effector that moving ``group``'s ``joints``
+        from ``base`` to ``end`` moves goes with it, by name."""
+        scene = self.planning_scene(base, group)
+        start_q = tuple(base.position(j) for j in joints)
+        end_q = tuple(end)
+        moved: dict[str, Pose] = {}
+        for attachment in base.attachments:
+            if not attachment.held:
+                continue  # left the grasp: a free object, where it is
+            frame = self._description.end_effector(attachment.end_effector).frame
+            before = scene.forward_kinematics(start_q, frame)
+            after = scene.forward_kinematics(end_q, frame)
+            if before != after:
+                moved[attachment.object] = _compose(after, attachment.transform)
+        return moved
+
+    def project(
+        self, plan: PlanResult, *, snapshot: SceneSnapshot | PredictedSnapshot
+    ) -> PlanProjection:
+        """Where the successful ``plan``, made on ``snapshot``, would leave the robot if it
+        ran: ``snapshot`` with the plan's joints where the command ``execute`` compiles for
+        this runtime ends, and every held object its hand moves carried with it. A
+        planning state, with ``snapshot``'s stamp: nothing is accepted, timed, or
+        validated. A plan made on it continues only from an execution of exactly
+        ``plan`` (``continuation(..., projection=, source=)``)."""
+        self._require("project")
+        if not isinstance(plan, PlanResult) or not plan.succeeded:
+            raise ValidationError(
+                "unsuccessful_plan", "only a successful plan is projected", path="plan"
+            )
+        basis = _state(snapshot)
+        if not isinstance(basis, SceneSnapshot) or basis.fingerprint() != plan.request.snapshot:
+            raise ValidationError(
+                "snapshot_mismatch", "the plan was made on another snapshot", path="snapshot"
+            )
+        check_planned_in(plan.request, self._description, basis)
+        # The end of the command execute would submit: the trajectory sampled for this
+        # runtime's contract, or the path's end for a path-only plan.
+        if plan.trajectory is not None:
+            command = plan.trajectory.sample(self.trajectory_contract.period_ns)
+            joints, end = command.joints, command.positions[-1]
+        else:
+            assert plan.path is not None  # a successful plan has one or the other
+            joints, end = plan.path.joints, plan.path.waypoints[-1]
+        ends = dict(zip(joints, end, strict=True))
+        positions = tuple(
+            ends.get(j, v) for j, v in zip(basis.joints, basis.positions, strict=True)
+        )
+        moved = self._carried(basis, plan.request.group, joints, end)
+        objects = tuple(
+            replace(o, pose=moved[o.name]) if o.name in moved else o for o in basis.objects
+        )
+        state = replace(basis, positions=positions, objects=objects)
+        projection = PlanProjection(state=state, plan=fingerprint(plan), basis=basis.fingerprint())
+        self._projected[state.fingerprint()] = projection
+        return projection
+
     def continuation(
-        self, plan: PlanResult, *, planner: Planner, prediction: PredictedSnapshot
+        self,
+        plan: PlanResult,
+        *,
+        planner: Planner,
+        prediction: PredictedSnapshot | None = None,
+        projection: PlanProjection | None = None,
+        source: Execution | None = None,
     ) -> Continuation:
-        """Bind a successful plan made on ``prediction`` (by this context) to it and to
-        the planner that made it, for ``execute_continuation``."""
+        """Bind a successful plan to what it was planned on and to the planner that made
+        it, for ``execute_continuation``: either ``prediction``, a prediction this context
+        made, or ``projection`` and ``source``.
+
+        With ``projection``, ``source`` must be this particular execution of exactly the
+        projected plan: submitted by ``execute`` from that plan, with the projection's
+        snapshot (``unprojected_source`` otherwise). The plan must have been made on the
+        projection, which must be this context's and unchanged (``unknown_projection``),
+        and equal, but for its stamp, to the prediction of ``source``, which this makes."""
+        if projection is not None or source is not None:
+            if prediction is not None or projection is None or source is None:
+                raise ValidationError(
+                    "wrong_type",
+                    "bind either a prediction, or a projection with its source execution",
+                    path="projection",
+                )
+            prediction = self._bind(plan, projection, source)
         if not isinstance(prediction, PredictedSnapshot):
             raise ValidationError(
                 "wrong_type", "prediction must be a PredictedSnapshot", path="prediction"
@@ -888,12 +970,52 @@ class RobotContext:
             raise ValidationError(
                 "unsuccessful_plan", "only a successful plan continues", path="plan"
             )
-        if plan.request.snapshot != fingerprint_:
+        if projection is None:
+            if plan.request.snapshot != fingerprint_:
+                raise ValidationError(
+                    "snapshot_mismatch", "the plan was made on another snapshot", path="plan"
+                )
+            check_planned_in(plan.request, self._description, prediction.state)
+        return Continuation(plan=plan, planner=planner, prediction=prediction)
+
+    def _bind(
+        self, plan: PlanResult, projection: PlanProjection, source: Execution
+    ) -> PredictedSnapshot:
+        """The prediction of ``source`` that ``plan``, made on ``projection``, continues
+        from; see ``continuation``."""
+        if (
+            not isinstance(projection, PlanProjection)
+            or self._projected.get(projection.state.fingerprint()) != projection
+        ):
+            raise ValidationError(
+                "unknown_projection",
+                "this context did not make that projection",
+                path="projection",
+            )
+        self._check_own(source)
+        if self._ran.get(source.id) != (projection.plan, projection.basis):
+            raise ValidationError(
+                "unprojected_source",
+                f"{source.id} did not run the projected plan from its snapshot",
+                path="source",
+            )
+        if not isinstance(plan, PlanResult) or not plan.succeeded:
+            raise ValidationError(
+                "unsuccessful_plan", "only a successful plan continues", path="plan"
+            )
+        if plan.request.snapshot != projection.state.fingerprint():
             raise ValidationError(
                 "snapshot_mismatch", "the plan was made on another snapshot", path="plan"
             )
-        check_planned_in(plan.request, self._description, prediction.state)
-        return Continuation(plan=plan, planner=planner, prediction=prediction)
+        check_planned_in(plan.request, self._description, projection.state)
+        prediction = self.predict(source)
+        if replace(prediction.state, stamp=projection.state.stamp) != projection.state:
+            raise ValidationError(
+                "projection_mismatch",
+                f"{source.id} is predicted to end elsewhere than the projection",
+                path="projection",
+            )
+        return prediction
 
     def execute_continuation(
         self,
@@ -1166,6 +1288,12 @@ class RobotContext:
                 "the plan was made on a prediction: run it with execute_continuation",
                 path="plan",
             )
+        if plan.request.snapshot in self._projected:
+            raise ValidationError(
+                "projected_plan",
+                "the plan was made on a projection: run it with execute_continuation",
+                path="plan",
+            )
         contract = self.trajectory_contract
         snapshot = self._captured.get(plan.request.snapshot)
         if snapshot is None:
@@ -1188,13 +1316,15 @@ class RobotContext:
             contract=contract,
             processor=processor,
         )
-        return self._submit(
+        execution = self._submit(
             prepared.command,
             source=source,
             timeout_ns=timeout_ns,
             snapshot=snapshot,
             prepared=prepared,
         )
+        self._ran[execution.id] = (fingerprint(plan), snapshot.fingerprint())
+        return execution
 
     def _submit(
         self,
