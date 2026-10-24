@@ -339,6 +339,22 @@ What alternatives exist (arms, goals, containers) is the caller's choice.
 Execute it with `ctx.execute(candidate, planner=attempt.planner)`. `plan_portfolio` is
 the one-alternative case on the same engine, with its report unchanged.
 
+**Planning while the robot moves.** `plan_alternatives` blocks the context's thread until
+every attempt has ended. `ctx.start_alternatives(...)` (or `ssrobot.start_alternatives`)
+takes the same arguments and builds every scene at once, but leaves the planning to the
+caller, so the context can keep stepping a running motion meanwhile. It returns an
+`AlternativesRun`:
+- `advance()` never waits. It starts attempts on free workers, checks `abort`, and
+  validates, on the context's thread, every attempt that has finished. It returns True
+  once the run is `done`.
+- `planning` holds the plans running now, for a caller that waits on them.
+- `cancel()` stops the run: attempts not started never start, and running planners are
+  told to stop (`aborted`).
+- `close()` cancels an unfinished run, waits for its planners, and releases its scenes.
+  Both may be called again.
+- `result` is exactly what `plan_alternatives` returns: `plan_alternatives` is this run,
+  advanced until it is done.
+
 ## Interleaving planning and execution
 
 A robot running a sequence of motions can plan motion k+1 while motion k runs, and execute
@@ -474,6 +490,7 @@ Every failed check is named in one `execution_unready` error. A successful
 | `artifacts/test_a_portfolio_selects_deterministically_from_isolated_attempts/` | The example arm's pedestal swing planned by a portfolio of eight attempts, each with its own planner: three seeded sscbirrt; one that corrupts its own scene and plans through the pedestal (`invalid` on a fresh scene); one that negotiation refuses; a path-only planner with a counting processor; one whose processor cannot time (`failed`, alone); and one whose validator answers about another motion (`failed`, `validation_mismatch`). `portfolio.json` is the report, byte-identical with one worker and with three; the path-only attempt, the highest-priority valid one, is selected. `isolation.json` shows that the live context is unchanged, that every candidate is still valid on a fresh scene, that the processor ran once, and that the executed command is exactly the selected candidate's. |
 | `artifacts/test_alternatives_race_two_arms_and_select_deterministically/` | Two arms of one MuJoCo robot (the conformance robot with colliding geoms) as alternatives, each a configuration goal planned by its own sscbirrt. `alternatives.json` holds the report of every run whose outcomes are fixed, and is byte-identical on a second run: equal priorities with the nearer right-arm goal selected (identical with one worker and two; the candidate executes and reaches its goal); a preferred right arm whose goal a cube blocks, so the left is selected; a preferred feasible right arm with the left `not_started` on one worker; and an aborted run. `diagnostics.json` holds what depends on scheduling: the same preference on two workers, where the left is spared, stopped, or finished while the selection is the same, and when each attempt planned. |
 | `artifacts/test_alternatives_hold_their_own_inputs_and_classify_outranked_attempts/inputs_and_outranked.json` | The caller's attempts lists, changed after planning, change neither the selection nor the report (#184). A lower priority told to stop that raises an expected error is `canceled_by_priority`; one that raises a programming error propagates it. |
+| `artifacts/test_alternatives_plan_passively_while_the_robot_moves/passive.json` | A passive run (#191). While the left arm executes a motion, the context steps every tick and advances `ctx.start_alternatives`, and the run plans meanwhile. Its report is byte-identical to `plan_alternatives` on the same alternatives, and selects the right arm. A run of planners that only wait to be stopped is canceled twice and closed twice: it ends `aborted`, and no worker thread is left. |
 | `artifacts/test_an_alternatives_report_cannot_claim_an_impossible_outcome/refusals.json` | Decoding refuses a forged selection, a lower priority stopped without `cancel_lower` or without a strictly higher valid priority, a `not_started` with no reason, and a timeout. |
 | `artifacts/test_a_plan_made_on_a_prediction_continues_on_arrival/continuation.json` | The right arm of the colliding two-arm robot moves to A. Its move on to B is planned on `ctx.predict` of that motion, on a worker, while the context steps every tick of the source motion. Ordinary `execute` refuses the plan (`predicted_plan`); planned on the context's thread it is identical. Once the arm is at rest at A, about 5 mm (rad) from the predicted start, the continuation is rebased by sscbirrt (a straight bridge, retimed), validated, and executed to B. From fresh runs, each refusal submits nothing: a canceled source, an arm still moving, an arrival outside a tight tolerance, a block attached after the prediction, and a planner that cannot rebase. A second run is byte-identical. `timeline.json` holds the wall-clock overlap, apart. |
 | `artifacts/test_continuations_check_what_they_reconcile/reconciliation.json` | What a continuation refuses to take on trust (#185). NaN, negative and infinite tolerances are refused before anything is compared, and nothing is submitted. A continuous joint arriving across +pi, reported as -2.98 a full turn from the predicted 3.3, continues the short way round: its bridge is 8e-11, not a full turn. A block turned 0.3 rad in place is an `unpredicted_scene_change` (`object block rotation`). A block that left the grasp is not carried by the prediction. A source accepted 0.25 s after its snapshot is predicted to end its duration after that. The default arrival tolerance is the runtime's declared goal tolerance (0.02). A bridge through an obstacle is `rebase_failed`, with nothing submitted. A velocity reading from before the arrival snapshot doesn't establish rest (`rest_unobservable`). |

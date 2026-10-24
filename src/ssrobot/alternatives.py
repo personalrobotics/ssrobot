@@ -28,6 +28,7 @@ from __future__ import annotations
 import enum
 import math
 from collections.abc import Callable, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
@@ -43,7 +44,8 @@ from ssrobot.portfolio import (
     _check_fingerprint,
     _Ended,
     _Job,
-    _run_jobs,
+    _JobRun,
+    _Run,
 )
 from ssrobot.scene import SceneSnapshot
 
@@ -324,45 +326,147 @@ def plan_alternatives(
     alternative priority first, then in declaration order, on at most ``workers``
     threads; with more than one, no two attempts may share a planner instance
     (``shared_planner``). ``abort`` stops the run: attempts not started never start,
-    running planners receive the abort signal, and the report says so."""
-    # Canonical copies with immutable attempts: the caller's sequences may change after
-    # planning, and the selection must still name the attempt that was validated.
-    alternatives = tuple(replace(a, attempts=tuple(a.attempts)) for a in alternatives)
-    attempts = [a.attempts for a in alternatives]
-    total = sum(len(a) for a in attempts)
-    if not alternatives or total > MAX_ATTEMPTS or any(not a for a in attempts):
-        raise ValidationError(
-            "out_of_limits",
-            f"at least one alternative, each with an attempt, at most {MAX_ATTEMPTS} in all",
+    running planners receive the abort signal, and the report says so.
+
+    This blocks until every attempt has ended: it is ``start_alternatives``, advanced
+    until it is done."""
+    run = start_alternatives(
+        ctx,
+        alternatives,
+        snapshot=snapshot,
+        workers=workers,
+        cancel_lower=cancel_lower,
+        abort=abort,
+    )
+    try:
+        while not run.advance():
+            wait(run.planning, timeout=0.01, return_when=FIRST_COMPLETED)
+    finally:
+        run.close()
+    return run.result
+
+
+class AlternativesRun:
+    """A ``plan_alternatives`` run that the caller advances, from ``start_alternatives``,
+    so the context can keep stepping while it plans.
+
+    ``advance`` never waits: it starts attempts on free workers, checks ``abort``, and
+    validates, on the context's thread, every attempt that has finished. ``planning`` is
+    the plans running now, for a caller that waits on them. ``cancel`` stops the run:
+    attempts not started never start, and running planners are told to stop
+    (``aborted``). ``close`` cancels an unfinished run, waits for its planners, and
+    releases its scenes. Both may be called again. ``result`` is what
+    ``plan_alternatives`` returns, once ``done``."""
+
+    def __init__(
+        self,
+        ctx: RobotContext,
+        alternatives: Sequence[Alternative],
+        *,
+        snapshot: SceneSnapshot,
+        workers: int = 1,
+        cancel_lower: bool = True,
+        abort: Callable[[], bool] | None = None,
+    ) -> None:
+        # Canonical copies with immutable attempts: the caller's sequences may change after
+        # planning, and the selection must still name the attempt that was validated.
+        alternatives = tuple(replace(a, attempts=tuple(a.attempts)) for a in alternatives)
+        attempts = [a.attempts for a in alternatives]
+        total = sum(len(a) for a in attempts)
+        if not alternatives or total > MAX_ATTEMPTS or any(not a for a in attempts):
+            raise ValidationError(
+                "out_of_limits",
+                f"at least one alternative, each with an attempt, at most {MAX_ATTEMPTS} in all",
+                path="alternatives",
+            )
+        for i, alt in enumerate(alternatives):
+            if alt.label:
+                check_name(alt.label, path=f"alternatives[{i}].label")
+        order = sorted(range(len(alternatives)), key=lambda i: (-alternatives[i].priority, i))
+        jobs = [
+            _Job(
+                i,
+                j,
+                alternatives[i].priority,
+                alternatives[i].request
+                if a.seed is None
+                else replace(alternatives[i].request, seed=a.seed),
+                a,
+            )
+            for i in order
+            for j, a in enumerate(attempts[i])
+        ]
+        run = _JobRun(
+            ctx,
+            snapshot,
+            jobs,
+            workers=workers,
+            timeout_s=None,
+            abort=abort,
+            cutoff=cancel_lower,
             path="alternatives",
         )
-    for i, alt in enumerate(alternatives):
-        if alt.label:
-            check_name(alt.label, path=f"alternatives[{i}].label")
-    order = sorted(range(len(alternatives)), key=lambda i: (-alternatives[i].priority, i))
-    jobs = [
-        _Job(
-            i,
-            j,
-            alternatives[i].priority,
-            alternatives[i].request
-            if a.seed is None
-            else replace(alternatives[i].request, seed=a.seed),
-            a,
-        )
-        for i in order
-        for j, a in enumerate(attempts[i])
-    ]
-    run = _run_jobs(
+        self._run = run
+        self._alternatives = alternatives
+        self._snapshot = snapshot
+        self._cancel_lower = cancel_lower
+        self._result: Alternatives | None = None
+
+    @property
+    def done(self) -> bool:
+        return self._run.done
+
+    @property
+    def planning(self) -> tuple[Future[PlanResult], ...]:
+        return self._run.planning
+
+    def advance(self) -> bool:
+        return self._run.advance()
+
+    def cancel(self) -> None:
+        self._run.cancel()
+
+    def close(self) -> None:
+        self._run.close()
+
+    @property
+    def result(self) -> Alternatives:
+        if self._result is None:
+            self._result = _assembled(
+                self._run.result, self._alternatives, self._snapshot, self._cancel_lower
+            )
+        return self._result
+
+
+def start_alternatives(
+    ctx: RobotContext,
+    alternatives: Sequence[Alternative],
+    *,
+    snapshot: SceneSnapshot,
+    workers: int = 1,
+    cancel_lower: bool = True,
+    abort: Callable[[], bool] | None = None,
+) -> AlternativesRun:
+    """Start ``plan_alternatives``'s run without waiting for it: every scene is built,
+    and every request checked, here; nothing plans until the run is advanced."""
+    return AlternativesRun(
         ctx,
-        snapshot,
-        jobs,
+        alternatives,
+        snapshot=snapshot,
         workers=workers,
-        timeout_s=None,
+        cancel_lower=cancel_lower,
         abort=abort,
-        cutoff=cancel_lower,
-        path="alternatives",
     )
+
+
+def _assembled(
+    run: _Run,
+    alternatives: tuple[Alternative, ...],
+    snapshot: SceneSnapshot,
+    cancel_lower: bool,
+) -> Alternatives:
+    """The report, results, and selection of a finished run."""
+    attempts = [a.attempts for a in alternatives]
     ends = {(e.job.alternative, e.job.attempt): e for e in run.ends}
     records = tuple(
         AlternativeRecord(

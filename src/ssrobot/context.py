@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from types import TracebackType
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from ssrobot._wire import fingerprint
 from ssrobot.commands import (
@@ -102,6 +102,9 @@ from ssrobot.validation import (
     check_observation,
     check_request,
 )
+
+if TYPE_CHECKING:
+    from ssrobot.alternatives import Alternative, AlternativesRun
 
 
 class ContextState(enum.StrEnum):
@@ -730,6 +733,28 @@ class RobotContext:
         check_planned_in(request, self._description, state)
         negotiate(request, planner.capabilities(request), processor)
         return self.planning_scene(state, request.group, clearance_m=request.clearance_m)
+
+    def start_alternatives(
+        self,
+        alternatives: Sequence[Alternative],
+        *,
+        snapshot: SceneSnapshot,
+        workers: int = 1,
+        cancel_lower: bool = True,
+        abort: Callable[[], bool] | None = None,
+    ) -> AlternativesRun:
+        """``ssrobot.start_alternatives`` in this context: ``plan_alternatives``'s run,
+        advanced by the caller so the context can keep stepping while it plans."""
+        from ssrobot.alternatives import start_alternatives
+
+        return start_alternatives(
+            self,
+            alternatives,
+            snapshot=snapshot,
+            workers=workers,
+            cancel_lower=cancel_lower,
+            abort=abort,
+        )
 
     # -- Interleaving planning and execution -----------------------------------------
 

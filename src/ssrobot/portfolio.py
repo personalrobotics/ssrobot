@@ -391,6 +391,201 @@ class _Run:
     stopped: StopReason | None
 
 
+class _JobRun:
+    """Every job, each in its own scene of ``snapshot``, on at most ``workers`` threads,
+    in the order given (the caller's scheduling order), advanced by the caller. Each
+    success is validated on a fresh scene, on the caller's thread, as it arrives. With
+    ``cutoff``, a valid job cancels work of a strictly lower rank: not started, it never
+    starts; running, it is told to stop.
+
+    Negotiation and every scene are built here, on the context's thread, before anything
+    runs. ``advance`` never waits: it hands queued jobs to free workers, then validates
+    what has finished. ``cancel`` stops queued and running work (``aborted``); ``close``
+    also waits for the workers and releases the scenes. Both may be called again."""
+
+    def __init__(
+        self,
+        ctx: RobotContext,
+        snapshot: SceneSnapshot,
+        jobs: Sequence[_Job],
+        *,
+        workers: int,
+        timeout_s: float | None,
+        abort: Callable[[], bool] | None,
+        cutoff: bool,
+        path: str,
+    ) -> None:
+        if not 1 <= workers <= len(jobs):
+            raise ValidationError(
+                "out_of_limits", f"workers must be between 1 and the {path}", path="workers"
+            )
+        if workers > 1 and len({id(j.planner) for j in jobs}) != len(jobs):
+            raise ValidationError(
+                "shared_planner",
+                "attempts that may run at once need their own planner instances",
+                path=path,
+            )
+        if not isinstance(snapshot, SceneSnapshot):
+            raise ValidationError("wrong_type", "snapshot must be a SceneSnapshot", path="snapshot")
+        for job in jobs:
+            check_planned_in(job.request, ctx.description, snapshot)
+        self._ctx, self._snapshot, self._jobs = ctx, snapshot, tuple(jobs)
+        self._workers, self._abort, self._cutoff = workers, abort, cutoff
+        self._ends = [_End(job) for job in jobs]
+        # Negotiate, then build every scene here: the context is not shared with workers.
+        self._scenes: dict[int, PlanningScene] = {}
+        for k, job in enumerate(jobs):
+            try:
+                negotiate(job.request, job.planner.capabilities(job.request), job.processor)
+            except SsrobotError as e:
+                self._ends[k].ended, self._ends[k].detail = _Ended.REFUSED, e.code
+                continue
+            self._scenes[k] = ctx.planning_scene(
+                snapshot, job.request.group, clearance_m=job.request.clearance_m
+            )
+        self._everything = threading.Event()
+        self._stops = {k: threading.Event() for k in self._scenes}
+        self._told: set[int] = set()  # running jobs told to stop by a higher rank's success
+        self._started = time.monotonic()
+        self._deadline = None if timeout_s is None else self._started + timeout_s
+        self._intervals: dict[int, tuple[float, float]] = {}
+        self._stopped: StopReason | None = None
+        # Jobs are handed to the pool only as workers free up, and only after every
+        # finished job has been validated: a job that a higher rank outranks while it
+        # waits is never started, the same with one worker however fast the pool is.
+        self._queue = [k for k in range(len(jobs)) if k in self._scenes]
+        self._pool: ThreadPoolExecutor | None = ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="ssrobot-portfolio"
+        )
+        self._running: dict[Future[PlanResult], int] = {}
+        self._result: _Run | None = None
+
+    @property
+    def done(self) -> bool:
+        return self._result is not None
+
+    @property
+    def planning(self) -> tuple[Future[PlanResult], ...]:
+        """The plans running now."""
+        return tuple(self._running)
+
+    @property
+    def result(self) -> _Run:
+        if self._result is None:
+            raise ValidationError("not_done", "the run has not finished", path="result")
+        return self._result
+
+    def _plan(self, k: int) -> PlanResult:
+        begin = time.monotonic() - self._started
+        try:
+            job = self._jobs[k]
+            result = job.planner.plan(
+                job.request,
+                self._scenes[k],
+                abort=lambda: self._everything.is_set() or self._stops[k].is_set(),
+            )
+            if not isinstance(result, PlanResult):
+                raise ValidationError("planner_contract", f"the planner answered {result!r}")
+            check_result(job.request, result)
+            return result
+        finally:
+            self._intervals[k] = (begin, time.monotonic() - self._started)
+
+    def advance(self) -> bool:
+        """Start queued jobs on free workers, check the deadline and abort, and validate
+        every job that has finished; never waits. True once every job has ended."""
+        if self._result is not None:
+            return True
+        try:
+            # In the order of the loop it replaces: start queued jobs on free workers (a
+            # worker frees only once its job's result is validated), then check the
+            # deadline and abort, then validate what has finished.
+            if self._stopped is None:
+                assert self._pool is not None
+                while self._queue and len(self._running) < self._workers:
+                    k = self._queue.pop(0)
+                    self._running[self._pool.submit(self._plan, k)] = k
+            if self._stopped is None:
+                if self._deadline is not None and time.monotonic() >= self._deadline:
+                    self._stop(StopReason.TIMEOUT)
+                elif self._abort is not None and self._abort():
+                    self._stop(StopReason.ABORTED)
+            for future in [f for f in self._running if f.done()]:
+                self._finished(self._running.pop(future), future)
+            if not self._queue and not self._running:
+                self._finish()
+        except BaseException:
+            self._shutdown()
+            raise
+        return self._result is not None
+
+    def _stop(self, reason: StopReason) -> None:
+        self._stopped = reason
+        self._everything.set()
+        for k in self._queue:
+            self._ends[k].ended, self._ends[k].detail = _Ended.NOT_STARTED, reason.value
+        self._queue.clear()
+
+    def _finished(self, k: int, future: Future[PlanResult]) -> None:
+        end = self._ends[k]
+        try:
+            end.raw = future.result()
+        except SsrobotError as e:
+            # Told to stop, it was outranked however it stopped: by a canceled result
+            # or by an expected error. Any other exception propagates.
+            if k in self._told:
+                end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, OUTRANKED
+            else:
+                end.ended, end.detail = _Ended.FAILED, f"{e.code}: {e.message}"
+            return
+        if k in self._told:
+            end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, OUTRANKED
+            end.status, end.result = end.raw.status, fingerprint(end.raw)
+            return
+        _validate(end, self._ctx, self._snapshot)
+        if self._cutoff and end.ended is _Ended.VALID:
+            rank = self._jobs[k].rank
+            for other in [q for q in self._queue if self._jobs[q].rank < rank]:
+                self._queue.remove(other)
+                self._ends[other].ended, self._ends[other].detail = _Ended.NOT_STARTED, OUTRANKED
+            for other in self._running.values():
+                if self._jobs[other].rank < rank:
+                    self._told.add(other)
+                    self._stops[other].set()
+
+    def _finish(self) -> None:
+        self._shutdown()
+        for k, interval in self._intervals.items():
+            self._ends[k].interval_s = interval
+        self._result = _Run(ends=tuple(self._ends), stopped=self._stopped)
+
+    def _shutdown(self) -> None:
+        self._everything.set()
+        if self._pool is not None:
+            self._pool.shutdown(wait=True, cancel_futures=True)
+            self._pool = None
+        self._scenes.clear()
+
+    def cancel(self) -> None:
+        """Stop the run: queued jobs never start, running planners are told to stop
+        (``aborted``). Nothing is waited for; may be called again."""
+        if self._result is None and self._stopped is None:
+            self._stop(StopReason.ABORTED)
+
+    def close(self) -> None:
+        """Cancel the run if it has not finished, wait for every running planner to stop,
+        record how each ended, and release the scenes; may be called again."""
+        if self._result is not None:
+            return
+        self.cancel()
+        try:
+            for future in list(self._running):
+                wait([future])
+                self._finished(self._running.pop(future), future)
+        finally:
+            self._finish()
+
+
 def _run_jobs(
     ctx: RobotContext,
     snapshot: SceneSnapshot,
@@ -402,118 +597,21 @@ def _run_jobs(
     cutoff: bool,
     path: str,
 ) -> _Run:
-    """Run every job, each in its own scene of ``snapshot``, on at most ``workers``
-    threads, in the order given (the caller's scheduling order). Each success is
-    validated on a fresh scene as it arrives. With ``cutoff``, a valid job cancels work
-    of a strictly lower rank: not started, it never starts; running, it is told to stop."""
-    if not 1 <= workers <= len(jobs):
-        raise ValidationError(
-            "out_of_limits", f"workers must be between 1 and the {path}", path="workers"
-        )
-    if workers > 1 and len({id(j.planner) for j in jobs}) != len(jobs):
-        raise ValidationError(
-            "shared_planner",
-            "attempts that may run at once need their own planner instances",
-            path=path,
-        )
-    if not isinstance(snapshot, SceneSnapshot):
-        raise ValidationError("wrong_type", "snapshot must be a SceneSnapshot", path="snapshot")
-    for job in jobs:
-        check_planned_in(job.request, ctx.description, snapshot)
-
-    ends = [_End(job) for job in jobs]
-    # Negotiate, then build every scene here: the context is not shared with workers.
-    scenes: dict[int, PlanningScene] = {}
-    for k, job in enumerate(jobs):
-        try:
-            negotiate(job.request, job.planner.capabilities(job.request), job.processor)
-        except SsrobotError as e:
-            ends[k].ended, ends[k].detail = _Ended.REFUSED, e.code
-            continue
-        scenes[k] = ctx.planning_scene(
-            snapshot, job.request.group, clearance_m=job.request.clearance_m
-        )
-
-    everything = threading.Event()
-    stops = {k: threading.Event() for k in scenes}
-    told: set[int] = set()  # running jobs told to stop by a higher rank's success
-    started = time.monotonic()
-    deadline = None if timeout_s is None else started + timeout_s
-    intervals: dict[int, tuple[float, float]] = {}
-
-    def run(k: int) -> PlanResult:
-        begin = time.monotonic() - started
-        try:
-            job = jobs[k]
-            result = job.planner.plan(
-                job.request,
-                scenes[k],
-                abort=lambda: everything.is_set() or stops[k].is_set(),
-            )
-            if not isinstance(result, PlanResult):
-                raise ValidationError("planner_contract", f"the planner answered {result!r}")
-            check_result(job.request, result)
-            return result
-        finally:
-            intervals[k] = (begin, time.monotonic() - started)
-
-    stopped: StopReason | None = None
-    # Jobs are handed to the pool only as workers free up, and only after every finished
-    # job has been validated: a job that a higher rank outranks while it waits is never
-    # started, the same with one worker however fast the pool is.
-    queue = [k for k in range(len(jobs)) if k in scenes]
-    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ssrobot-portfolio")
-    running: dict[Future[PlanResult], int] = {}
-    try:
-        while queue or running:
-            if stopped is None:
-                while queue and len(running) < workers:
-                    k = queue.pop(0)
-                    running[pool.submit(run, k)] = k
-            done, _ = wait(set(running), timeout=0.01, return_when=FIRST_COMPLETED)
-            if stopped is None and deadline is not None and time.monotonic() >= deadline:
-                stopped = StopReason.TIMEOUT
-            if stopped is None and abort is not None and abort():
-                stopped = StopReason.ABORTED
-            if stopped is not None and not everything.is_set():
-                everything.set()
-                for k in queue:
-                    ends[k].ended, ends[k].detail = _Ended.NOT_STARTED, stopped.value
-                queue.clear()
-            for future in done:
-                k = running.pop(future)
-                end = ends[k]
-                try:
-                    end.raw = future.result()
-                except SsrobotError as e:
-                    # Told to stop, it was outranked however it stopped: by a canceled
-                    # result or by an expected error. Any other exception propagates.
-                    if k in told:
-                        end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, OUTRANKED
-                    else:
-                        end.ended, end.detail = _Ended.FAILED, f"{e.code}: {e.message}"
-                    continue
-                if k in told:
-                    end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, OUTRANKED
-                    end.status, end.result = end.raw.status, fingerprint(end.raw)
-                    continue
-                _validate(end, ctx, snapshot)
-                if cutoff and end.ended is _Ended.VALID:
-                    rank = jobs[k].rank
-                    for other in [q for q in queue if jobs[q].rank < rank]:
-                        queue.remove(other)
-                        ends[other].ended, ends[other].detail = _Ended.NOT_STARTED, OUTRANKED
-                    for other in running.values():
-                        if jobs[other].rank < rank:
-                            told.add(other)
-                            stops[other].set()
-    finally:
-        everything.set()
-        pool.shutdown(wait=True, cancel_futures=True)
-        scenes.clear()
-    for k, interval in intervals.items():
-        ends[k].interval_s = interval
-    return _Run(ends=tuple(ends), stopped=stopped)
+    """``_JobRun``, advanced until it ends, waiting at most 10 ms at a time for a plan to
+    finish so that the deadline and ``abort`` are checked in between."""
+    run = _JobRun(
+        ctx,
+        snapshot,
+        jobs,
+        workers=workers,
+        timeout_s=timeout_s,
+        abort=abort,
+        cutoff=cutoff,
+        path=path,
+    )
+    while not run.advance():
+        wait(run.planning, timeout=0.01, return_when=FIRST_COMPLETED)
+    return run.result
 
 
 def _validate(end: _End, ctx: RobotContext, snapshot: SceneSnapshot) -> None:

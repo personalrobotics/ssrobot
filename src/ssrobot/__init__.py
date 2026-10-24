@@ -16,7 +16,9 @@ from ssrobot.alternatives import (
     AlternativeRecord,
     Alternatives,
     AlternativesReport,
+    AlternativesRun,
     plan_alternatives,
+    start_alternatives,
 )
 from ssrobot.bundle import Bundle, BundleFile, RunBundle, open_bundle, write_bundle
 from ssrobot.commands import (
@@ -171,6 +173,7 @@ __all__ = [
     "AlternativeRecord",
     "Alternatives",
     "AlternativesReport",
+    "AlternativesRun",
     "AppliedCommand",
     "ArrayValue",
     "AssetStore",
@@ -319,5 +322,6 @@ __all__ = [
     "plan_portfolio",
     "prepare",
     "read_trace",
+    "start_alternatives",
     "write_bundle",
 ]
