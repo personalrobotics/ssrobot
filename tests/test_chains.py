@@ -13,6 +13,10 @@ Its validator is the honest one.
   same.
 - ``liar_preferred``: the right preferred (priority 1), lying on every seed: it never
   becomes feasible, so the left is selected.
+- ``disconnected``: the right preferred, its onward stage a valid motion on its own but
+  planned from the start instead of the reach's projection: refused on every seed
+  (``disconnected_stage``), so the left is selected.
+Every stage records the projected state it was built from, the previous stage's own.
 
 The evidence is ``chains.json``: each scenario's report, the selected chain's stages, and
 the checked invariants; a second run gives the same bytes. Reproduce with
@@ -101,6 +105,7 @@ def _chain(
     priority: int,
     seeds: Sequence[int],
     onward_planner: Any,
+    disconnected: bool = False,
 ) -> Chain:
     d = ctx.description
     first, then = GOALS[arm]
@@ -125,6 +130,10 @@ def _chain(
 
     def onward(previous: StageResult | None) -> StageRequest:
         assert previous is not None
+        if disconnected:  # a valid motion on its own, but from the start, not the reach
+            return StageRequest(
+                snapshot=basis, request=request(basis, then, 0), planner=onward_planner
+            )
         projection = previous.projection
         seed = previous.plan.request.seed
         return StageRequest(
@@ -140,7 +149,12 @@ def _chain(
 
 
 def _scenario(
-    tmp: Path, *, liar_priority: int, lies: Sequence[int], workers: int
+    tmp: Path,
+    *,
+    liar_priority: int,
+    lies: Sequence[int],
+    workers: int,
+    disconnected: bool = False,
 ) -> dict[str, Any]:
     package_root, scene = colliding_bimanual(tmp / "cube", blocked=CUBE)
     twin_root, twin_scene = colliding_bimanual(tmp / "twin")
@@ -154,7 +168,14 @@ def _scenario(
         d = package.description
         liar = _Liar(CBiRRT(d), _twin_scene(twin), lies)
         chains = [
-            _chain(ctx, "right_arm", priority=liar_priority, seeds=(0, 1, 2), onward_planner=liar),
+            _chain(
+                ctx,
+                "right_arm",
+                priority=liar_priority,
+                seeds=(0, 1, 2),
+                onward_planner=liar,
+                disconnected=disconnected,
+            ),
             _chain(ctx, "left_arm", priority=0, seeds=(0,), onward_planner=CBiRRT(d)),
         ]
         snapshot = ctx.snapshot()
@@ -185,6 +206,9 @@ def test_chains_race_staged_prefixes_and_select_deterministically(
             "equal_1_worker": _scenario(tmp / "e1", liar_priority=0, lies=(0,), workers=1),
             "equal_2_workers": _scenario(tmp / "e2", liar_priority=0, lies=(0,), workers=2),
             "liar_preferred": _scenario(tmp / "lp", liar_priority=1, lies=(0, 1, 2), workers=1),
+            "disconnected": _scenario(
+                tmp / "dc", liar_priority=1, lies=(), workers=1, disconnected=True
+            ),
         }
 
     first = evidence(tmp_path / "first")
@@ -211,6 +235,21 @@ def test_chains_race_staged_prefixes_and_select_deterministically(
     assert equal["selected"]["onward_on_the_reach_projection"]
     # Workers change latency, never the selection or the selected chain's evidence.
     assert equal["selected"] == first["equal_2_workers"]["selected"]
+
+    # Each stage records the projection it was built from: the reach's own.
+    for attempt in right["attempts"]:
+        reach, onward = attempt["stages"]
+        assert reach["after"] is None and reach["snapshot"] == equal["report"]["snapshot"]
+        assert onward["after"] == reach["projection"] == onward["snapshot"]
+
+    # A valid motion from the start is not the reach's continuation: refused, so the
+    # preferred right arm is never feasible, and the left is selected.
+    disconnected = first["disconnected"]
+    for attempt in disconnected["report"]["chains"][0]["attempts"]:
+        onward = attempt["stages"][1]
+        assert onward["outcome"] == "refused", onward
+        assert onward["detail"].startswith("disconnected_stage"), onward
+    assert disconnected["selected"]["label"] == "left_arm"
 
     preferred = first["liar_preferred"]
     assert preferred["report"]["chains"][0]["chosen"] is None
@@ -242,6 +281,15 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
     def cost_a_failed_seed(d: dict[str, Any]) -> None:
         d["chains"][0]["cost_s"] += d["chains"][0]["attempts"][0]["stages"][0]["duration_s"]
 
+    def hide_a_feasible_seed(d: dict[str, Any]) -> None:
+        right = d["chains"][0]
+        right["attempts"][1]["feasible"], right["attempts"][1]["duration_s"] = False, None
+        right["chosen"], right["cost_s"] = None, None
+        d["selected"] = 1
+
+    def onward_not_from_the_reach(d: dict[str, Any]) -> None:
+        d["chains"][0]["attempts"][1]["stages"][1]["after"] = "0" * 64
+
     def feasible_without_every_stage(d: dict[str, Any]) -> None:
         a = d["chains"][0]["attempts"][0]
         a["stages"] = a["stages"][:1]
@@ -252,6 +300,8 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
         ("chosen_not_the_first_feasible_seed", choose_a_later_seed),
         ("cost_counts_a_failed_seed", cost_a_failed_seed),
         ("feasible_without_every_stage", feasible_without_every_stage),
+        ("a_feasible_seed_hidden", hide_a_feasible_seed),
+        ("onward_not_from_the_reach", onward_not_from_the_reach),
     ):
         forge(name, change)
     (artifacts / "refusals.json").write_text(json.dumps(forged, indent=2) + "\n")
@@ -260,4 +310,6 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
         "chosen_not_the_first_feasible_seed": "inconsistent_outcome",
         "cost_counts_a_failed_seed": "inconsistent_outcome",
         "feasible_without_every_stage": "inconsistent_outcome",
+        "a_feasible_seed_hidden": "inconsistent_outcome",
+        "onward_not_from_the_reach": "inconsistent_outcome",
     }

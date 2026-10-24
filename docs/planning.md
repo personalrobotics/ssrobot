@@ -367,9 +367,15 @@ is infeasible. `plan_chains(ctx, chains, snapshot=...)` races them, and `start_c
 - **A `Stage`** is a name and `build(previous) -> StageRequest`, which runs on the
   context's thread. `previous` is the `StageResult` of the stage before it, `None` for the
   first.
-- **A `StageRequest`** names the state the stage plans in (a snapshot, a prediction, or a
-  projection), the request built in it, the planner, and an optional processor. The
-  request must have been built in that state.
+- **A `StageRequest`** names the state the stage plans in, the request built in it, the
+  planner, and an optional processor. The request must have been built in that state.
+- **A chain is contiguous.** The first stage plans in the run's own state: the snapshot
+  or prediction it started from. Every later stage plans in the previous stage's
+  `StageResult.projection`, exactly. With `attachments`, it plans in that projection's
+  state with exactly those attachments instead, such as an object held as a grasp would
+  hold it, and nothing else changed. Any other state is refused (`disconnected_stage`).
+  Each stage records the projected state it was built from, so the report shows the
+  linkage.
 - **Validation:** each stage is planned on a worker and validated on a fresh scene of its
   own state and clearance before the next stage is built.
 - **A `StageResult`** carries the validated plan, the state it was planned in, and its
@@ -383,9 +389,15 @@ is infeasible. `plan_chains(ctx, chains, snapshot=...)` races them, and `start_c
      With `cancel_lower`, a chain's choice stops every chain of a strictly lower priority.
 - **Results:** `Chains.selected` gives the selected chain, its chosen attempt, and that
   attempt's stage results.
-- **The `ChainsReport`** records every attempt and every stage it reached, with
-  fingerprints of each stage's state, request, result and validation, and no wall-clock
-  time.
+- **The `ChainsReport`** records every attempt and every stage it reached, with no
+  wall-clock time. Each stage has fingerprints of its state, the projection it was built
+  from and its own projection, and of its request, result and validation.
+- **Decoding checks the report:**
+  - every first stage is the run's state;
+  - every later stage is built from the previous stage's projection;
+  - an attempt is feasible exactly when every stage of its chain is valid;
+  - each chain's choice is its first feasible seed;
+  - the selection follows the rule.
 - **Determinism:** the selection and the selected chain's evidence are deterministic.
   Whether stopped work never started or was stopped while running depends on scheduling,
   and isn't part of the claim.
@@ -549,8 +561,8 @@ Every failed check is named in one `execution_unready` error. A successful
 | `artifacts/test_alternatives_race_two_arms_and_select_deterministically/` | Two arms of one MuJoCo robot (the conformance robot with colliding geoms) as alternatives, each a configuration goal planned by its own sscbirrt. `alternatives.json` holds the report of every run whose outcomes are fixed, and is byte-identical on a second run: equal priorities with the nearer right-arm goal selected (identical with one worker and two; the candidate executes and reaches its goal); a preferred right arm whose goal a cube blocks, so the left is selected; a preferred feasible right arm with the left `not_started` on one worker; and an aborted run. `diagnostics.json` holds what depends on scheduling: the same preference on two workers, where the left is spared, stopped, or finished while the selection is the same, and when each attempt planned. |
 | `artifacts/test_alternatives_hold_their_own_inputs_and_classify_outranked_attempts/inputs_and_outranked.json` | The caller's attempts lists, changed after planning, change neither the selection nor the report (#184). A lower priority told to stop that raises an expected error is `canceled_by_priority`; one that raises a programming error propagates it. |
 | `artifacts/test_alternatives_plan_passively_while_the_robot_moves/passive.json` | A passive run (#191). While the left arm executes a motion, the context steps every tick and advances `ctx.start_alternatives`, and the run plans meanwhile. Its report is byte-identical to `plan_alternatives` on the same alternatives, and selects the right arm. A run of planners that only wait to be stopped is canceled twice and closed twice: it ends `aborted`, and no worker thread is left. |
-| `artifacts/test_chains_race_staged_prefixes_and_select_deterministically/chains.json` | Chains (#192) on the colliding two-arm robot: each arm reaches a first configuration, then moves onward to a second, planned on the reach's projection. A cube stands on the right arm's direct way onward, and the onward planner lies for given seeds: it plans in a twin world without the cube, and its result is well formed but collides here. At equal priority, the right's seed 0 reaches but its onward motion is invalid on a fresh scene, and seed 1 is its first feasible seed. Its cost is seed 1's stages alone, shorter than the left's chain, so the right is selected on seed 1, with seed 2 stopped. One worker and two give the same selection and selected evidence. With the liar preferred and lying on every seed, it is never feasible, and the left is selected. A second run is byte-identical. |
-| `artifacts/test_a_chains_report_cannot_claim_an_impossible_outcome/refusals.json` | Forged `ChainsReport`s refused: a selection not by the rule, a choice that is not the first feasible seed, a cost that counts a failed seed, and an attempt called feasible without every stage. |
+| `artifacts/test_chains_race_staged_prefixes_and_select_deterministically/chains.json` | Chains (#192) on the colliding two-arm robot: each arm reaches a first configuration, then moves onward to a second, planned on the reach's projection. A cube stands on the right arm's direct way onward, and the onward planner lies for given seeds: it plans in a twin world without the cube, and its result is well formed but collides here. At equal priority, the right's seed 0 reaches but its onward motion is invalid on a fresh scene, and seed 1 is its first feasible seed. Its cost is seed 1's stages alone, shorter than the left's chain, so the right is selected on seed 1, with seed 2 stopped. One worker and two give the same selection and selected evidence. With the liar preferred and lying on every seed, it is never feasible, and the left is selected. With the right preferred but its onward stage planned from the start instead of the reach's projection, that stage is refused on every seed (`disconnected_stage`), and the left is selected. Every stage records the projected state it was built from: the previous stage's own. A second run is byte-identical. |
+| `artifacts/test_a_chains_report_cannot_claim_an_impossible_outcome/refusals.json` | Forged `ChainsReport`s refused: a selection not by the rule, a choice that is not the first feasible seed, a cost that counts a failed seed, an attempt called feasible without every stage, a feasible seed hidden as infeasible, and a stage claimed built from another projection. |
 | `artifacts/test_an_alternatives_report_cannot_claim_an_impossible_outcome/refusals.json` | Decoding refuses a forged selection, a lower priority stopped without `cancel_lower` or without a strictly higher valid priority, a `not_started` with no reason, and a timeout. |
 | `artifacts/test_a_plan_made_on_a_prediction_continues_on_arrival/continuation.json` | The right arm of the colliding two-arm robot moves to A. Its move on to B is planned on `ctx.predict` of that motion, on a worker, while the context steps every tick of the source motion. Ordinary `execute` refuses the plan (`predicted_plan`); planned on the context's thread it is identical. Once the arm is at rest at A, about 5 mm (rad) from the predicted start, the continuation is rebased by sscbirrt (a straight bridge, retimed), validated, and executed to B. From fresh runs, each refusal submits nothing: a canceled source, an arm still moving, an arrival outside a tight tolerance, a block attached after the prediction, and a planner that cannot rebase. A second run is byte-identical. `timeline.json` holds the wall-clock overlap, apart. |
 | `artifacts/test_continuations_check_what_they_reconcile/reconciliation.json` | What a continuation refuses to take on trust (#185). NaN, negative and infinite tolerances are refused before anything is compared, and nothing is submitted. A continuous joint arriving across +pi, reported as -2.98 a full turn from the predicted 3.3, continues the short way round: its bridge is 8e-11, not a full turn. A block turned 0.3 rad in place is an `unpredicted_scene_change` (`object block rotation`). A block that left the grasp is not carried by the prediction. A source accepted 0.25 s after its snapshot is predicted to end its duration after that. The default arrival tolerance is the runtime's declared goal tolerance (0.02). A bridge through an obstacle is `rebase_failed`, with nothing submitted. A velocity reading from before the arrival snapshot doesn't establish rest (`rest_unobservable`). |

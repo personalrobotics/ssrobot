@@ -213,6 +213,32 @@
           ],
           "description": "Fingerprint of the state it planned in, if it was built."
         },
+        "after": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the previous stage's projected state it was built from; none for the first stage."
+        },
+        "declared": {
+          "type": "boolean",
+          "description": "Whether it planned in that state with its attachments declared anew."
+        },
+        "projection": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of its own projected state, if it is valid and the chain went on from it or ended with it."
+        },
         "request": {
           "anyOf": [
             {

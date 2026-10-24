@@ -56,7 +56,7 @@ from ssrobot.portfolio import (
     _Job,
     _JobRun,
 )
-from ssrobot.scene import SceneSnapshot
+from ssrobot.scene import Attachment, SceneSnapshot
 
 if TYPE_CHECKING:
     from ssrobot.context import RobotContext
@@ -71,14 +71,21 @@ CHAIN_SELECTION = (
 
 @dataclass(frozen=True, slots=True)
 class StageRequest:
-    """What one stage plans: in ``snapshot`` (a captured snapshot, a prediction, or a
-    projection), the ``request`` built in it, with ``planner`` and, for a planner that
-    returns only a path, ``processor``."""
+    """What one stage plans: the ``request`` built in its state, with ``planner`` and,
+    for a planner that returns only a path, ``processor``.
+
+    A chain is contiguous. The first stage's ``snapshot`` is the run's own (the snapshot
+    or prediction it started from). Every later stage's ``snapshot`` is the previous
+    stage's ``StageResult.projection``, exactly; with ``attachments``, the stage plans in
+    that projection's state with exactly these attachments instead, such as an object
+    held as a grasp would hold it, and nothing else changed. Any other state is refused
+    (``disconnected_stage``)."""
 
     snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection
     request: PlanningRequest
     planner: Planner
     processor: TrajectoryProcessor | None = None
+    attachments: tuple[Attachment, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +156,24 @@ class StageAttempt(Value):
     snapshot: str | None = field(
         default=None, metadata=meta("Fingerprint of the state it planned in, if it was built.")
     )
+    after: str | None = field(
+        default=None,
+        metadata=meta(
+            "Fingerprint of the previous stage's projected state it was built from; none for "
+            "the first stage."
+        ),
+    )
+    declared: bool = field(
+        default=False,
+        metadata=meta("Whether it planned in that state with its attachments declared anew."),
+    )
+    projection: str | None = field(
+        default=None,
+        metadata=meta(
+            "Fingerprint of its own projected state, if it is valid and the chain went on "
+            "from it or ended with it."
+        ),
+    )
     request: str | None = field(
         default=None, metadata=meta("Fingerprint of its request, if it was built.")
     )
@@ -174,8 +199,18 @@ class StageAttempt(Value):
             check_name(self.planner, path="planner")
         if self.processor is not None:
             check_name(self.processor, path="processor")
-        for name in ("snapshot", "request", "result", "validation"):
+        for name in ("snapshot", "after", "projection", "request", "result", "validation"):
             _check_fingerprint(getattr(self, name), name)
+        if self.projection is not None and self.outcome is not StageOutcome.VALID:
+            raise ValidationError(
+                "inconsistent_outcome", "only a valid stage is projected", path="projection"
+            )
+        if self.declared and self.after is None:
+            raise ValidationError(
+                "inconsistent_outcome",
+                "only a later stage declares attachments on a projection",
+                path="declared",
+            )
         o, ran = self.outcome, self.result is not None
 
         def refuse(message: str, path: str) -> ValidationError:
@@ -220,6 +255,27 @@ class ChainAttempt(Value):
             raise ValidationError("out_of_limits", "index is negative", path="index")
         if not self.stages:
             raise ValidationError("out_of_limits", "at least the first stage", path="stages")
+        first = self.stages[0]
+        if first.after is not None or first.declared:
+            raise ValidationError(
+                "inconsistent_outcome",
+                "the first stage plans in the run's state",
+                path="stages[0].after",
+            )
+        for n in range(1, len(self.stages)):
+            stage, previous = self.stages[n], self.stages[n - 1]
+            if stage.after is None or stage.after != previous.projection:
+                raise ValidationError(
+                    "inconsistent_outcome",
+                    "a later stage is built from the previous stage's projection",
+                    path=f"stages[{n}].after",
+                )
+            if stage.snapshot is not None and not stage.declared and stage.snapshot != stage.after:
+                raise ValidationError(
+                    "inconsistent_outcome",
+                    "a later stage plans in the previous stage's projection",
+                    path=f"stages[{n}].snapshot",
+                )
         reached = all(s.outcome is StageOutcome.VALID for s in self.stages[:-1])
         if not reached:
             raise ValidationError(
@@ -280,10 +336,13 @@ class ChainRecord(Value):
                     "an attempt's stages are a prefix of the chain's",
                     path=f"attempts[{i}].stages",
                 )
-            if a.feasible and len(a.stages) != len(self.stages):
+            complete = len(a.stages) == len(self.stages) and all(
+                s.outcome is StageOutcome.VALID for s in a.stages
+            )
+            if a.feasible != complete:
                 raise ValidationError(
                     "inconsistent_outcome",
-                    "a feasible attempt reached every stage",
+                    "an attempt is feasible exactly when every stage of the chain is valid",
                     path=f"attempts[{i}].feasible",
                 )
         feasible = [a.index for a in self.attempts if a.feasible]
@@ -334,6 +393,15 @@ class ChainsReport(Record):
                 raise ValidationError(
                     "noncanonical_order", "chains are in declared order", path=f"chains[{i}]"
                 )
+        for i, c in enumerate(self.chains):
+            for a in c.attempts:
+                first = a.stages[0]
+                if first.snapshot is not None and first.snapshot != self.snapshot:
+                    raise ValidationError(
+                        "inconsistent_outcome",
+                        "every first stage plans in the run's state",
+                        path=f"chains[{i}].attempts[{a.index}].stages[0].snapshot",
+                    )
         if self.stopped not in (None, StopReason.ABORTED):
             raise ValidationError(
                 "unsupported_value", "only an abort stops a run of chains", path="stopped"
@@ -372,6 +440,9 @@ class _Attempt:
     seed: int
     jobs: list[int] = field(default_factory=list)
     """The engine's job of each stage reached, in order."""
+    links: list[tuple[str | None, bool]] = field(default_factory=list)
+    """For each stage reached, the previous projected state it was built from (none for
+    the first), and whether it declared attachments."""
     built: list[str] = field(default_factory=list)
     """A stage whose request could not be built: its detail, recorded as refused."""
     results: list[StageResult] = field(default_factory=list)
@@ -466,10 +537,14 @@ class ChainsRun:
         """Build the attempt's next stage from ``previous`` and queue it."""
         chain = self._chains[attempt.chain]
         stage = chain.stages[len(attempt.jobs) + len(attempt.built)]
+        after = None if previous is None else previous.projection.state.fingerprint()
+        declared = False
         try:
             built = stage.build(previous)
             if not isinstance(built, StageRequest):
                 raise ValidationError("wrong_type", f"{stage.name} built {built!r}")
+            state = self._linked(built, previous)
+            declared = built.attachments is not None
             request = built.request
             if previous is None:
                 request = replace(request, seed=attempt.seed)
@@ -479,14 +554,40 @@ class ChainsRun:
                 chain.priority,
                 request,
                 PlanAttempt(planner=built.planner, processor=built.processor),
-                snapshot=_state(built.snapshot),
+                snapshot=state,
             )
             (k,) = self._run.add([job])
         except SsrobotError as e:
+            attempt.links.append((after, declared))
             attempt.built.append(f"{e.code}: {e.message}")
             attempt.settled = True
             return
+        attempt.links.append((after, declared))
         attempt.jobs.append(k)
+
+    def _linked(self, built: StageRequest, previous: StageResult | None) -> SceneSnapshot:
+        """The state ``built`` plans in, if it continues the chain: the run's own for the
+        first stage, the previous stage's projection (with ``attachments``, its state with
+        exactly those) for a later one."""
+        if previous is None:
+            state = _state(built.snapshot)
+            if built.attachments is not None or state.fingerprint() != self._basis.fingerprint():
+                raise ValidationError(
+                    "disconnected_stage",
+                    "the first stage plans in the run's own state, as it is",
+                    path="snapshot",
+                )
+            return state
+        if built.snapshot != previous.projection:
+            raise ValidationError(
+                "disconnected_stage",
+                f"a later stage plans in the projection of {previous.name!r}",
+                path="snapshot",
+            )
+        state = previous.projection.state
+        if built.attachments is None:
+            return state
+        return replace(state, attachments=tuple(built.attachments))
 
     def _react(self) -> None:
         """Take every stage that has ended: build the next stage of its attempt, settle
@@ -603,15 +704,26 @@ class ChainsRun:
             attempts = []
             for attempt in self._attempts[i]:
                 stages = [
-                    _stage_attempt(chain.stages[n].name, ends[k])
+                    _stage_attempt(
+                        chain.stages[n].name,
+                        ends[k],
+                        after=attempt.links[n][0],
+                        declared=attempt.links[n][1],
+                        projection=attempt.results[n].projection.state.fingerprint()
+                        if n < len(attempt.results)
+                        else None,
+                    )
                     for n, k in enumerate(attempt.jobs)
                 ]
                 for detail in attempt.built:
+                    after, declared = attempt.links[len(stages)]
                     stages.append(
                         StageAttempt(
                             name=chain.stages[len(stages)].name,
                             outcome=StageOutcome.REFUSED,
                             detail=detail,
+                            after=after,
+                            declared=declared,
                         )
                     )
                 feasible = attempt.feasible
@@ -655,10 +767,15 @@ class ChainsRun:
         )
 
 
-def _stage_attempt(name: str, end: _End) -> StageAttempt:
+def _stage_attempt(
+    name: str, end: _End, *, after: str | None, declared: bool, projection: str | None
+) -> StageAttempt:
     job = end.job
     return StageAttempt(
         name=name,
+        after=after,
+        declared=declared,
+        projection=projection,
         planner=job.planner.name,
         processor=None if job.processor is None else job.processor.name,
         snapshot=None if job.snapshot is None else job.snapshot.fingerprint(),
