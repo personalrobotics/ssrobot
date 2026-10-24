@@ -709,7 +709,32 @@ def _projected(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
             snapshot=snapshot,
         ),
     )
-    execution = ctx.execute(plan_a, planner=planner)
+    # A second plan to exactly the same endpoint: the same request with another time
+    # budget plans the same motion, but is another plan. Its projection is the same state;
+    # each projection binds to an execution of its own plan, independently.
+    twin = ctx.plan(
+        dataclasses.replace(_request(ctx, A, snapshot), timeout_s=9.0),
+        snapshot=snapshot,
+        planner=planner,
+    )
+    assert twin.succeeded, twin.status
+    projection_twin = ctx.project(twin, snapshot=snapshot)
+    twin_execution = ctx.execute(twin, planner=planner)
+    twin_bound = ctx.continuation(
+        plan_b, planner=ahead, projection=projection_twin, source=twin_execution
+    )
+    execution = ctx.execute(plan_a, planner=planner)  # supersedes the twin's
+    attempt(
+        "twin_projection_to_another_plans_execution",
+        lambda: ctx.continuation(
+            plan_b, planner=ahead, projection=projection_twin, source=execution
+        ),
+    )
+    out["same_endpoint"] = {
+        "distinct_plans": fingerprint(twin) != fingerprint(plan_a),
+        "same_projected_state": projection_twin.state == projection.state,
+        "twin_bound_to_its_execution": twin_bound.prediction.source == twin_execution.id,
+    }
     # Only this execution of the projected plan binds, and only to a plan on its projection.
     attempt(
         "plan_not_on_the_projection",
@@ -731,6 +756,9 @@ def _projected(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
         ),
     )
     continuation = ctx.continuation(plan_b, planner=ahead, projection=projection, source=execution)
+    out["same_endpoint"]["first_bound_to_its_execution"] = (
+        continuation.prediction.source == execution.id
+    )
     _settle(ctx, execution)
     result = ctx.execute_continuation(continuation, rest_tolerance=1.0)
     assert result.execution is not None, result.report
@@ -782,5 +810,37 @@ def test_a_plan_made_on_a_projection_continues_that_execution(
         "tampered_projection": "unknown_projection",
         "replanned_source": "unprojected_source",
         "rebased_source": "unprojected_source",
+        "twin_projection_to_another_plans_execution": "unprojected_source",
     }
-    assert [k for k, _, _ in out["traced"]] == ["predicted", "continued"]
+    assert out["same_endpoint"] == {
+        "distinct_plans": True,
+        "same_projected_state": True,
+        "twin_bound_to_its_execution": True,
+        "first_bound_to_its_execution": True,
+    }
+    # Binding predicts its source: the twin's, then this one's; then the continuation.
+    assert [k for k, _, _ in out["traced"]] == ["predicted", "predicted", "continued"]
+
+
+def test_the_manipulator_view_plans_on_a_projection(artifacts: Path) -> None:
+    """#190: a manipulator view plans on a projection as on any snapshot; the result is
+    a plan made on the projection's state."""
+    from tests.test_mujoco_scene import OPTIONS, PACKAGE
+
+    package = load_package(PACKAGE)
+    planner = CBiRRT(package.description)
+    with RobotContext(package.description, MujocoRuntime(package, **OPTIONS)) as ctx:
+        arm = ctx.manipulator()
+        snapshot = ctx.snapshot()
+        first = arm.plan_to_configuration((0.3, -0.8, 0.25), snapshot=snapshot, planner=planner)
+        assert first.succeeded, first.status
+        projection = ctx.project(first, snapshot=snapshot)
+        then = arm.plan_to_configuration((0.0, -0.4, 0.0), snapshot=projection, planner=planner)
+        report = {
+            "planned": then.status.value,
+            "on_the_projection": then.request.snapshot == projection.state.fingerprint(),
+            "starts_where_the_first_ends": [round(v, 6) for v in then.request.start],
+        }
+    (artifacts / "view.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert report["planned"] == "succeeded" and report["on_the_projection"]
+    assert report["starts_where_the_first_ends"] == pytest.approx([0.3, -0.8, 0.25], abs=1e-6)

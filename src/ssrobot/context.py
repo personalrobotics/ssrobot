@@ -351,7 +351,11 @@ class RobotContext:
         # Predictions this context made, by their state's fingerprint: a plan made on one
         # executes only as a continuation.
         self._predicted: dict[str, PredictedSnapshot] = {}
-        self._projected: dict[str, PlanProjection] = {}  # by projected state's fingerprint
+        # Every projection this context made, by its whole identity (projected state,
+        # plan, and basis): distinct plans may end in the same state. Its states alone
+        # are what execute refuses plans made on.
+        self._projections: set[tuple[str, str, str]] = set()
+        self._projected_states: set[str] = set()
         # Each execution's own plan and snapshot, by execution id: what it ran.
         self._ran: dict[str, tuple[str, str]] = {}
         self._accepted: dict[str, Timestamp] = {}  # when the runtime accepted each execution
@@ -611,7 +615,7 @@ class RobotContext:
 
     def planning_scene(
         self,
-        snapshot: SceneSnapshot | PredictedSnapshot,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection,
         group: str,
         *,
         clearance_m: float = 0.0,
@@ -928,7 +932,8 @@ class RobotContext:
         )
         state = replace(basis, positions=positions, objects=objects)
         projection = PlanProjection(state=state, plan=fingerprint(plan), basis=basis.fingerprint())
-        self._projected[state.fingerprint()] = projection
+        self._projections.add((state.fingerprint(), projection.plan, projection.basis))
+        self._projected_states.add(state.fingerprint())
         return projection
 
     def continuation(
@@ -983,9 +988,9 @@ class RobotContext:
     ) -> PredictedSnapshot:
         """The prediction of ``source`` that ``plan``, made on ``projection``, continues
         from; see ``continuation``."""
-        if (
-            not isinstance(projection, PlanProjection)
-            or self._projected.get(projection.state.fingerprint()) != projection
+        if not isinstance(projection, PlanProjection) or (
+            (projection.state.fingerprint(), projection.plan, projection.basis)
+            not in self._projections
         ):
             raise ValidationError(
                 "unknown_projection",
@@ -1288,7 +1293,7 @@ class RobotContext:
                 "the plan was made on a prediction: run it with execute_continuation",
                 path="plan",
             )
-        if plan.request.snapshot in self._projected:
+        if plan.request.snapshot in self._projected_states:
             raise ValidationError(
                 "projected_plan",
                 "the plan was made on a projection: run it with execute_continuation",
@@ -2040,7 +2045,7 @@ class ManipulatorView:
         self,
         goal: Goal,
         *,
-        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection | None = None,
         frame: str | None = None,
         path_constraint: Sequence[Tsr] = (),
         constraints: Sequence[ConstraintClass] = (),
@@ -2087,7 +2092,7 @@ class ManipulatorView:
         self,
         goal: Goal,
         *,
-        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection | None = None,
         planner: Planner,
         processor: TrajectoryProcessor | None = None,
         abort: Callable[[], bool] | None = None,
@@ -2105,7 +2110,7 @@ class ManipulatorView:
         self,
         configuration: Sequence[float],
         *,
-        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection | None = None,
         planner: Planner,
         **options: Any,
     ) -> PlanResult:
@@ -2117,7 +2122,7 @@ class ManipulatorView:
         self,
         configurations: Sequence[Sequence[float]],
         *,
-        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection | None = None,
         planner: Planner,
         **options: Any,
     ) -> PlanResult:
@@ -2131,7 +2136,7 @@ class ManipulatorView:
         self,
         pose: Pose,
         *,
-        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection | None = None,
         planner: Planner,
         position_tolerance: float = 1e-3,
         rotation_tolerance: float = 1e-2,
@@ -2147,7 +2152,7 @@ class ManipulatorView:
         direction: Sequence[float],
         distance: float,
         *,
-        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection | None = None,
         planner: Planner,
         position_tolerance: float = 1e-3,
         rotation_tolerance: float = 1e-2,
@@ -2168,7 +2173,7 @@ class ManipulatorView:
         self,
         tsrs: Sequence[Tsr],
         *,
-        snapshot: SceneSnapshot | PredictedSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection | None = None,
         planner: Planner,
         **options: Any,
     ) -> PlanResult:
@@ -2194,7 +2199,7 @@ class BaseView:
         self,
         pose: Pose,
         *,
-        snapshot: SceneSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection | None = None,
         velocity_scaling: float = 1.0,
         acceleration_scaling: float = 1.0,
         timeout_s: float = 10.0,
@@ -2202,12 +2207,12 @@ class BaseView:
         clearance_m: float = 0.0,
     ) -> PlanningRequest:
         """The fully resolved request to bring the base frame to ``pose``, in
-        ``snapshot``, or in one captured now."""
+        ``snapshot`` (a prediction's or a projection's state), or in one captured now."""
         if snapshot is None:
             snapshot = self._context.snapshot()
         return build_request(
             self._context.description,
-            snapshot,
+            _state(snapshot),
             component=self.name,
             group=self.name,
             frame=self.base.frame,
@@ -2223,7 +2228,7 @@ class BaseView:
         self,
         pose: Pose,
         *,
-        snapshot: SceneSnapshot | None = None,
+        snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection | None = None,
         planner: Planner,
         processor: TrajectoryProcessor | None = None,
         abort: Callable[[], bool] | None = None,
