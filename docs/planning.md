@@ -382,9 +382,10 @@ is infeasible. `plan_chains(ctx, chains, snapshot=...)` races them, and `start_c
   `PlanProjection`, on which the next stage may plan. A projection confers no validity.
 - **Selection is two-level:**
   1. Each chain's choice is its first seed, in declared order, whose stages are all
-     valid. Its cost is the sum of that attempt's validated stage durations; failed seeds
-     stay in the report and cost nothing. Once a seed is feasible, later seeds of the
-     chain stop (`an earlier seed of the chain is feasible`).
+     valid. Its cost is the sum of that attempt's validated stage durations. A seed is
+     attempted only once every earlier seed of the chain has failed, so the report lists
+     the attempts made, and no later seed is planned; failed seeds stay in the report and
+     cost nothing.
   2. Across chains: the highest priority, then the lowest cost, then declaration order.
      With `cancel_lower`, a chain's choice stops every chain of a strictly lower priority.
 - **Results:** `Chains.selected` gives the selected chain, its chosen attempt, and that

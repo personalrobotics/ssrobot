@@ -11,8 +11,9 @@ next stage may plan. A projection confers no validity by itself.
 Selection is two-level:
 1. Within each chain, its seeds are attempts at the whole chain, in declared order; the
    chain's choice is the first seed all of whose stages are valid, its cost the sum of
-   that attempt's validated stage durations. Failed seeds stay in the report and cost
-   nothing. Once a seed is feasible, later seeds of the same chain are stopped.
+   that attempt's validated stage durations. A seed is attempted only once every earlier
+   seed of its chain has failed, so no later seed is planned; failed seeds stay in the
+   report and cost nothing.
 2. Across chains: the highest priority, then the lowest cost, then declaration order.
    With ``cancel_lower``, once a chain's choice is made, every chain of a strictly lower
    priority is stopped.
@@ -61,8 +62,6 @@ from ssrobot.scene import Attachment, SceneSnapshot
 if TYPE_CHECKING:
     from ssrobot.context import RobotContext
 
-EARLIER_SEED = "an earlier seed of the chain is feasible"
-"""Why a later seed of a chain was stopped."""
 CHAIN_SELECTION = (
     "first feasible seed within each chain; then highest priority, lowest cost (the sum of "
     "that seed's validated stage durations), and earliest chain"
@@ -446,6 +445,7 @@ class _Attempt:
     built: list[str] = field(default_factory=list)
     """A stage whose request could not be built: its detail, recorded as refused."""
     results: list[StageResult] = field(default_factory=list)
+    started: bool = False
     settled: bool = False
     feasible: bool = False
     stopped: str | None = None
@@ -518,8 +518,7 @@ class ChainsRun:
             self._attempts[i] = [_Attempt(i, j, s) for j, s in enumerate(chains[i].seeds)]
         try:
             for i in order:
-                for attempt in self._attempts[i]:
-                    self._start(attempt, None)
+                self._start(self._attempts[i][0], None)
             self._react()
         except BaseException:
             self._run.close()
@@ -537,6 +536,7 @@ class ChainsRun:
         """Build the attempt's next stage from ``previous`` and queue it."""
         chain = self._chains[attempt.chain]
         stage = chain.stages[len(attempt.jobs) + len(attempt.built)]
+        attempt.started = True
         after = None if previous is None else previous.projection.state.fingerprint()
         declared = False
         try:
@@ -591,13 +591,32 @@ class ChainsRun:
 
     def _react(self) -> None:
         """Take every stage that has ended: build the next stage of its attempt, settle
-        the attempt, and make each chain's choice and the stops it implies."""
-        for chain in self._attempts:
-            for attempt in chain:
-                self._take(attempt, build=True)
-        self._choose()
-        if all(a.settled for chain in self._attempts for a in chain):
+        the attempt, make each chain's choice and the stops it implies, and start the
+        next seed of each chain whose every attempt so far has failed."""
+        while True:
+            for chain in self._attempts:
+                for attempt in chain:
+                    self._take(attempt, build=True)
+            self._choose()
+            if not self._next():
+                break
+        if all(a.settled for chain in self._attempts for a in chain if a.started):
             self._run.seal()
+
+    def _next(self) -> bool:
+        """Start the next seed of each chain not chosen nor stopped whose attempts have all
+        settled infeasible; whether any started."""
+        if self._run._stopped is not None:
+            return False
+        started = False
+        for i, chain in enumerate(self._attempts):
+            if i in self._chosen or any(a.stopped for a in chain):
+                continue
+            tried = [a for a in chain if a.started]
+            if all(a.settled and not a.feasible for a in tried) and len(tried) < len(chain):
+                self._start(chain[len(tried)], None)
+                started = True
+        return started
 
     def _take(self, attempt: _Attempt, *, build: bool) -> None:
         """If the attempt's current stage has ended: settle it when it is not valid, or
@@ -637,7 +656,6 @@ class ChainsRun:
                     break  # an earlier seed may still be feasible
                 if attempt.feasible:
                     self._chosen[i] = attempt.index
-                    self._stop([a for a in chain if a.index > attempt.index], EARLIER_SEED)
                     if self._cancel_lower:
                         priority = self._chains[i].priority
                         lower = [
@@ -696,13 +714,17 @@ class ChainsRun:
             self._result = self._assembled()
         return self._result
 
+    def _made(self, chain: int) -> list[_Attempt]:
+        """The chain's attempts made, a prefix of its seeds."""
+        return [a for a in self._attempts[chain] if a.started]
+
     def _assembled(self) -> Chains:
         run = self._run.result
         ends = run.ends
         records = []
         for i, chain in enumerate(self._chains):
             attempts = []
-            for attempt in self._attempts[i]:
+            for attempt in self._made(i):
                 stages = [
                     _stage_attempt(
                         chain.stages[n].name,
@@ -761,8 +783,8 @@ class ChainsRun:
             report=report,
             chains=self._chains,
             results=tuple(
-                tuple(tuple(a.results) if a.feasible else () for a in attempts)
-                for attempts in self._attempts
+                tuple(tuple(a.results) if a.feasible else () for a in self._made(i))
+                for i in range(len(self._chains))
             ),
         )
 

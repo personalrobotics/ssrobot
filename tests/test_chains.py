@@ -233,8 +233,10 @@ def test_chains_race_staged_prefixes_and_select_deterministically(
     # The shorter feasible chain wins at equal priority, whatever its seed.
     assert equal["selected"]["label"] == "right_arm" and equal["selected"]["attempt"] == 1
     assert equal["selected"]["onward_on_the_reach_projection"]
-    # Workers change latency, never the selection or the selected chain's evidence.
-    assert equal["selected"] == first["equal_2_workers"]["selected"]
+    # A seed is attempted only once every earlier one has failed: none after seed 1.
+    assert len(right["attempts"]) == 2
+    # Workers change latency, never what is planned: the whole report is the same.
+    assert equal["report"] == first["equal_2_workers"]["report"]
 
     # Each stage records the projection it was built from: the reach's own.
     for attempt in right["attempts"]:
@@ -253,6 +255,7 @@ def test_chains_race_staged_prefixes_and_select_deterministically(
 
     preferred = first["liar_preferred"]
     assert preferred["report"]["chains"][0]["chosen"] is None
+    assert len(preferred["report"]["chains"][0]["attempts"]) == 3
     assert preferred["selected"]["label"] == "left_arm"
 
 
