@@ -106,6 +106,7 @@ from ssrobot.validation import (
 
 if TYPE_CHECKING:
     from ssrobot.alternatives import Alternative, AlternativesRun
+    from ssrobot.chains import Chain, ChainsRun
 
 
 class ContextState(enum.StrEnum):
@@ -767,6 +768,23 @@ class RobotContext:
             workers=workers,
             cancel_lower=cancel_lower,
             abort=abort,
+        )
+
+    def start_chains(
+        self,
+        chains: Sequence[Chain],
+        *,
+        snapshot: SceneSnapshot | PredictedSnapshot,
+        workers: int = 1,
+        cancel_lower: bool = True,
+        abort: Callable[[], bool] | None = None,
+    ) -> ChainsRun:
+        """``ssrobot.start_chains`` in this context: a race of staged prefixes, advanced
+        by the caller so the context can keep stepping while it plans."""
+        from ssrobot.chains import start_chains
+
+        return start_chains(
+            self, chains, snapshot=snapshot, workers=workers, cancel_lower=cancel_lower, abort=abort
         )
 
     # -- Interleaving planning and execution -----------------------------------------
