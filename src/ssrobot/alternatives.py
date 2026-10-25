@@ -288,14 +288,17 @@ def select_alternative(alternatives: Sequence[AlternativeRecord]) -> tuple[int, 
 @dataclass(frozen=True, slots=True)
 class Alternatives:
     """The report, each attempt's raw result and candidate by (alternative, attempt), when
-    each attempt planned (seconds from the start of the run, for inspection only, never
-    part of the report), and the selection."""
+    each attempt planned and was validated (seconds from the start of the run) and how
+    long building its validation scene took (for inspection only, never part of the
+    report), and the selection."""
 
     report: AlternativesReport
     alternatives: tuple[Alternative, ...]  # canonical copies: each one's attempts a tuple
     results: tuple[tuple[PlanResult | None, ...], ...]
     candidates: tuple[tuple[PlanResult | None, ...], ...]
     intervals_s: tuple[tuple[tuple[float, float] | None, ...], ...]
+    validation_intervals_s: tuple[tuple[tuple[float, float] | None, ...], ...] = ()
+    scenes_s: tuple[tuple[float | None, ...], ...] = ()
 
     @property
     def selected(self) -> tuple[Alternative, PlanAttempt, PlanResult] | None:
@@ -510,4 +513,6 @@ def _assembled(
         results=tuple(tuple(e.raw for e in row) for row in grid),
         candidates=tuple(tuple(e.candidate for e in row) for row in grid),
         intervals_s=tuple(tuple(e.interval_s for e in row) for row in grid),
+        validation_intervals_s=tuple(tuple(e.validation_interval_s for e in row) for row in grid),
+        scenes_s=tuple(tuple(e.scene_s for e in row) for row in grid),
     )

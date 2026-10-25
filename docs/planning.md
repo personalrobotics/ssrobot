@@ -257,6 +257,12 @@ state with each other or with the live context.
 - **Validation and candidates.** Every successful attempt is validated again by its
   own planner's validator, on a fresh scene of the same snapshot, as it would execute:
   its trajectory, or its path timed once by its processor.
+  - Each attempt runs on a worker in two phases: it plans, then it is validated. The
+    context builds the fresh scene once planning succeeds; the worker, which touches
+    neither the context nor the runtime, processes, validates and checks. The
+    attempt's planner and worker stay occupied until its validation ends, and a valid
+    attempt cuts off lower priorities only once validated. Nothing uses a result before
+    its validation; the context keeps stepping meanwhile.
   - The fresh report must come from that validator, bound to the request, and be about
     exactly that motion with its path as evidence (`check_bound`, `check_validation`).
   - A motion that fails is `invalid`, whatever the planner reported.
@@ -332,8 +338,10 @@ What alternatives exist (arms, goals, containers) is the caller's choice.
   - Decoding refuses a report whose selection isn't the rule's, whose
     `canceled_by_priority` or `not_started` have no strictly higher valid priority, or
     abort, to account for them, or that claims a timeout.
-  - When each attempt planned is in `Alternatives.intervals_s`, in seconds from the
-    start of the run. That's for inspection, and never part of the report.
+  - When each attempt planned is in `Alternatives.intervals_s`, and when it was
+    validated in `validation_intervals_s`, in seconds from the start of the run. How
+    long building its validation scene took is in `scenes_s`. That's for inspection,
+    and never part of the report.
 
 `Alternatives.selected` is the selected alternative, its attempt and its candidate.
 Execute it with `ctx.execute(candidate, planner=attempt.planner)`. `plan_portfolio` is
@@ -344,10 +352,11 @@ every attempt has ended. `ctx.start_alternatives(...)` (or `ssrobot.start_altern
 takes the same arguments and builds every scene at once, but leaves the planning to the
 caller, so the context can keep stepping a running motion meanwhile. It returns an
 `AlternativesRun`:
-- `advance()` never waits. It starts attempts on free workers, checks `abort`, and
-  validates, on the context's thread, every attempt that has finished. It returns True
-  once the run is `done`.
-- `planning` holds the plans running now, for a caller that waits on them.
+- `advance()` never waits. It starts attempts on free workers, checks `abort`, starts
+  the validation of every attempt that has planned, on a worker, and records every
+  validation that has ended. It returns True once the run is `done`.
+- `planning` holds the plans and validations running now, for a caller that waits on
+  them.
 - `cancel()` stops the run: attempts not started never start, and running planners are
   told to stop (`aborted`).
 - `close()` cancels an unfinished run, waits for its planners, and releases its scenes.
@@ -388,8 +397,8 @@ is infeasible. `plan_chains(ctx, chains, snapshot=...)` races them, and `start_c
   hold it, and nothing else changed. Any other state is refused (`disconnected_stage`).
   Each stage records the projected state it was built from, so the report shows the
   linkage.
-- **Validation:** each stage is planned on a worker and validated on a fresh scene of its
-  own state and clearance before the next stage is built.
+- **Validation:** each stage is planned on a worker, then validated on a worker, on a
+  fresh scene of its own state and clearance, before the next stage is built.
 - **A `StageResult`** carries the validated plan, the state it was planned in, and its
   `PlanProjection`, on which the next stage may plan. A projection confers no validity.
 - **Selection is two-level:**
@@ -594,6 +603,7 @@ Every failed check is named in one `execution_unready` error. A successful
 | `artifacts/test_a_portfolio_selects_deterministically_from_isolated_attempts/` | The example arm's pedestal swing planned by a portfolio of eight attempts, each with its own planner: three seeded sscbirrt; one that corrupts its own scene and plans through the pedestal (`invalid` on a fresh scene); one that negotiation refuses; a path-only planner with a counting processor; one whose processor cannot time (`failed`, alone); and one whose validator answers about another motion (`failed`, `validation_mismatch`). `portfolio.json` is the report, byte-identical with one worker and with three; the path-only attempt, the highest-priority valid one, is selected. `isolation.json` shows that the live context is unchanged, that every candidate is still valid on a fresh scene, that the processor ran once, and that the executed command is exactly the selected candidate's. |
 | `artifacts/test_alternatives_race_two_arms_and_select_deterministically/` | Two arms of one MuJoCo robot (the conformance robot with colliding geoms) as alternatives, each a configuration goal planned by its own sscbirrt. `alternatives.json` holds the report of every run whose outcomes are fixed, and is byte-identical on a second run: equal priorities with the nearer right-arm goal selected (identical with one worker and two; the candidate executes and reaches its goal); a preferred right arm whose goal a cube blocks, so the left is selected; a preferred feasible right arm with the left `not_started` on one worker; and an aborted run. `diagnostics.json` holds what depends on scheduling: the same preference on two workers, where the left is spared, stopped, or finished while the selection is the same, and when each attempt planned. |
 | `artifacts/test_alternatives_hold_their_own_inputs_and_classify_outranked_attempts/inputs_and_outranked.json` | The caller's attempts lists, changed after planning, change neither the selection nor the report (#184). A lower priority told to stop that raises an expected error is `canceled_by_priority`; one that raises a programming error propagates it. |
+| `artifacts/test_attempts_are_validated_on_workers_while_the_robot_moves/worker_validation.json` | Validation on workers (#202). Each arm's attempt has a validator slowed by 0.2 s. A passive run validates both attempts on portfolio workers, never the main thread, while the context steps a left-arm motion; its report is byte-identical to the blocking run's. Each attempt's validation-scene time and validation interval are recorded. Two chains sharing one slow planner on two workers plan and validate strictly in turn: plan, validate, plan, validate, never overlapping. |
 | `artifacts/test_alternatives_plan_passively_while_the_robot_moves/passive.json` | A passive run (#191). While the left arm executes a motion, the context steps every tick and advances `ctx.start_alternatives`, and the run plans meanwhile. Its report is byte-identical to `plan_alternatives` on the same alternatives, and selects the right arm. A run of planners that only wait to be stopped is canceled twice and closed twice: it ends `aborted`, and no worker thread is left. |
 | `artifacts/test_chains_race_staged_prefixes_and_select_deterministically/chains.json` | Chains (#192) on the colliding two-arm robot: each arm reaches a first configuration, then moves onward to a second, planned on the reach's projection. A cube stands on the right arm's direct way onward, and the onward planner lies for given seeds: it plans in a twin world without the cube, and its result is well formed but collides here. At equal priority, the right's seed 0 reaches but its onward motion is invalid on a fresh scene, and seed 1 is its first feasible seed. Its cost is seed 1's stages alone, shorter than the left's chain, so the right is selected on seed 1, with seed 2 stopped. One worker and two give the same selection and selected evidence. With the liar preferred and lying on every seed, it is never feasible, and the left is selected. With the right preferred but its onward stage planned from the start instead of the reach's projection, that stage is refused on every seed (`disconnected_stage`), and the left is selected. Every stage records the projected state it was built from: the previous stage's own. A second run is byte-identical. |
 | `artifacts/test_a_chains_report_cannot_claim_an_impossible_outcome/refusals.json` | Forged `ChainsReport`s refused: a selection not by the rule, a choice that is not the first feasible seed, a cost that counts a failed seed, an attempt called feasible without every stage, a feasible seed hidden as infeasible, and a stage claimed built from another projection. |
