@@ -52,6 +52,7 @@ REFUSALS = (
     "not_at_rest",
     "arrival_out_of_tolerance",
     "unpredicted_scene_change",
+    "arrival_off_constraint",
     "rebase_unsupported",
     "rebase_failed",
     "continuation_invalid",
@@ -200,7 +201,7 @@ class ContinuationReport(Record):
     """Whether a continuation ran, and the evidence for that decision."""
 
     SCHEMA = "ssrobot.ContinuationReport"
-    VERSION = 2
+    VERSION = 3
 
     prediction: str = field(metadata=meta("Fingerprint of the prediction it was planned on."))
     source: str = field(metadata=meta("The source execution's identifier."))

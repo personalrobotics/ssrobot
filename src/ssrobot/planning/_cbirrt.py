@@ -504,9 +504,13 @@ def _offset(
     request: PlanningRequest, scene: PlanningScene, goal: OffsetGoal
 ) -> tuple[list[tsr.TSR], list[tsr.TSR]]:
     """The goal region at the end of the line, and the line as a path constraint. Both
-    are expressed in a frame whose x axis is the direction of motion."""
+    are expressed in a frame whose x axis is the direction of motion, at the goal's
+    reference pose: the frame's pose at the request's start when it names none."""
     assert request.frame is not None
-    start = matrix(scene.forward_kinematics(request.start, request.frame))
+    reference = goal.reference_pose
+    if reference is None:
+        reference = scene.forward_kinematics(request.start, request.frame)
+    start = matrix(reference)
     x = np.array(goal.direction)
     helper = np.array([0.0, 0.0, 1.0]) if abs(x[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
     y = np.cross(helper, x)

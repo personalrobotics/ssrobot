@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import shutil
+import xml.etree.ElementTree as ET
 from importlib import resources
 from pathlib import Path
 
@@ -447,4 +448,81 @@ def colliding_bimanual(
     )
     scene = root / "scene.xml"
     scene.write_text(f"<mujoco><worldbody>{obstacle}{free}</worldbody></mujoco>\n")
+    return package, scene
+
+
+PANDA_JOINTS = tuple(f"joint{i}" for i in range(1, 8))
+
+
+def runnable_panda(root: Path, *, slide: bool = False) -> tuple[Path, Path]:
+    """The Menagerie Franka Panda parser fixture made runnable, under ``root``: its empty
+    placeholder meshes and the geoms using them removed, so it has its inertials and
+    position servos but no geometry (nothing can collide), and no gravity, so the servos
+    hold it where it is commanded; a velocity and acceleration
+    limit on every arm joint, so plans can be timed; a joint trajectory command and a
+    joint-velocity channel (``arm_qd``) for the arm. It has ssik kinematics (seven
+    revolute joints), so it plans offset goals and path constraints. Start it in its
+    ``home`` keyframe. With ``slide``, the arm stands on a carriage that slides along the
+    world's x axis (joint ``slide``, its own group, commanded by position): a joint
+    outside the arm's group that still moves the arm's base. Returns the package root and
+    an empty scene file."""
+    package = root / "panda"
+    shutil.copytree(
+        Path(__file__).parent / "fixtures" / "packages" / "franka_panda_parser", package
+    )
+    model = package / "menagerie" / "panda.xml"
+    tree = ET.parse(model)
+    top = tree.getroot()
+    ET.SubElement(top, "option", gravity="0 0 0")
+    if slide:
+        world = top.find("worldbody")
+        assert world is not None
+        base = world.find("body[@name='link0']")
+        assert base is not None
+        carriage = ET.Element("body", name="carriage")
+        ET.SubElement(carriage, "joint", name="slide", type="slide", axis="1 0 0", range="-0.2 0.2")
+        ET.SubElement(carriage, "inertial", pos="0 0 0", mass="5", diaginertia="0.1 0.1 0.1")
+        world.remove(base)
+        carriage.append(base)
+        world.append(carriage)
+        actuators = top.find("actuator")
+        assert actuators is not None
+        ET.SubElement(
+            actuators,
+            "position",
+            name="slide",
+            joint="slide",
+            kp="5000",
+            kv="500",
+            ctrlrange="-0.2 0.2",
+        )
+        key = top.find("keyframe/key[@name='home']")
+        assert key is not None
+        key.set("qpos", "0 " + key.get("qpos", ""))
+        key.set("ctrl", key.get("ctrl", "") + " 0")
+    for parent in tree.getroot().iter():
+        for child in list(parent):
+            if child.tag == "mesh" or (child.tag == "geom" and "mesh" in child.attrib):
+                parent.remove(child)
+    tree.write(model)
+    limits = "".join(
+        f'\n[[semantics.joint_limits]]\njoint = "{j}"\nvelocity = 1.0\nacceleration = 2.0\n'
+        for j in PANDA_JOINTS
+    )
+    if slide:
+        limits += (
+            '\n[[semantics.groups]]\nname = "slide"\njoints = ["slide"]\n'
+            '\n[[semantics.joint_limits]]\njoint = "slide"\nvelocity = 0.2\nacceleration = 1.0\n'
+            '\n[[semantics.commands]]\ncomponent = "slide"\nkind = "joint"\nmode = "position"\n'
+        )
+    manifest = package / "ssrobot.toml"
+    manifest.write_text(
+        manifest.read_text()
+        + limits
+        + '\n[[semantics.commands]]\ncomponent = "arm"\nkind = "joint_trajectory"\n'
+        + '\n[[semantics.channels]]\nname = "arm_qd"\nquantity = "joint_velocity"\n'
+        + 'source = "arm"\nshape = [7]\ndtype = "float64"\n'
+    )
+    scene = root / "scene.xml"
+    scene.write_text("<mujoco><worldbody/></mujoco>\n")
     return package, scene
