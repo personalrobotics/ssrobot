@@ -92,6 +92,21 @@
           "description": "Each stage's own seeds, in order of preference; none for a stage that plans its request's seed once, as the first stage does (its seeds are the chain's).",
           "x-unit": "1"
         },
+        "retry_prefix": {
+          "type": "array",
+          "items": {
+            "type": "boolean"
+          },
+          "description": "Each stage's policy: whether, once it has failed every try, the chain's next seed may plan the prefix again; true for the first stage."
+        },
+        "seeds": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "The chain's declared seeds, in order.",
+          "x-unit": "1"
+        },
         "attempts": {
           "type": "array",
           "items": {
@@ -129,6 +144,8 @@
         "priority",
         "stages",
         "stage_seeds",
+        "retry_prefix",
+        "seeds",
         "attempts"
       ],
       "additionalProperties": false

@@ -16,7 +16,8 @@ Selection is two-level:
    report and cost nothing. A later stage may also have seeds of its own: tried in order
    from the same previous stage's result, the first valid try is the stage's, so a failed
    stage is retried without planning the prefix again. Only when every one fails does the
-   attempt fail, and the chain's next seed plan the prefix again. Only the valid try costs.
+   attempt fail, and the chain's next seed plan the prefix again, unless that stage says
+   not to (``retry_prefix=False``): the chain then fails. Only the valid try costs.
 2. Across chains: the highest priority, then the lowest cost, then declaration order.
    With ``cancel_lower``, once a chain's choice is made, every chain of a strictly lower
    priority is stopped.
@@ -107,11 +108,17 @@ class Stage:
 
     ``seeds``, for a later stage, are its own: each try plans the request built once with
     the next of them, from the same previous result, until one is valid. None plans the
-    request's own seed once. The first stage's seeds are the chain's."""
+    request's own seed once. The first stage's seeds are the chain's.
+
+    ``retry_prefix``, for a later stage: once it has failed every try it may make, whether
+    the chain's next seed may plan the prefix again. False is the caller's assertion that
+    another prefix is not worth exploring, trading completeness for bounded work: the
+    chain fails there."""
 
     name: str
     build: Callable[[StageResult | None], StageRequest]
     seeds: Sequence[int] | None = None
+    retry_prefix: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,6 +378,13 @@ class ChainRecord(Value):
             unit="1",
         )
     )
+    retry_prefix: tuple[bool, ...] = field(
+        metadata=meta(
+            "Each stage's policy: whether, once it has failed every try, the chain's next "
+            "seed may plan the prefix again; true for the first stage."
+        )
+    )
+    seeds: tuple[int, ...] = field(metadata=meta("The chain's declared seeds, in order.", unit="1"))
     attempts: tuple[ChainAttempt, ...] = field(metadata=meta("Every attempt, in seed order."))
     chosen: int | None = field(
         default=None, metadata=meta("Its first feasible attempt, if any.", unit="count")
@@ -398,10 +412,26 @@ class ChainRecord(Value):
                 "the first stage's seeds are the chain's",
                 path="stage_seeds[0]",
             )
+        if len(self.retry_prefix) != len(self.stages) or not self.retry_prefix[0]:
+            raise ValidationError(
+                "inconsistent_outcome",
+                "each stage's policy, the first stage's to retry",
+                path="retry_prefix",
+            )
+        if not self.seeds or len(self.attempts) > len(self.seeds):
+            raise ValidationError(
+                "out_of_limits", "at least one seed, an attempt at most per seed", path="seeds"
+            )
         for i, a in enumerate(self.attempts):
-            if a.index != i:
+            if a.index != i or a.seed != self.seeds[i]:
                 raise ValidationError(
                     "noncanonical_order", "attempts are in seed order", path=f"attempts[{i}]"
+                )
+            if i < len(self.attempts) - 1 and self.pruned(a):
+                raise ValidationError(
+                    "inconsistent_outcome",
+                    "no seed follows an attempt that failed where the prefix is not retried",
+                    path=f"attempts[{i + 1}]",
                 )
             groups = _tries(a.stages)
             names = tuple(g[0].name for _, g in groups)
@@ -435,11 +465,32 @@ class ChainRecord(Value):
             raise ValidationError(
                 "inconsistent_outcome", "the choice is the first feasible attempt", path="chosen"
             )
+        if self.chosen is not None and len(self.attempts) != self.chosen + 1:
+            raise ValidationError(
+                "inconsistent_outcome",
+                "no seed is attempted after the first feasible one",
+                path="attempts",
+            )
         cost = None if self.chosen is None else self.attempts[self.chosen].duration_s
         if self.cost_s != cost:
             raise ValidationError(
                 "inconsistent_outcome", "the cost is the chosen attempt's duration", path="cost_s"
             )
+
+    def pruned(self, attempt: ChainAttempt) -> bool:
+        """Whether ``attempt`` failed at a stage that does not retry the prefix, once it
+        had failed every try it may make."""
+        groups = _tries(attempt.stages)
+        n = len(groups) - 1
+        last = groups[-1][1][-1]
+        seeds = self.stage_seeds[n] if n < len(self.stage_seeds) else None
+        exhausted = seeds is None or last.trial == len(seeds) - 1
+        return (
+            n < len(self.retry_prefix)
+            and not self.retry_prefix[n]
+            and last.outcome in _RETRIED
+            and exhausted
+        )
 
 
 def select_chain(chains: Sequence[ChainRecord]) -> int | None:
@@ -486,6 +537,26 @@ class ChainsReport(Record):
                         "inconsistent_outcome",
                         "every first stage plans in the run's state",
                         path=f"chains[{i}].attempts[{a.index}].stages[0].snapshot",
+                    )
+                # Unless the run was aborted, a chain without a choice tried every seed,
+                # but where a stage did not retry the prefix or a higher priority's choice
+                # stopped it.
+                outranked = self.cancel_lower and any(
+                    o.chosen is not None and o.priority > c.priority for o in self.chains
+                )
+                if (
+                    self.stopped is None
+                    and c.chosen is None
+                    and a.index == len(c.attempts) - 1
+                    and len(c.attempts) < len(c.seeds)
+                    and not outranked
+                    and not c.pruned(a)
+                ):
+                    raise ValidationError(
+                        "inconsistent_outcome",
+                        "a chain without a choice tries every seed unless the prefix is not "
+                        "retried",
+                        path=f"chains[{i}].attempts",
                     )
                 # Unless the run was aborted, a stage that failed tried every seed it has.
                 groups = _tries(a.stages)
@@ -560,6 +631,8 @@ class _Attempt:
     """The current stage's request and the state it plans in, for its next try."""
     results: list[StageResult] = field(default_factory=list)
     started: bool = False
+    pruned: bool = False
+    """Failed at a stage that does not retry the prefix, every try made."""
     settled: bool = False
     feasible: bool = False
     stopped: str | None = None
@@ -611,6 +684,12 @@ class ChainsRun:
             for c in chains
         )
         for i, c in enumerate(chains):
+            if not c.stages[0].retry_prefix:
+                raise ValidationError(
+                    "out_of_limits",
+                    "the first stage is the prefix: it has no retry_prefix of its own",
+                    path=f"chains[{i}].stages[0].retry_prefix",
+                )
             if c.stages[0].seeds is not None:
                 raise ValidationError(
                     "out_of_limits",
@@ -764,7 +843,7 @@ class ChainsRun:
             return False
         started = False
         for i, chain in enumerate(self._attempts):
-            if i in self._chosen or any(a.stopped for a in chain):
+            if i in self._chosen or any(a.stopped or a.pruned for a in chain):
                 continue
             tried = [a for a in chain if a.started]
             if all(a.settled and not a.feasible for a in tried) and len(tried) < len(chain):
@@ -801,6 +880,9 @@ class ChainsRun:
                     # Recorded as never started, so the report shows why it ended there.
                     self._run.cancel_jobs([again.job], attempt.stopped)
                 return
+            attempt.pruned = (
+                build and not stage.retry_prefix and _STAGE_OUTCOMES[end.ended] in _RETRIED
+            )
             attempt.settled = True
             return
         if attempt.stopped is not None:
@@ -948,6 +1030,8 @@ class ChainsRun:
                     stage_seeds=tuple(
                         None if s.seeds is None else tuple(s.seeds) for s in chain.stages
                     ),
+                    retry_prefix=tuple(s.retry_prefix for s in chain.stages),
+                    seeds=tuple(chain.seeds),
                     attempts=tuple(attempts),
                     chosen=chosen,
                     cost_s=None if chosen is None else attempts[chosen].duration_s,

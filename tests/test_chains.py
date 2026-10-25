@@ -22,6 +22,12 @@ Its validator is the honest one.
   onward try alone.
 - ``stage_seeds_exhausted``: the same, lying for 5 and 6: each chain seed's onward stage
   tries both, then the next chain seed plans the reach again; the left is selected.
+- ``prefix_rescues``: the same, lying on its first two plans only: seed 0's onward stage
+  exhausts both its seeds, and the next chain seed, planning the reach again, rescues
+  the chain: the right is selected on its seed 1.
+- ``prefix_not_retried``: the same, with ``retry_prefix=False`` on the onward stage:
+  exactly one reach and its two onward tries run, no later chain seed, and the left is
+  selected. The report records the policy.
 Every stage records the projected state it was built from, the previous stage's own.
 
 The evidence is ``chains.json``: each scenario's report, the selected chain's stages, and
@@ -69,14 +75,15 @@ TOOLS = {"left_arm": "left_tool", "right_arm": "right_tool"}
 
 
 class _Liar:
-    """CBiRRT that, for the seeds in ``lies``, plans in a twin world without the cube: a
-    well-formed, successful result whose motion collides in this one. Its validator is
-    the honest one, on the scene it is given."""
+    """CBiRRT that, for the seeds in ``lies`` and on its first ``first`` plans, plans in a
+    twin world without the cube: a well-formed, successful result whose motion collides
+    in this one. Its validator is the honest one, on the scene it is given."""
 
     name = "liar"
 
-    def __init__(self, inner: CBiRRT, twin: Any, lies: Sequence[int]) -> None:
+    def __init__(self, inner: CBiRRT, twin: Any, lies: Sequence[int], first: int = 0) -> None:
         self._inner, self._twin, self._lies = inner, twin, set(lies)
+        self._first, self._planned = first, 0
 
     def capabilities(self, request: PlanningRequest) -> PlannerCapabilities:
         return self._inner.capabilities(request)
@@ -87,7 +94,8 @@ class _Liar:
     def plan(
         self, request: PlanningRequest, scene: PlanningScene, *, abort: Any = None
     ) -> PlanResult:
-        if request.seed in self._lies:
+        self._planned += 1
+        if request.seed in self._lies or self._planned <= self._first:
             scene = self._twin(request)
         return self._inner.plan(request, scene, abort=abort)
 
@@ -113,6 +121,7 @@ def _chain(
     onward_planner: Any,
     disconnected: bool = False,
     stage_seeds: Sequence[int] | None = None,
+    retry_prefix: bool = True,
 ) -> Chain:
     d = ctx.description
     first, then = GOALS[arm]
@@ -151,7 +160,7 @@ def _chain(
         label=arm,
         stages=(
             Stage(name="reach", build=reach),
-            Stage(name="onward", build=onward, seeds=stage_seeds),
+            Stage(name="onward", build=onward, seeds=stage_seeds, retry_prefix=retry_prefix),
         ),
         seeds=tuple(seeds),
         priority=priority,
@@ -166,6 +175,8 @@ def _scenario(
     workers: int,
     disconnected: bool = False,
     stage_seeds: Sequence[int] | None = None,
+    lie_first: int = 0,
+    retry_prefix: bool = True,
 ) -> dict[str, Any]:
     package_root, scene = colliding_bimanual(tmp / "cube", blocked=CUBE)
     twin_root, twin_scene = colliding_bimanual(tmp / "twin")
@@ -177,7 +188,7 @@ def _scenario(
         ) as twin,
     ):
         d = package.description
-        liar = _Liar(CBiRRT(d), _twin_scene(twin), lies)
+        liar = _Liar(CBiRRT(d), _twin_scene(twin), lies, first=lie_first)
         chains = [
             _chain(
                 ctx,
@@ -187,6 +198,7 @@ def _scenario(
                 onward_planner=liar,
                 disconnected=disconnected,
                 stage_seeds=stage_seeds,
+                retry_prefix=retry_prefix,
             ),
             _chain(ctx, "left_arm", priority=0, seeds=(0,), onward_planner=CBiRRT(d)),
         ]
@@ -226,6 +238,18 @@ def test_chains_race_staged_prefixes_and_select_deterministically(
             ),
             "stage_seeds_exhausted": _scenario(
                 tmp / "sx", liar_priority=1, lies=(5, 6), workers=1, stage_seeds=(5, 6)
+            ),
+            "prefix_rescues": _scenario(
+                tmp / "pr", liar_priority=1, lies=(), workers=1, stage_seeds=(5, 6), lie_first=2
+            ),
+            "prefix_not_retried": _scenario(
+                tmp / "pn",
+                liar_priority=1,
+                lies=(),
+                workers=1,
+                stage_seeds=(5, 6),
+                lie_first=2,
+                retry_prefix=False,
             ),
         }
 
@@ -300,6 +324,27 @@ def test_chains_race_staged_prefixes_and_select_deterministically(
         [("reach", "valid", None, 0), ("onward", "invalid", 5, 0), ("onward", "invalid", 6, 1)]
     ] * 3
     assert right["chosen"] is None and exhausted["selected"]["label"] == "left_arm"
+    assert right["retry_prefix"] == [True, True]
+
+    # By default, once a stage's own seeds are exhausted, a later prefix seed may rescue
+    # the chain; with retry_prefix=False, exactly one prefix and its tries run.
+    failed_twice = [
+        ("reach", "valid", None, 0),
+        ("onward", "invalid", 5, 0),
+        ("onward", "invalid", 6, 1),
+    ]
+    rescued = first["prefix_rescues"]
+    right = rescued["report"]["chains"][0]
+    assert [tries(a) for a in right["attempts"]] == [
+        failed_twice,
+        [("reach", "valid", None, 0), ("onward", "valid", 5, 0)],
+    ]
+    assert rescued["selected"]["label"] == "right_arm" and rescued["selected"]["attempt"] == 1
+    pruned = first["prefix_not_retried"]
+    right = pruned["report"]["chains"][0]
+    assert right["retry_prefix"] == [True, False]
+    assert [tries(a) for a in right["attempts"]] == [failed_twice]
+    assert right["chosen"] is None and pruned["selected"]["label"] == "left_arm"
     assert preferred["selected"]["label"] == "left_arm"
 
 
@@ -313,6 +358,15 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
     ]
     exhausted = _scenario(
         tmp_path / "sx", liar_priority=1, lies=(5, 6), workers=1, stage_seeds=(5, 6)
+    )["report"]
+    pruned = _scenario(
+        tmp_path / "pn",
+        liar_priority=1,
+        lies=(),
+        workers=1,
+        stage_seeds=(5, 6),
+        lie_first=2,
+        retry_prefix=False,
     )["report"]
     forged: dict[str, Any] = {}
 
@@ -365,6 +419,25 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
         stages[1]["trial"], stages[2]["trial"] = 0, 1
         stages[1]["seed"], stages[2]["seed"] = 5, 6
 
+    def retry_a_pruned_prefix(d: dict[str, Any]) -> None:
+        right = d["chains"][0]
+        again = json.loads(json.dumps(right["attempts"][0]))
+        again["index"], again["seed"] = 1, 1
+        right["attempts"].append(again)
+
+    def hide_the_pruning(d: dict[str, Any]) -> None:
+        d["chains"][0]["retry_prefix"][1] = True
+
+    def prune_the_first_stage(d: dict[str, Any]) -> None:
+        d["chains"][0]["retry_prefix"][0] = False
+
+    def drop_later_seeds(d: dict[str, Any]) -> None:
+        d["chains"][0]["attempts"] = d["chains"][0]["attempts"][:1]
+
+    forge("a_pruned_prefix_retried", retry_a_pruned_prefix, pruned)
+    forge("pruning_unrecorded", hide_the_pruning, pruned)
+    forge("the_first_stage_pruned", prune_the_first_stage, pruned)
+    forge("later_seeds_missing", drop_later_seeds, exhausted)
     forge("a_stage_seed_skipped", skip_a_stage_seed, seeded)
     forge("a_stage_retried_after_a_valid_try", retry_after_a_valid_try, seeded)
     forge("the_first_stage_seeded", seed_the_first_stage, seeded)
@@ -380,6 +453,10 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
         forge(name, change)
     (artifacts / "refusals.json").write_text(json.dumps(forged, indent=2) + "\n")
     assert forged == {
+        "a_pruned_prefix_retried": "inconsistent_outcome",
+        "pruning_unrecorded": "inconsistent_outcome",
+        "the_first_stage_pruned": "inconsistent_outcome",
+        "later_seeds_missing": "inconsistent_outcome",
         "a_stage_seed_skipped": "inconsistent_outcome",
         "a_stage_retried_after_a_valid_try": "inconsistent_outcome",
         "the_first_stage_seeded": "inconsistent_outcome",
