@@ -20,7 +20,8 @@ import sys
 import tempfile
 import types
 import typing
-from collections.abc import Callable, Iterator, Mapping
+import weakref
+from collections.abc import Callable, Hashable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
 
@@ -73,9 +74,11 @@ def meta(
     return out
 
 
-@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True, weakref_slot=True)
 class Struct:
-    """Base for validated immutable values. Use ``Value`` or ``Record``."""
+    """Base for validated immutable values. Use ``Value`` or ``Record``. Weakly
+    referenceable, so what is derived from one value (its fingerprint, a check it
+    passed) is computed once per object (``memo``)."""
 
     def __post_init__(self) -> None:
         for f in _fields(type(self)):
@@ -545,8 +548,47 @@ def loads(text: str | bytes, cls: type[_S], assets: AssetStore | None = None) ->
     return decode(data, cls, assets)
 
 
+_T = TypeVar("_T")
+_MEMO: dict[int, tuple[weakref.ref[Any], dict[Hashable, Any]]] = {}
+"""What ``memo`` derived from each live value, by the value's identity."""
+
+
+def memo(obj: Any, key: Hashable, compute: Callable[[], _T]) -> _T:
+    """``compute()``, at most once for this object and ``key``: what it derives from
+    ``obj``, an immutable value, must depend only on ``obj`` and ``key``. Kept while
+    ``obj`` lives, by identity, so a value's fingerprint, or a check it passed, is not
+    recomputed. A ``compute`` that raises is not kept, so a check that fails fails
+    every time. An object that cannot be weakly referenced is not kept either."""
+    ident = id(obj)
+    entry = _MEMO.get(ident)
+    if entry is None or entry[0]() is not obj:
+        try:
+            ref = weakref.ref(obj, functools.partial(_forget, ident))
+        except TypeError:
+            return compute()
+        entry = (ref, {})
+        _MEMO[ident] = entry
+    derived = entry[1]
+    if key in derived:
+        return typing.cast(_T, derived[key])
+    value = compute()
+    derived[key] = value
+    return value
+
+
+def _forget(ident: int, ref: weakref.ref[Any]) -> None:
+    entry = _MEMO.get(ident)
+    if entry is not None and entry[0] is ref:
+        _MEMO.pop(ident, None)
+
+
 def fingerprint(obj: Struct) -> str:
-    """SHA-256 of the canonical JSON encoding. Equal values have equal fingerprints."""
+    """SHA-256 of the canonical JSON encoding. Equal values have equal fingerprints.
+    Computed once per object: values are immutable."""
+    return memo(obj, fingerprint, lambda: _digest(obj))
+
+
+def _digest(obj: Struct) -> str:
     canonical = json.dumps(encode(obj), sort_keys=True, allow_nan=False, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 

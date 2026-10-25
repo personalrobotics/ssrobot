@@ -59,7 +59,9 @@ An immutable, validated semantic model of one robot. Construction fails on dupli
 names, unknown references, malformed limits, or an invalid frame tree, so a description
 that exists is consistent. `fingerprint()` is the SHA-256 of its canonical JSON. It is
 the description's identity: equal content gives an equal fingerprint. Contexts can share
-one description because it has no mutable state.
+one description because it has no mutable state. Like every wire value's, its
+fingerprint is computed once per object; so is each check a value passes, such as a
+request's against its description and snapshot (#189). A failed check is not kept.
 
 A description has two layers. Robot packages ([packages.md](packages.md)) supply
 them separately, and `RobotDescription.compose(model, semantics)` joins them.
