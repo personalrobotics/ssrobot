@@ -367,6 +367,18 @@ is infeasible. `plan_chains(ctx, chains, snapshot=...)` races them, and `start_c
 - **A `Stage`** is a name and `build(previous) -> StageRequest`, which runs on the
   context's thread. `previous` is the `StageResult` of the stage before it, `None` for the
   first.
+- **A later stage's own `seeds`** retry only that stage, from the same `previous`. Its
+  request is built once, and tried with each seed in order; the first valid try is the
+  stage's. When every try fails, the attempt fails, and the chain's next seed plans the
+  prefix again. `None`, the default, plans the request's own seed once. The first stage
+  has none of its own, since its seeds are the chain's. A transfer, say, can be retried from
+  one validated pregrasp, approach and lift, without planning them again.
+- **`retry_prefix`**, on a later stage, defaults to `True`: once the stage has failed
+  every try it may make, the chain's next seed may plan the prefix again, and a later
+  prefix may rescue the chain. `False` is the caller's assertion that another prefix is
+  not worth exploring. It trades completeness for bounded work: exactly one prefix and
+  that stage's tries run, and the chain fails there. The first stage is the prefix, so
+  it may not be `False`.
 - **A `StageRequest`** names the state the stage plans in, the request built in it, the
   planner, and an optional processor. The request must have been built in that state.
 - **A chain is contiguous.** The first stage plans in the run's own state: the snapshot
@@ -385,17 +397,25 @@ is infeasible. `plan_chains(ctx, chains, snapshot=...)` races them, and `start_c
      valid. Its cost is the sum of that attempt's validated stage durations. A seed is
      attempted only once every earlier seed of the chain has failed, so the report lists
      the attempts made, and no later seed is planned; failed seeds stay in the report and
-     cost nothing.
+     cost nothing. A stage's failed tries cost nothing either: only its valid try counts.
   2. Across chains: the highest priority, then the lowest cost, then declaration order.
      With `cancel_lower`, a chain's choice stops every chain of a strictly lower priority.
 - **Results:** `Chains.selected` gives the selected chain, its chosen attempt, and that
   attempt's stage results.
-- **The `ChainsReport`** records every attempt and every stage it reached, with no
-  wall-clock time. Each stage has fingerprints of its state, the projection it was built
+- **The `ChainsReport`** records every attempt and every try of every stage it reached,
+  with each try's `trial` and own `seed`, and each chain's `seeds`, `stage_seeds` and
+  `retry_prefix`, with no wall-clock time. Each stage has fingerprints of its state, the projection it was built
   from and its own projection, and of its request, result and validation.
 - **Decoding checks the report:**
   - every first stage is the run's state;
   - every later stage is built from the previous stage's projection;
+  - a stage's tries plan its own seeds in order, another only after a failed or invalid
+    one, and, unless the run was aborted, a failed stage tried every seed it has;
+  - no seed follows the first feasible one, nor an attempt that failed where the prefix
+    is not retried;
+  - unless the run was aborted, a chain without a choice tried every seed. The
+    exceptions are a stage that does not retry the prefix, and a higher priority's choice
+    that stopped the chain;
   - an attempt is feasible exactly when every stage of its chain is valid;
   - each chain's choice is its first feasible seed;
   - the selection follows the rule.
