@@ -12,6 +12,7 @@ still refused for another. Reproduce with ``uv run pytest tests/test_planning_co
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import json
 import math
@@ -807,4 +808,64 @@ def test_derived_values_are_computed_once_and_never_shared(artifacts: Path) -> N
         "kept_after_freeing": 0,
         "another_snapshot": ["request_mismatch", "request_mismatch"],
         "the_same_snapshot_again": "accepted",
+    }
+
+
+def test_derived_values_are_computed_once_by_concurrent_workers(artifacts: Path) -> None:
+    """#189's review: planning workers ask for the same value's derived values at once.
+    Each is computed once however many ask; one derived value may derive another of the
+    same object (as ``check_validation`` derives ``check_subject``) without deadlock; and
+    one that fails is computed again by the next asker."""
+    import threading
+    import time
+
+    from ssrobot import Pose
+    from ssrobot._wire import memo
+
+    value = Pose(position=(1.0, 2.0, 3.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
+    calls: list[str] = []
+    start = threading.Barrier(8)
+
+    def slow(name: str) -> str:
+        calls.append(name)
+        time.sleep(0.05)  # long enough for every asker to arrive while it runs
+        return name
+
+    def outer() -> str:
+        calls.append("outer")
+        return memo(value, "inner", lambda: slow("inner")) + "+outer"
+
+    answers: list[str] = []
+
+    def ask(key: str) -> None:
+        start.wait()
+        answers.append(memo(value, key, outer if key == "outer" else lambda: slow(key)))
+
+    workers = [threading.Thread(target=ask, args=(k,)) for k in ["same"] * 6 + ["outer"] * 2]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join(timeout=10)
+
+    failures: list[int] = []
+
+    def failing() -> str:
+        failures.append(1)
+        raise ValueError("this check fails")
+
+    for _ in range(2):
+        with contextlib.suppress(ValueError):
+            memo(value, "failing", failing)
+    report = {
+        "answers": sorted(answers),
+        "computed": sorted(calls),
+        "failing_computed": len(failures),
+        "all_returned": not any(w.is_alive() for w in workers),
+    }
+    (artifacts / "concurrent_once.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert report == {
+        "answers": ["inner+outer", "inner+outer", *["same"] * 6],
+        "computed": ["inner", "outer", "same"],
+        "failing_computed": 2,
+        "all_returned": True,
     }

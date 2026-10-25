@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import types
 import typing
 import weakref
@@ -549,8 +550,22 @@ def loads(text: str | bytes, cls: type[_S], assets: AssetStore | None = None) ->
 
 
 _T = TypeVar("_T")
-_MEMO: dict[int, tuple[weakref.ref[Any], dict[Hashable, Any]]] = {}
+
+
+@dataclasses.dataclass(slots=True)
+class _Derived:
+    """What ``memo`` derived from one live value, and a lock per key being derived."""
+
+    ref: weakref.ref[Any]
+    values: dict[Hashable, Any] = dataclasses.field(default_factory=dict)
+    locks: dict[Hashable, threading.Lock] = dataclasses.field(default_factory=dict)
+
+
+_MEMO: dict[int, _Derived] = {}
 """What ``memo`` derived from each live value, by the value's identity."""
+_MEMO_LOCK = threading.RLock()
+"""Guards ``_MEMO``'s entries and their locks, never a computation. Reentrant, since a
+value freed while it is held runs ``_forget`` on the same thread."""
 
 
 def memo(obj: Any, key: Hashable, compute: Callable[[], _T]) -> _T:
@@ -558,28 +573,44 @@ def memo(obj: Any, key: Hashable, compute: Callable[[], _T]) -> _T:
     ``obj``, an immutable value, must depend only on ``obj`` and ``key``. Kept while
     ``obj`` lives, by identity, so a value's fingerprint, or a check it passed, is not
     recomputed. A ``compute`` that raises is not kept, so a check that fails fails
-    every time. An object that cannot be weakly referenced is not kept either."""
+    every time. An object that cannot be weakly referenced is not kept either.
+
+    Threads asking at once for the same object and key wait for one computation: each
+    key has its own lock, held only while it is computed, so a computation may derive
+    another key of the same object."""
     ident = id(obj)
     entry = _MEMO.get(ident)
-    if entry is None or entry[0]() is not obj:
-        try:
-            ref = weakref.ref(obj, functools.partial(_forget, ident))
-        except TypeError:
-            return compute()
-        entry = (ref, {})
-        _MEMO[ident] = entry
-    derived = entry[1]
-    if key in derived:
-        return typing.cast(_T, derived[key])
-    value = compute()
-    derived[key] = value
-    return value
+    if entry is not None and entry.ref() is obj and key in entry.values:
+        return typing.cast(_T, entry.values[key])
+    with _MEMO_LOCK:
+        entry = _MEMO.get(ident)
+        if entry is None or entry.ref() is not obj:
+            try:
+                ref = weakref.ref(obj, functools.partial(_forget, ident))
+            except TypeError:
+                entry = None
+            else:
+                entry = _Derived(ref)
+                _MEMO[ident] = entry
+        if entry is not None:
+            if key in entry.values:
+                return typing.cast(_T, entry.values[key])
+            lock = entry.locks.setdefault(key, threading.Lock())
+    if entry is None:
+        return compute()
+    with lock:
+        if key in entry.values:  # computed by another thread while this one waited
+            return typing.cast(_T, entry.values[key])
+        value = compute()
+        entry.values[key] = value
+        return value
 
 
 def _forget(ident: int, ref: weakref.ref[Any]) -> None:
-    entry = _MEMO.get(ident)
-    if entry is not None and entry[0] is ref:
-        _MEMO.pop(ident, None)
+    with _MEMO_LOCK:
+        entry = _MEMO.get(ident)
+        if entry is not None and entry.ref is ref:
+            del _MEMO[ident]
 
 
 def fingerprint(obj: Struct) -> str:
