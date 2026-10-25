@@ -834,7 +834,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
 | [`Submission`](../schemas/ssrobot.Submission.v2.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
-| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v3.json) | One event in a trace. |
+| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v4.json) | One event in a trace. |
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`PortfolioReport`](../schemas/ssrobot.PortfolioReport.v1.json) | Every attempt of a planner portfolio and which was selected. See planning.md. |
@@ -843,16 +843,16 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`SceneState`](../schemas/ssrobot.SceneState.v1.json) | A context's scene: its objects and fixtures, what it holds, and its revision. |
 | [`AttachmentViolation`](../schemas/ssrobot.AttachmentViolation.v1.json) | A runtime's report that an attached object left its declared transform. |
 | [`SceneSnapshot`](../schemas/ssrobot.SceneSnapshot.v1.json) | An immutable copy of everything a geometric query reads, from which planning scenes are built. |
-| [`PlanningRequest`](../schemas/ssrobot.PlanningRequest.v2.json) | Everything a planner needs, fully resolved from a description and a snapshot. |
+| [`PlanningRequest`](../schemas/ssrobot.PlanningRequest.v3.json) | Everything a planner needs, fully resolved from a description and a snapshot. |
 | [`ConfigurationGoal`](../schemas/ssrobot.ConfigurationGoal.v1.json) | Reach any one of these configurations. |
 | [`PoseGoal`](../schemas/ssrobot.PoseGoal.v1.json) | Bring a frame to a world pose, within tolerances. |
-| [`OffsetGoal`](../schemas/ssrobot.OffsetGoal.v1.json) | Move a frame in a straight line, keeping its orientation. |
+| [`OffsetGoal`](../schemas/ssrobot.OffsetGoal.v2.json) | Move a frame in a straight line from a reference pose, keeping its orientation. |
 | [`TsrGoal`](../schemas/ssrobot.TsrGoal.v1.json) | Bring a frame into any one of these task space regions. |
 | [`BasePoseGoal`](../schemas/ssrobot.BasePoseGoal.v1.json) | Bring a mobile base's frame to a world pose. |
 | [`TimedTrajectory`](../schemas/ssrobot.TimedTrajectory.v2.json) | An exact timed motion from rest to rest: the source law, not a runtime command. |
 | [`MotionValidation`](../schemas/ssrobot.MotionValidation.v2.json) | One validator's answer for one exact motion, bound to its scene, constraints, goal, and policy. |
-| [`PlanResult`](../schemas/ssrobot.PlanResult.v3.json) | A planner's answer to one request, carrying the request and its validation evidence. |
-| [`PreparedTrajectory`](../schemas/ssrobot.PreparedTrajectory.v5.json) | A command compiled for a runtime's trajectory contract, with its readiness checks and both validation reports; one that decodes is ready to execute. |
+| [`PlanResult`](../schemas/ssrobot.PlanResult.v4.json) | A planner's answer to one request, carrying the request and its validation evidence. |
+| [`PreparedTrajectory`](../schemas/ssrobot.PreparedTrajectory.v6.json) | A command compiled for a runtime's trajectory contract, with its readiness checks and both validation reports; one that decodes is ready to execute. |
 | [`MujocoProfile`](../schemas/ssrobot.MujocoProfile.v1.json) | MuJoCo-specific settings a package declares for `MujocoRuntime`. See [mujoco.md](mujoco.md). |
 | [`AuthoringDraft`](../schemas/ssrobot.AuthoringDraft.v1.json) | What `ssrobot init` knows about a package being authored, and what is undecided. See [authoring.md](authoring.md). |
 | [`AuthoringAnswers`](../schemas/ssrobot.AuthoringAnswers.v1.json) | Answers to a draft's decisions, for non-interactive authoring. |

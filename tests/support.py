@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import shutil
+import xml.etree.ElementTree as ET
 from importlib import resources
 from pathlib import Path
 
@@ -447,4 +448,45 @@ def colliding_bimanual(
     )
     scene = root / "scene.xml"
     scene.write_text(f"<mujoco><worldbody>{obstacle}{free}</worldbody></mujoco>\n")
+    return package, scene
+
+
+PANDA_JOINTS = tuple(f"joint{i}" for i in range(1, 8))
+
+
+def runnable_panda(root: Path) -> tuple[Path, Path]:
+    """The Menagerie Franka Panda parser fixture made runnable, under ``root``: its empty
+    placeholder meshes and the geoms using them removed, so it has its inertials and
+    position servos but no geometry (nothing can collide), and no gravity, so the servos
+    hold it where it is commanded; a velocity and acceleration
+    limit on every arm joint, so plans can be timed; a joint trajectory command and a
+    joint-velocity channel (``arm_qd``) for the arm. It has ssik kinematics (seven
+    revolute joints), so it plans offset goals and path constraints. Start it in its
+    ``home`` keyframe. Returns the package root and an empty scene file."""
+    package = root / "panda"
+    shutil.copytree(
+        Path(__file__).parent / "fixtures" / "packages" / "franka_panda_parser", package
+    )
+    model = package / "menagerie" / "panda.xml"
+    tree = ET.parse(model)
+    ET.SubElement(tree.getroot(), "option", gravity="0 0 0")
+    for parent in tree.getroot().iter():
+        for child in list(parent):
+            if child.tag == "mesh" or (child.tag == "geom" and "mesh" in child.attrib):
+                parent.remove(child)
+    tree.write(model)
+    limits = "".join(
+        f'\n[[semantics.joint_limits]]\njoint = "{j}"\nvelocity = 1.0\nacceleration = 2.0\n'
+        for j in PANDA_JOINTS
+    )
+    manifest = package / "ssrobot.toml"
+    manifest.write_text(
+        manifest.read_text()
+        + limits
+        + '\n[[semantics.commands]]\ncomponent = "arm"\nkind = "joint_trajectory"\n'
+        + '\n[[semantics.channels]]\nname = "arm_qd"\nquantity = "joint_velocity"\n'
+        + 'source = "arm"\nshape = [7]\ndtype = "float64"\n'
+    )
+    scene = root / "scene.xml"
+    scene.write_text("<mujoco><worldbody/></mujoco>\n")
     return package, scene

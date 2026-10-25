@@ -184,10 +184,16 @@ class PoseGoal(Record):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OffsetGoal(Record):
     """Move the request's frame in a straight line: ``distance`` along ``direction`` in
-    the world, keeping its orientation, staying on the line throughout."""
+    the world, keeping its orientation, staying on the line throughout.
+
+    The line starts at ``reference_pose``, the world pose of the constrained frame at
+    zero distance: its position anchors the line, its orientation is the one the frame
+    keeps. None resolves it from the request's start, the frame's pose there. A motion
+    continued from where the robot actually arrived keeps the line it was planned on, so
+    its reference pose is the planned start's (``RobotContext.execute_continuation``)."""
 
     SCHEMA = "ssrobot.OffsetGoal"
-    VERSION = 1
+    VERSION = 2
 
     direction: tuple[float, float, float] = field(
         metadata=meta("Unit direction of motion in the world.", unit="1")
@@ -197,7 +203,15 @@ class OffsetGoal(Record):
         metadata=meta("Allowed distance from the line and the goal.", unit="m")
     )
     rotation_tolerance: float = field(
-        metadata=meta("Allowed rotation from the start orientation, per axis.", unit="rad")
+        metadata=meta("Allowed rotation from the reference orientation, per axis.", unit="rad")
+    )
+    reference_pose: Pose | None = field(
+        default=None,
+        metadata=meta(
+            "World pose of the constrained frame at zero distance: its position anchors the "
+            "line, its orientation is the one kept. None: the frame's pose at the request's "
+            "start."
+        ),
     )
 
     def _validate(self) -> None:
@@ -356,7 +370,7 @@ class PlanningRequest(Record):
     which constraints and limits, in which snapshot of the world."""
 
     SCHEMA = "ssrobot.PlanningRequest"
-    VERSION = 2
+    VERSION = 3
 
     robot: str = field(metadata=meta("Robot name."))
     description: str = field(metadata=meta("Fingerprint of the robot description."))
@@ -703,7 +717,7 @@ class PlanResult(Record):
     constraints."""
 
     SCHEMA = "ssrobot.PlanResult"
-    VERSION = 3
+    VERSION = 4
 
     request: PlanningRequest = field(metadata=meta("The request it answers."))
     planner: str = field(metadata=meta("Planner name and version."))
@@ -1623,7 +1637,7 @@ class PreparedTrajectory(Record):
     is ready to execute."""
 
     SCHEMA = "ssrobot.PreparedTrajectory"
-    VERSION = 5
+    VERSION = 6
 
     request: PlanningRequest = field(metadata=meta("The request it was planned for."))
     source: str = field(

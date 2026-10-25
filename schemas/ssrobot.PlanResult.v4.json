@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.PreparedTrajectory v5",
-  "$ref": "#/$defs/PreparedTrajectory",
+  "title": "ssrobot.PlanResult v4",
+  "$ref": "#/$defs/PlanResult",
   "$defs": {
     "BasePoseGoal": {
       "type": "object",
@@ -88,6 +88,36 @@
       ],
       "additionalProperties": false
     },
+    "Diagnostic": {
+      "type": "object",
+      "description": "Why something was rejected, failed, or modified.",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Stable machine-readable code."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable explanation."
+        },
+        "component": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Affected component, if any."
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
     "EffectiveLimits": {
       "type": "object",
       "description": "The velocity and acceleration limits a motion must respect: the description's",
@@ -153,27 +183,44 @@
       ],
       "additionalProperties": false
     },
-    "ExecutionCheck": {
+    "GeometricPath": {
       "type": "object",
-      "description": "One independent check of a runtime command.",
+      "description": "Waypoints joined by straight joint-space lines, with no timing.",
       "properties": {
-        "name": {
+        "group": {
           "type": "string",
-          "description": "What was checked."
+          "description": "The joint group that moves."
         },
-        "passed": {
-          "type": "boolean",
-          "description": "Whether the command satisfies it."
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joint names, in group order."
         },
-        "detail": {
+        "waypoints": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "description": "Configurations, first the start, last the goal.",
+          "x-unit": "joint"
+        },
+        "interpolation": {
           "type": "string",
-          "description": "The worst case found, with its bound."
+          "enum": [
+            "linear"
+          ],
+          "description": "How consecutive waypoints are joined."
         }
       },
       "required": [
-        "name",
-        "passed",
-        "detail"
+        "group",
+        "joints",
+        "waypoints"
       ],
       "additionalProperties": false
     },
@@ -262,75 +309,6 @@
       "required": [
         "failure",
         "configuration"
-      ],
-      "additionalProperties": false
-    },
-    "JointTrajectory": {
-      "type": "object",
-      "description": "Timed joint positions for a group, executed from the time it starts.",
-      "properties": {
-        "schema": {
-          "const": "ssrobot.JointTrajectory"
-        },
-        "version": {
-          "const": 1
-        },
-        "group": {
-          "type": "string",
-          "description": "Joint group name."
-        },
-        "joints": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Joint names; must equal the group's order."
-        },
-        "time_from_start_ns": {
-          "type": "array",
-          "items": {
-            "type": "integer"
-          },
-          "description": "Waypoint times; start at 0 and strictly increase.",
-          "x-unit": "ns"
-        },
-        "positions": {
-          "type": "array",
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "number"
-            }
-          },
-          "description": "One row of joint positions per waypoint.",
-          "x-unit": "joint"
-        },
-        "velocities": {
-          "anyOf": [
-            {
-              "type": "array",
-              "items": {
-                "type": "array",
-                "items": {
-                  "type": "number"
-                }
-              }
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Optional row of joint velocities per waypoint.",
-          "x-unit": "joint/s"
-        }
-      },
-      "required": [
-        "schema",
-        "version",
-        "group",
-        "joints",
-        "time_from_start_ns",
-        "positions"
       ],
       "additionalProperties": false
     },
@@ -459,7 +437,7 @@
           "const": "ssrobot.OffsetGoal"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "direction": {
           "type": "array",
@@ -492,8 +470,19 @@
         },
         "rotation_tolerance": {
           "type": "number",
-          "description": "Allowed rotation from the start orientation, per axis.",
+          "description": "Allowed rotation from the reference orientation, per axis.",
           "x-unit": "rad"
+        },
+        "reference_pose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pose"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "World pose of the constrained frame at zero distance: its position anchors the line, its orientation is the one kept. None: the frame's pose at the request's start."
         }
       },
       "required": [
@@ -506,6 +495,87 @@
       ],
       "additionalProperties": false
     },
+    "PlanResult": {
+      "type": "object",
+      "description": "A planner's answer to one request, carrying the request itself, so a result is",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.PlanResult"
+        },
+        "version": {
+          "const": 4
+        },
+        "request": {
+          "$ref": "#/$defs/PlanningRequest",
+          "description": "The request it answers."
+        },
+        "planner": {
+          "type": "string",
+          "description": "Planner name and version."
+        },
+        "backend": {
+          "type": "string",
+          "description": "The planner's backend that ran it."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "succeeded",
+            "infeasible",
+            "timeout",
+            "cancelled",
+            "invalid_input",
+            "backend_failure"
+          ],
+          "description": "How planning ended."
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Diagnostic"
+          },
+          "description": "Why it ended so, with the planner's own messages."
+        },
+        "path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GeometricPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The planner's path."
+        },
+        "trajectory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimedTrajectory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The planner's timed trajectory, if it times motion."
+        },
+        "validation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MotionValidation"
+          },
+          "description": "The planner's report for the path, then for the trajectory, if any."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "request",
+        "planner",
+        "backend",
+        "status"
+      ],
+      "additionalProperties": false
+    },
     "PlanningRequest": {
       "type": "object",
       "description": "Everything a planner needs, fully resolved: who plans, from where, to what, under",
@@ -514,7 +584,7 @@
           "const": "ssrobot.PlanningRequest"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "robot": {
           "type": "string",
@@ -735,111 +805,169 @@
       ],
       "additionalProperties": false
     },
-    "PreparedTrajectory": {
+    "Ramp": {
       "type": "object",
-      "description": "A runtime command compiled from a timed trajectory: the readiness checks it",
+      "description": "One joint's motion over a piece: its start state, then constant-acceleration spans.",
+      "properties": {
+        "position": {
+          "type": "number",
+          "description": "Position at the piece's start.",
+          "x-unit": "joint"
+        },
+        "velocity": {
+          "type": "number",
+          "description": "Velocity at the piece's start.",
+          "x-unit": "joint/s"
+        },
+        "intervals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RampInterval"
+          },
+          "description": "Consecutive spans."
+        }
+      },
+      "required": [
+        "position",
+        "velocity",
+        "intervals"
+      ],
+      "additionalProperties": false
+    },
+    "RampInterval": {
+      "type": "object",
+      "description": "A span of constant acceleration.",
+      "properties": {
+        "duration": {
+          "type": "number",
+          "description": "Length of the span.",
+          "x-unit": "s"
+        },
+        "acceleration": {
+          "type": "number",
+          "description": "The joint's acceleration.",
+          "x-unit": "joint/s^2"
+        }
+      },
+      "required": [
+        "duration",
+        "acceleration"
+      ],
+      "additionalProperties": false
+    },
+    "TimedTrajectory": {
+      "type": "object",
+      "description": "An exact timed motion from rest to rest: the source law, not a runtime command.",
       "properties": {
         "schema": {
-          "const": "ssrobot.PreparedTrajectory"
+          "const": "ssrobot.TimedTrajectory"
         },
         "version": {
-          "const": 5
+          "const": 2
         },
-        "request": {
-          "$ref": "#/$defs/PlanningRequest",
-          "description": "The request it was planned for."
-        },
-        "source": {
+        "group": {
           "type": "string",
-          "description": "The source trajectory's identity (trajectory_identity), which it samples."
+          "description": "The joint group that moves."
         },
-        "source_law": {
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Joint names, in group order."
+        },
+        "law": {
           "type": "string",
           "enum": [
             "piecewise_constant_acceleration"
           ],
-          "description": "The source trajectory's law."
+          "description": "How position evolves within an interval."
         },
-        "contract": {
-          "$ref": "#/$defs/TrajectoryContract",
-          "description": "The trajectory-execution contract it was compiled for."
-        },
-        "command": {
-          "$ref": "#/$defs/JointTrajectory",
-          "description": "The command to submit."
-        },
-        "checks": {
+        "pieces": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/ExecutionCheck"
+            "$ref": "#/$defs/TrajectoryPiece"
           },
-          "description": "Every readiness check, all passed."
+          "description": "Consecutive pieces."
         },
-        "source_validation": {
-          "$ref": "#/$defs/MotionValidation",
-          "description": "The validator's report for the source trajectory."
+        "limits": {
+          "$ref": "#/$defs/EffectiveLimits",
+          "description": "The limits it was timed and checked under."
         },
-        "compiled_validation": {
-          "$ref": "#/$defs/MotionValidation",
-          "description": "The same validator's report for the command, as a linear path."
+        "validated": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "position_limits",
+              "collision",
+              "tsr_path",
+              "velocity_limits",
+              "acceleration_limits",
+              "effort_limits"
+            ]
+          },
+          "description": "Constraint classes its producer validated, sorted."
         },
-        "geometry_preserved": {
-          "type": "boolean",
-          "description": "Whether the command traces exactly the validated source path."
+        "producer": {
+          "type": "string",
+          "description": "What produced it, e.g. 'sscbirrt 3.5.0'."
+        },
+        "provenance": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Producer details as sorted (key, value) pairs."
         }
       },
       "required": [
         "schema",
         "version",
-        "request",
-        "source",
-        "source_law",
-        "contract",
-        "command",
-        "checks",
-        "source_validation",
-        "compiled_validation",
-        "geometry_preserved"
+        "group",
+        "joints",
+        "law",
+        "pieces",
+        "limits",
+        "validated",
+        "producer"
       ],
       "additionalProperties": false
     },
-    "TrajectoryContract": {
+    "TrajectoryPiece": {
       "type": "object",
-      "description": "How a runtime executes a ``JointTrajectory``: the trajectory-execution contract a",
+      "description": "An interval in which every joint follows its own ramp, all of one duration.",
       "properties": {
-        "period_ns": {
-          "type": "integer",
-          "description": "Time between waypoints.",
-          "x-unit": "ns"
-        },
-        "interpolation": {
+        "validation": {
           "type": "string",
           "enum": [
-            "linear"
+            "planned",
+            "shortcut"
           ],
-          "description": "How the runtime moves between waypoints."
+          "description": "How its geometry was checked."
         },
-        "fixed_period": {
-          "type": "boolean",
-          "description": "Whether the period holds for the lifetime of the context."
-        },
-        "goal_tolerance": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "How close, per joint, a trajectory's end must be reached for it to succeed; None when the runtime declares none.",
-          "x-unit": "joint"
+        "ramps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Ramp"
+          },
+          "description": "One ramp per joint, in joint order."
         }
       },
       "required": [
-        "period_ns",
-        "interpolation",
-        "fixed_period"
+        "validation",
+        "ramps"
       ],
       "additionalProperties": false
     },

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.TraceRecord v3",
+  "title": "ssrobot.TraceRecord v4",
   "$ref": "#/$defs/TraceRecord",
   "$defs": {
     "ActionChunk": {
@@ -476,7 +476,7 @@
           "const": "ssrobot.ContinuationReport"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "prediction": {
           "type": "string",
@@ -1526,7 +1526,7 @@
           "const": "ssrobot.OffsetGoal"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "direction": {
           "type": "array",
@@ -1559,8 +1559,19 @@
         },
         "rotation_tolerance": {
           "type": "number",
-          "description": "Allowed rotation from the start orientation, per axis.",
+          "description": "Allowed rotation from the reference orientation, per axis.",
           "x-unit": "rad"
+        },
+        "reference_pose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pose"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "World pose of the constrained frame at zero distance: its position anchors the line, its orientation is the one kept. None: the frame's pose at the request's start."
         }
       },
       "required": [
@@ -1581,7 +1592,7 @@
           "const": "ssrobot.PlanningRequest"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "robot": {
           "type": "string",
@@ -1902,7 +1913,7 @@
           "const": "ssrobot.PreparedTrajectory"
         },
         "version": {
-          "const": 5
+          "const": 6
         },
         "request": {
           "$ref": "#/$defs/PlanningRequest",
@@ -2404,7 +2415,7 @@
           "const": "ssrobot.TraceRecord"
         },
         "version": {
-          "const": 3
+          "const": 4
         },
         "sequence": {
           "type": "integer",
