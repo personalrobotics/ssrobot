@@ -5,11 +5,14 @@ request from one snapshot. A scripted planner answers with a self-contained resu
 request, a straight joint-space path, and that path timed with one synchronized triangle
 per segment, which is sampled, checked, and executed. Reports are
 written under $SSROBOT_ARTIFACTS/<test>; each scenario runs twice and must be
-byte-identical. Reproduce with ``uv run pytest tests/test_planning_contracts.py``.
+byte-identical. ``derived_once.json`` (#189) shows a value's fingerprint is its own even
+where freed values' addresses are reused, and a request that passed for one snapshot is
+still refused for another. Reproduce with ``uv run pytest tests/test_planning_contracts.py``.
 """
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import json
 import math
@@ -751,3 +754,118 @@ def test_malformed_ambiguous_and_falsely_ready_records_are_refused(artifacts: Pa
     }
     assert base_request.frame == "base" and base_request.component == "turntable"
     assert loads(dumps(base_request), PlanningRequest) == base_request
+
+
+def test_derived_values_are_computed_once_and_never_shared(artifacts: Path) -> None:
+    """#189: what is derived from a value (its fingerprint, a check it passed) is kept per
+    object, never handed to another. A value freed and replaced by a new one at the same
+    address gets its own fingerprint; a request that passed for one snapshot is refused
+    for another, every time."""
+    import gc
+
+    from ssrobot import ConfigurationGoal, Pose
+    from ssrobot._wire import _MEMO
+    from ssrobot.planning_contracts import check_planned_in
+
+    # Values made and freed one at a time, so addresses are reused: every fingerprint
+    # is its own value's.
+    gc.collect()
+    before = len(_MEMO)
+    fingerprints = []
+    for i in range(5_000):
+        fingerprints.append(
+            fingerprint(Pose(position=(float(i), 0.0, 0.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0)))
+        )
+    gc.collect()
+    distinct = len(set(fingerprints))
+    kept = len(_MEMO) - before
+
+    package, ctx = _open()
+    with ctx:
+        first = ctx.snapshot()
+        request = ctx.manipulator().request(
+            ConfigurationGoal(configurations=((0.1, 0.2, 0.0),)), snapshot=first
+        )
+        check_planned_in(request, package.description, first)
+        ctx.step()
+        later = ctx.snapshot()
+        refused = [
+            _refusal(lambda: check_planned_in(request, package.description, later))
+            for _ in range(2)
+        ]
+        again = _refusal(lambda: check_planned_in(request, package.description, first))
+    report = {
+        "fingerprints": len(fingerprints),
+        "distinct": distinct,
+        "kept_after_freeing": kept,
+        "another_snapshot": refused,
+        "the_same_snapshot_again": again,
+    }
+    (artifacts / "derived_once.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert report == {
+        "fingerprints": 5_000,
+        "distinct": 5_000,
+        "kept_after_freeing": 0,
+        "another_snapshot": ["request_mismatch", "request_mismatch"],
+        "the_same_snapshot_again": "accepted",
+    }
+
+
+def test_derived_values_are_computed_once_by_concurrent_workers(artifacts: Path) -> None:
+    """#189's review: planning workers ask for the same value's derived values at once.
+    Each is computed once however many ask; one derived value may derive another of the
+    same object (as ``check_validation`` derives ``check_subject``) without deadlock; and
+    one that fails is computed again by the next asker."""
+    import threading
+    import time
+
+    from ssrobot import Pose
+    from ssrobot._wire import memo
+
+    value = Pose(position=(1.0, 2.0, 3.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
+    calls: list[str] = []
+    start = threading.Barrier(8)
+
+    def slow(name: str) -> str:
+        calls.append(name)
+        time.sleep(0.05)  # long enough for every asker to arrive while it runs
+        return name
+
+    def outer() -> str:
+        calls.append("outer")
+        return memo(value, "inner", lambda: slow("inner")) + "+outer"
+
+    answers: list[str] = []
+
+    def ask(key: str) -> None:
+        start.wait()
+        answers.append(memo(value, key, outer if key == "outer" else lambda: slow(key)))
+
+    workers = [threading.Thread(target=ask, args=(k,)) for k in ["same"] * 6 + ["outer"] * 2]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join(timeout=10)
+
+    failures: list[int] = []
+
+    def failing() -> str:
+        failures.append(1)
+        raise ValueError("this check fails")
+
+    for _ in range(2):
+        with contextlib.suppress(ValueError):
+            memo(value, "failing", failing)
+    report = {
+        "answers": sorted(answers),
+        "computed": sorted(calls),
+        "failing_computed": len(failures),
+        "all_returned": not any(w.is_alive() for w in workers),
+    }
+    (artifacts / "concurrent_once.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert report == {
+        "answers": ["inner+outer", "inner+outer", *["same"] * 6],
+        "computed": ["inner", "outer", "same"],
+        "failing_computed": 2,
+        "all_returned": True,
+    }

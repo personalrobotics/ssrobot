@@ -28,7 +28,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from ssrobot._wire import Record, Value, fingerprint, meta
+from ssrobot._wire import Record, Value, fingerprint, memo, meta
 from ssrobot.commands import JointTrajectory, TrajectoryContract, TrajectoryInterpolation
 from ssrobot.conventions import Pose, check_name
 from ssrobot.description import RobotDescription
@@ -1195,8 +1195,29 @@ def check_validation(
     compared with the subject itself: the kind, the identity, the interpolation or law,
     the number of intervals, and a trajectory's duration. A well-formed report about
     anything else is refused (``validation_mismatch``), so evidence for one motion is
-    never taken for another."""
+    never taken for another. A report that passed is not checked again against the
+    same question."""
+    if not isinstance(report, MotionValidation):
+        raise ValidationError("wrong_type", "report must be a MotionValidation", path="report")
+    if not isinstance(subject, MotionSubject | TrajectorySubject):
+        raise ValidationError(
+            "wrong_type", "subject must be a MotionSubject or TrajectorySubject", path="subject"
+        )
+    question = (
+        check_validation,
+        fingerprint(validator),
+        fingerprint(subject),
+        None if evidence is None else path_identity(evidence),
+    )
+    memo(report, question, lambda: _check_validation(report, validator, subject, evidence))
 
+
+def _check_validation(
+    report: MotionValidation,
+    validator: ValidatorIdentity,
+    subject: MotionSubject | TrajectorySubject,
+    evidence: GeometricPath | None,
+) -> None:
     def mismatch(message: str, path: str) -> ValidationError:
         return ValidationError("validation_mismatch", message, path=path)
 
@@ -1220,7 +1241,12 @@ def check_validation(
 def check_subject(report: MotionValidation, subject: MotionSubject | TrajectorySubject) -> None:
     """Raise ``validation_mismatch`` unless every field of ``report`` derived from its
     subject matches ``subject``: the kind, the identity, the interpolation or law, the
-    number of intervals, and a trajectory's duration."""
+    number of intervals, and a trajectory's duration. Checked once per report and
+    subject."""
+    memo(report, (check_subject, fingerprint(subject)), lambda: _check_subject(report, subject))
+
+
+def _check_subject(report: MotionValidation, subject: MotionSubject | TrajectorySubject) -> None:
     if isinstance(subject, TrajectorySubject):
         expected: dict[str, object] = {
             "subject": ValidationSubject.TRAJECTORY,
@@ -1423,7 +1449,12 @@ def motion_subject(
 
 
 def path_subject(path: GeometricPath) -> MotionSubject:
-    """The path's geometry; its validation resolution is evidence, not geometry."""
+    """The path's geometry; its validation resolution is evidence, not geometry. One
+    subject per path object, so its fingerprint is computed once."""
+    return memo(path, path_subject, lambda: _path_subject(path))
+
+
+def _path_subject(path: GeometricPath) -> MotionSubject:
     return MotionSubject(
         kind=ValidationSubject.PATH,
         group=path.group,
@@ -1440,7 +1471,12 @@ def trajectory_subject(trajectory: TimedTrajectory) -> TrajectorySubject:
     are one subject. So is a source path given as evidence: a report records it
     separately (``MotionValidation.evidence``). Equal motions represented with different
     pieces or ramps are different subjects; that never lets one reuse the other's
-    evidence wrongly."""
+    evidence wrongly. One subject per trajectory object, so its fingerprint is computed
+    once."""
+    return memo(trajectory, trajectory_subject, lambda: _trajectory_subject(trajectory))
+
+
+def _trajectory_subject(trajectory: TimedTrajectory) -> TrajectorySubject:
     return TrajectorySubject(
         group=trajectory.group,
         joints=trajectory.joints,
@@ -1516,7 +1552,17 @@ def check_planned_in(
     and ``snapshot``: another robot or description, another snapshot or revision, a
     group's joints other than the description's, or a start other than the snapshot's
     positions (``request_mismatch``). A plan's request arrives from outside the context;
-    copying a snapshot's fingerprint into it proves nothing else."""
+    copying a snapshot's fingerprint into it proves nothing else. Checked once per
+    request, description and snapshot."""
+    if not isinstance(request, PlanningRequest):
+        raise ValidationError("wrong_type", "the request must be a PlanningRequest")
+    question = (check_planned_in, fingerprint(description), fingerprint(snapshot))
+    memo(request, question, lambda: _check_planned_in(request, description, snapshot))
+
+
+def _check_planned_in(
+    request: PlanningRequest, description: RobotDescription, snapshot: SceneSnapshot
+) -> None:
 
     def refuse(what: str, path: str) -> ValidationError:
         return ValidationError(

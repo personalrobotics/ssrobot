@@ -18,9 +18,11 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import types
 import typing
-from collections.abc import Callable, Iterator, Mapping
+import weakref
+from collections.abc import Callable, Hashable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar
 
@@ -73,9 +75,11 @@ def meta(
     return out
 
 
-@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True, weakref_slot=True)
 class Struct:
-    """Base for validated immutable values. Use ``Value`` or ``Record``."""
+    """Base for validated immutable values. Use ``Value`` or ``Record``. Weakly
+    referenceable, so what is derived from one value (its fingerprint, a check it
+    passed) is computed once per object (``memo``)."""
 
     def __post_init__(self) -> None:
         for f in _fields(type(self)):
@@ -545,8 +549,77 @@ def loads(text: str | bytes, cls: type[_S], assets: AssetStore | None = None) ->
     return decode(data, cls, assets)
 
 
+_T = TypeVar("_T")
+
+
+@dataclasses.dataclass(slots=True)
+class _Derived:
+    """What ``memo`` derived from one live value, and a lock per key being derived."""
+
+    ref: weakref.ref[Any]
+    values: dict[Hashable, Any] = dataclasses.field(default_factory=dict)
+    locks: dict[Hashable, threading.Lock] = dataclasses.field(default_factory=dict)
+
+
+_MEMO: dict[int, _Derived] = {}
+"""What ``memo`` derived from each live value, by the value's identity."""
+_MEMO_LOCK = threading.RLock()
+"""Guards ``_MEMO``'s entries and their locks, never a computation. Reentrant, since a
+value freed while it is held runs ``_forget`` on the same thread."""
+
+
+def memo(obj: Any, key: Hashable, compute: Callable[[], _T]) -> _T:
+    """``compute()``, at most once for this object and ``key``: what it derives from
+    ``obj``, an immutable value, must depend only on ``obj`` and ``key``. Kept while
+    ``obj`` lives, by identity, so a value's fingerprint, or a check it passed, is not
+    recomputed. A ``compute`` that raises is not kept, so a check that fails fails
+    every time. An object that cannot be weakly referenced is not kept either.
+
+    Threads asking at once for the same object and key wait for one computation: each
+    key has its own lock, held only while it is computed, so a computation may derive
+    another key of the same object."""
+    ident = id(obj)
+    entry = _MEMO.get(ident)
+    if entry is not None and entry.ref() is obj and key in entry.values:
+        return typing.cast(_T, entry.values[key])
+    with _MEMO_LOCK:
+        entry = _MEMO.get(ident)
+        if entry is None or entry.ref() is not obj:
+            try:
+                ref = weakref.ref(obj, functools.partial(_forget, ident))
+            except TypeError:
+                entry = None
+            else:
+                entry = _Derived(ref)
+                _MEMO[ident] = entry
+        if entry is not None:
+            if key in entry.values:
+                return typing.cast(_T, entry.values[key])
+            lock = entry.locks.setdefault(key, threading.Lock())
+    if entry is None:
+        return compute()
+    with lock:
+        if key in entry.values:  # computed by another thread while this one waited
+            return typing.cast(_T, entry.values[key])
+        value = compute()
+        entry.values[key] = value
+        return value
+
+
+def _forget(ident: int, ref: weakref.ref[Any]) -> None:
+    with _MEMO_LOCK:
+        entry = _MEMO.get(ident)
+        if entry is not None and entry.ref is ref:
+            del _MEMO[ident]
+
+
 def fingerprint(obj: Struct) -> str:
-    """SHA-256 of the canonical JSON encoding. Equal values have equal fingerprints."""
+    """SHA-256 of the canonical JSON encoding. Equal values have equal fingerprints.
+    Computed once per object: values are immutable."""
+    return memo(obj, fingerprint, lambda: _digest(obj))
+
+
+def _digest(obj: Struct) -> str:
     canonical = json.dumps(encode(obj), sort_keys=True, allow_nan=False, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
