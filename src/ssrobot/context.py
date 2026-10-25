@@ -239,6 +239,28 @@ def _compose(a: Pose, b: Pose) -> Pose:
     return Pose(position=(ox + rx, oy + ry, oz + rz), quat_wxyz=(w / n, x / n, y / n, z / n))
 
 
+_SAME_END = 1e-9
+"""How far apart, per joint (rad or m), two ends of a motion may be and still be the same
+end: floating point, not tolerance."""
+
+
+@dataclass(frozen=True)
+class _ContinuedOccurrence:
+    """An execution ``execute_continuation`` submitted: an occurrence of the continued
+    plan, from the prediction it was made on, though rebased onto the actual state. It
+    ends where the plan does only if its submitted motion does, which binding checks.
+    Not the plan itself: the motion submitted is the rebased one."""
+
+    plan: str
+    basis: str
+    joints: tuple[str, ...]
+    end: tuple[float, ...]
+    """Where the submitted motion ends."""
+    object_tolerance_m: float
+    object_tolerance_rad: float
+    """The tolerances it was accepted under, for the held objects it carries."""
+
+
 def _scene_changes(
     prediction: PredictedSnapshot,
     actual: SceneSnapshot,
@@ -359,6 +381,8 @@ class RobotContext:
         self._projected_states: set[str] = set()
         # Each execution's own plan and snapshot, by execution id: what it ran.
         self._ran: dict[str, tuple[str, str]] = {}
+        # Each execution a continuation submitted, by execution id: the plan it continued.
+        self._continued: dict[str, _ContinuedOccurrence] = {}
         self._accepted: dict[str, Timestamp] = {}  # when the runtime accepted each execution
         self._planning_pool: ThreadPoolExecutor | None = None
 
@@ -962,16 +986,35 @@ class RobotContext:
         prediction: PredictedSnapshot | None = None,
         projection: PlanProjection | None = None,
         source: Execution | None = None,
+        unsettled: Iterable[str] = (),
     ) -> Continuation:
         """Bind a successful plan to what it was planned on and to the planner that made
         it, for ``execute_continuation``: either ``prediction``, a prediction this context
         made, or ``projection`` and ``source``.
 
         With ``projection``, ``source`` must be this particular execution of exactly the
-        projected plan: submitted by ``execute`` from that plan, with the projection's
-        snapshot (``unprojected_source`` otherwise). The plan must have been made on the
-        projection, which must be this context's and unchanged (``unknown_projection``),
-        and equal, but for its stamp, to the prediction of ``source``, which this makes."""
+        projected plan (``unprojected_source`` otherwise), either:
+        - submitted by ``execute`` from that plan, with the projection's snapshot; the
+          projection must equal, but for its stamp, the prediction of ``source``;
+        - or submitted by ``execute_continuation`` continuing that plan from the
+          prediction it was made on, which is the projection's basis. Rebased onto the
+          actual state, it is the same occurrence only if it ends where the projection
+          does: its submitted motion's end at the projected joints, a continuous joint
+          modulo a turn, the same attachments held, and its held objects where the
+          projection carries them, within the tolerances it was accepted under. The rest
+          of the scene is the actual one, reconciled when the plan continues.
+        A rebase that moved the end is refused (``projection_mismatch``). The plan must
+        have been made on the projection, which must be this context's and unchanged
+        (``unknown_projection``). The prediction of ``source``, which this makes, is the
+        returned continuation's; ``unsettled`` names free objects it makes no claim about,
+        as for ``predict``."""
+        unsettled = tuple(unsettled)
+        if unsettled and projection is None:
+            raise ValidationError(
+                "wrong_type",
+                "unsettled is for a projection's prediction; a prediction records its own",
+                path="unsettled",
+            )
         if projection is not None or source is not None:
             if prediction is not None or projection is None or source is None:
                 raise ValidationError(
@@ -979,7 +1022,7 @@ class RobotContext:
                     "bind either a prediction, or a projection with its source execution",
                     path="projection",
                 )
-            prediction = self._bind(plan, projection, source)
+            prediction = self._bind(plan, projection, source, unsettled)
         if not isinstance(prediction, PredictedSnapshot):
             raise ValidationError(
                 "wrong_type", "prediction must be a PredictedSnapshot", path="prediction"
@@ -1002,7 +1045,11 @@ class RobotContext:
         return Continuation(plan=plan, planner=planner, prediction=prediction)
 
     def _bind(
-        self, plan: PlanResult, projection: PlanProjection, source: Execution
+        self,
+        plan: PlanResult,
+        projection: PlanProjection,
+        source: Execution,
+        unsettled: tuple[str, ...] = (),
     ) -> PredictedSnapshot:
         """The prediction of ``source`` that ``plan``, made on ``projection``, continues
         from; see ``continuation``."""
@@ -1016,10 +1063,13 @@ class RobotContext:
                 path="projection",
             )
         self._check_own(source)
-        if self._ran.get(source.id) != (projection.plan, projection.basis):
+        projected = (projection.plan, projection.basis)
+        ran = self._ran.get(source.id) == projected
+        occurrence = self._continued.get(source.id)
+        if not ran and (occurrence is None or (occurrence.plan, occurrence.basis) != projected):
             raise ValidationError(
                 "unprojected_source",
-                f"{source.id} did not run the projected plan from its snapshot",
+                f"{source.id} did not run the projected plan from its snapshot, nor continue it",
                 path="source",
             )
         if not isinstance(plan, PlanResult) or not plan.succeeded:
@@ -1031,14 +1081,52 @@ class RobotContext:
                 "snapshot_mismatch", "the plan was made on another snapshot", path="plan"
             )
         check_planned_in(plan.request, self._description, projection.state)
-        prediction = self.predict(source)
-        if replace(prediction.state, stamp=projection.state.stamp) != projection.state:
-            raise ValidationError(
-                "projection_mismatch",
-                f"{source.id} is predicted to end elsewhere than the projection",
-                path="projection",
-            )
+        prediction = self.predict(source, unsettled=unsettled)
+        if ran:
+            if replace(prediction.state, stamp=projection.state.stamp) != projection.state:
+                raise ValidationError(
+                    "projection_mismatch",
+                    f"{source.id} is predicted to end elsewhere than the projection",
+                    path="projection",
+                )
+            return prediction
+        assert occurrence is not None
+        self._check_same_end(source.id, occurrence, prediction, projection)
         return prediction
+
+    def _check_same_end(
+        self,
+        source: str,
+        occurrence: _ContinuedOccurrence,
+        prediction: PredictedSnapshot,
+        projection: PlanProjection,
+    ) -> None:
+        """A continued occurrence of the projected plan ends where the projection does:
+        its submitted motion at the projected joints (a continuous joint modulo a turn),
+        holding the same attachments, its held objects where the projection carries them.
+        The rest of the scene is the actual one, which the later continuation checks."""
+
+        def refuse(detail: str) -> ValidationError:
+            return ValidationError("projection_mismatch", f"{source} {detail}", path="projection")
+
+        projected = projection.state
+        gaps = self._joint_gaps(
+            occurrence.joints, occurrence.end, [projected.position(j) for j in occurrence.joints]
+        )
+        if max(gaps) > _SAME_END:
+            raise refuse(f"ends {max(gaps):.3g} from the projected end")
+        if prediction.state.attachments != projected.attachments:
+            raise refuse("holds other attachments than the projection")
+        there = {o.name: o.pose for o in projected.objects}
+        for held in prediction.held:
+            pose = there.get(held.name)
+            if pose is None:
+                raise refuse(f"carries {held.name!r}, which the projection does not have")
+            moved = math.dist(held.pose.position, pose.position)
+            dot = sum(p * q for p, q in zip(held.pose.quat_wxyz, pose.quat_wxyz, strict=True))
+            turned = 2 * math.acos(min(1.0, abs(dot)))
+            if moved > occurrence.object_tolerance_m or turned > occurrence.object_tolerance_rad:
+                raise refuse(f"carries {held.name!r} elsewhere than the projection")
 
     def execute_continuation(
         self,
@@ -1197,6 +1285,15 @@ class RobotContext:
             timeout_ns=timeout_ns,
             snapshot=actual,
             prepared=prepared,
+        )
+        command = prepared.command
+        self._continued[execution.id] = _ContinuedOccurrence(
+            plan=fingerprint(plan),
+            basis=prediction.state.fingerprint(),
+            joints=tuple(command.joints),
+            end=tuple(command.positions[-1]),
+            object_tolerance_m=object_tolerance_m,
+            object_tolerance_rad=object_tolerance_rad,
         )
         report = ContinuationReport(
             accepted=True,
