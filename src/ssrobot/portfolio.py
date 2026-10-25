@@ -543,13 +543,16 @@ class _JobRun:
         self._sealed = True
 
     def cancel_jobs(self, jobs: Sequence[int], detail: str) -> None:
-        """Stop ``jobs``: queued, never started (``not_started``); running, told to stop
-        (``canceled_by_priority``); either way recording ``detail``."""
+        """Stop ``jobs``: queued, never started (``not_started``); planning or being
+        validated, told to stop (``canceled_by_priority``, its result unused); either way
+        recording ``detail``."""
         for k in jobs:
             if k in self._queue:
                 self._queue.remove(k)
                 self._ends[k].ended, self._ends[k].detail = _Ended.NOT_STARTED, detail
-            elif k in self._running.values() and k not in self._told:
+            elif (
+                k in self._running.values() or k in self._checking.values()
+            ) and k not in self._told:
                 self._told[k] = detail
                 self._stops[k].set()
 
@@ -662,14 +665,16 @@ class _JobRun:
         assert end.raw is not None
         checked = future.result()  # an unexpected error propagates
         end.status, end.result = end.raw.status, checked.result
+        if k in self._told:
+            # Told to stop while it was validated: its validation is not used, as a
+            # result that arrives after it was told is not validated.
+            end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, self._told[k]
+            return
         if checked.error is not None:
             end.ended, end.detail = _Ended.FAILED, checked.error
             return
         assert checked.fresh is not None
         end.validation = checked.validation
-        if k in self._told:
-            end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, self._told[k]
-            return
         if checked.candidate is None:
             witness = checked.fresh.witness
             assert witness is not None
@@ -685,7 +690,8 @@ class _JobRun:
             for other in [q for q in self._queue if self._jobs[q].rank < rank]:
                 self._queue.remove(other)
                 self._ends[other].ended, self._ends[other].detail = _Ended.NOT_STARTED, OUTRANKED
-            for other in self._running.values():
+            # Lower ranks still planning, or being validated, are told to stop.
+            for other in (*self._running.values(), *self._checking.values()):
                 if self._jobs[other].rank < rank and other not in self._told:
                     self._told[other] = OUTRANKED
                     self._stops[other].set()

@@ -17,9 +17,11 @@ Decoding refuses reports that claim an impossible outcome.
 The evidence is ``alternatives.json``: every deterministic run's report and what was
 executed, byte-identical on a second run, which the test checks. ``diagnostics.json``
 holds what depends on scheduling: the two-worker cutoff's report, and when each attempt
-planned (timing is never part of a report). ``worker_validation.json`` (#202) shows each attempt validated on a worker, with a
-validator slowed by 0.2 s, while the context steps a motion, the report the blocking
-run's, and a planner shared by two chains planning nothing while it validates.
+planned (timing is never part of a report). ``worker_validation.json`` (#202) shows
+each attempt validated on a worker, with a validator slowed by 0.2 s, while the context
+steps a motion, the report the blocking run's; a planner shared by two chains planning
+nothing while it validates; and a chain stopped while its stage is validated recorded as
+canceled, its validation unused.
 ``inputs_and_outranked.json`` shows a
 caller's attempts changed after planning change nothing, and how an outranked attempt
 that raises is recorded. ``refusals.json`` holds forged reports refused. Reproduce with
@@ -549,6 +551,43 @@ def test_attempts_are_validated_on_workers_while_the_robot_moves(
                 a["interval"][1] <= b["interval"][0] for a, b in itertools.pairwise(events)
             ),
         }
+
+        # Stopped while it validates: the preferred left arm validates at once, and its
+        # choice stops the right arm while its validation, slowed by 1 s, still runs.
+        # It is recorded as canceled, its validation unused.
+        quick, slowed = CBiRRT(d), _SlowValidation(CBiRRT(d), 1.0, [])
+
+        def only(arm: str, goal: tuple[float, float], planner: Any) -> Stage:
+            def build(previous: Any) -> StageRequest:
+                request = build_request(
+                    d,
+                    base,
+                    component=arm,
+                    group=arm,
+                    frame=d.end_effector(ARMS[arm]).frame,
+                    goal=ConfigurationGoal(configurations=(goal,)),
+                )
+                return StageRequest(snapshot=base, request=request, planner=planner)
+
+            return Stage(name="reach", build=build)
+
+        stopped = plan_chains(
+            ctx,
+            [
+                Chain(label="left_arm", stages=(only("left_arm", LEFT_GOAL, quick),), priority=1),
+                Chain(label="right_arm", stages=(only("right_arm", RIGHT_GOAL, slowed),)),
+            ],
+            snapshot=base,
+            workers=2,
+        )
+        right = json.loads(dumps(stopped.report))["chains"][1]
+        report["stopped_while_validating"] = {
+            "selected": stopped.report.selected,
+            "right": [
+                (s["outcome"], s["detail"], s["validation"]) for s in right["attempts"][0]["stages"]
+            ],
+            "right_feasible": right["attempts"][0]["feasible"],
+        }
     (artifacts / "worker_validation.json").write_text(
         json.dumps(report, indent=2, default=str) + "\n"
     )
@@ -561,6 +600,11 @@ def test_attempts_are_validated_on_workers_while_the_robot_moves(
     shared_report = report["shared"]
     assert shared_report["order"] == ["plan", "validate", "plan", "validate"]
     assert shared_report["never_overlapping"]
+    assert report["stopped_while_validating"] == {
+        "selected": 0,
+        "right": [("canceled", "a higher priority is valid", None)],
+        "right_feasible": False,
+    }
 
 
 def test_alternatives_plan_passively_while_the_robot_moves(artifacts: Path, tmp_path: Path) -> None:
