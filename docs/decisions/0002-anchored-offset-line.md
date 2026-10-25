@@ -28,13 +28,18 @@ Widening the tolerance does not help: at 2 mm, 4 of 24 were still refused, and a
   start, as before.
 - **A continued offset motion keeps its planned line.** `execute_continuation` sets the
   rebased request's `reference_pose` to the frame's pose at the plan's own start before
-  `Planner.rebase`, and keeps one that is already explicit. The rebased request still
+  `Planner.rebase`, and keeps one that is already explicit. That pose is resolved in the
+  state the plan was made in, its prediction or the projection it was bound through, so
+  joints outside the plan's group, such as a lift or a base, are where they were
+  planned, not where the robot arrived. The rebased request still
   starts at the measured state. So one constraint governs the whole rebased motion,
   including the measured start and the bridge from it. Nothing is projected, and no
   configuration is invented.
 - **An arrival off the constraint is refused.** The measured start is checked by the
-  planner's validator bound to the anchored request, before any rebase; only a
-  path-constraint failure refuses there, as `arrival_off_constraint`, and nothing is
+  planner's validator bound to the anchored request, before any rebase. Its identity is
+  checked against that request (`check_bound`) and its report against that state
+  (`check_validation`), as `prepare` checks every report; only a path-constraint failure
+  refuses there, as `arrival_off_constraint`, and nothing is
   submitted. A bridge whose ends are on the line but whose interior leaves it is still
   refused, by the rebase's validation of the whole path.
 

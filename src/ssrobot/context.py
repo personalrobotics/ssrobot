@@ -81,9 +81,12 @@ from ssrobot.planning_contracts import (
     TsrGoal,
     ValidationFailure,
     build_request,
+    check_bound,
     check_planned_in,
     check_result,
+    check_validation,
     negotiate,
+    state_subject,
 )
 from ssrobot.preparation import prepare
 from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime, SnapshotRuntime
@@ -379,7 +382,7 @@ class RobotContext:
         # plan, and basis): distinct plans may end in the same state. Its states alone
         # are what execute refuses plans made on.
         self._projections: set[tuple[str, str, str]] = set()
-        self._projected_states: set[str] = set()
+        self._projected_states: dict[str, SceneSnapshot] = {}
         # Each execution's own plan and snapshot, by execution id: what it ran.
         self._ran: dict[str, tuple[str, str]] = {}
         # Each execution a continuation submitted, by execution id: the plan it continued.
@@ -976,7 +979,7 @@ class RobotContext:
         state = replace(basis, positions=positions, objects=objects)
         projection = PlanProjection(state=state, plan=fingerprint(plan), basis=basis.fingerprint())
         self._projections.add((state.fingerprint(), projection.plan, projection.basis))
-        self._projected_states.add(state.fingerprint())
+        self._projected_states[state.fingerprint()] = state
         return projection
 
     def continuation(
@@ -1253,11 +1256,22 @@ class RobotContext:
         scene = self.planning_scene(actual, request.group, clearance_m=request.clearance_m)
         goal = request.goal
         if isinstance(goal, OffsetGoal) and goal.reference_pose is None:
-            # Keep the line the plan was made on: the frame's pose at its planned start,
-            # not where the robot arrived.
+            # Keep the line the plan was made on: the frame's pose at its planned start, in
+            # the state it was planned in (the prediction, or the projection it was bound
+            # through), where every joint outside its group, such as a lift or a base, is
+            # as planned; not where the robot arrived.
             assert request.frame is not None
+            planned = (
+                prediction.state
+                if request.snapshot == prediction.state.fingerprint()
+                else self._projected_states[request.snapshot]
+            )
+            planned_scene = self.planning_scene(
+                planned, request.group, clearance_m=request.clearance_m
+            )
             goal = replace(
-                goal, reference_pose=scene.forward_kinematics(request.start, request.frame)
+                goal,
+                reference_pose=planned_scene.forward_kinematics(request.start, request.frame),
             )
         rebased_request = replace(
             request,
@@ -1269,8 +1283,16 @@ class RobotContext:
         check_planned_in(rebased_request, self._description, actual)
         if rebased_request.path_constraint or isinstance(goal, OffsetGoal):
             # The constraint governs the whole rebased motion from the measured start: an
-            # arrival outside it is refused before any rebase, by the same validator.
-            arrival = planner.validator(rebased_request, scene).validate_state(actual_start)
+            # arrival outside it is refused before any rebase, by the same validator, once
+            # its report is known to be bound to this request and about this state.
+            validator = planner.validator(rebased_request, scene)
+            check_bound(validator.identity, rebased_request, path="validator")
+            arrival = validator.validate_state(actual_start)
+            check_validation(
+                arrival,
+                validator=validator.identity,
+                subject=state_subject(request.group, request.joints, actual_start),
+            )
             witness = arrival.witness
             if witness is not None and witness.failure is ValidationFailure.PATH_CONSTRAINT:
                 return refuse(

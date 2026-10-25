@@ -16,6 +16,15 @@ has settled, the arm is moved before B continues, to arrive where the scenario n
   but its interior is not: refused (``rebase_failed``, ``path_constraint``).
 - ``explicit``: B planned with an explicit reference pose, 2 mm across from its start,
   then continued as ``inside``: the reference pose is kept as given.
+- ``slid``: the arm stands on a carriage (``runnable_panda(slide=True)``), a joint outside
+  its group. The arm is left where it arrived; the carriage slides 2 cm across B's line.
+  The line is B's planned one, resolved where the carriage was when B was planned, so the
+  hand is 2 cm off it: refused (``arrival_off_constraint``), nothing submitted. Resolved
+  where the robot arrived, the line would have moved with the carriage.
+- ``misreported``: as ``inside``, but the planner's validator answers the arrival check
+  with a report about another state. The context checks the report is bound to the
+  request and about the measured start before trusting it: refused
+  (``validation_mismatch``), nothing submitted.
 Every record the anchored goal changed (``OffsetGoal`` v2, ``PlanningRequest`` v3,
 ``PlanResult`` v4, ``PreparedTrajectory`` v6, ``TraceRecord`` v4) and ``ContinuationReport``
 v3 (its new refusal) refuse their previous version.
@@ -36,6 +45,8 @@ import numpy as np
 from ssrobot import (
     ConfigurationGoal,
     ContinuationReport,
+    JointCommand,
+    JointMode,
     OffsetGoal,
     PlanningRequest,
     PlanResult,
@@ -88,8 +99,33 @@ def _nearest(scene: Any, frame: str, q: np.ndarray, target: np.ndarray) -> np.nd
     return q
 
 
+class _Misreporting:
+    """A planner whose validator answers a state query with the report about another
+    state, B's planned start; it plans and rebases as ``inner`` does."""
+
+    def __init__(self, inner: CBiRRT, other: tuple[float, ...]) -> None:
+        self._inner, self._other = inner, other
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def validator(self, request: Any, scene: Any) -> Any:
+        honest, other = self._inner.validator(request, scene), self._other
+
+        class Misreporting:
+            identity = honest.identity
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(honest, name)
+
+            def validate_state(self, q: Any) -> Any:
+                return honest.validate_state(other)
+
+        return Misreporting()
+
+
 def _scenario(tmp: Path, arrival: str) -> dict[str, Any]:
-    root, scene_file = runnable_panda(tmp)
+    root, scene_file = runnable_panda(tmp, slide=arrival == "slid")
     package = load_package(root)
     records: list[TraceRecord] = []
     runtime = MujocoRuntime(package, scene=scene_file, keyframe="home")
@@ -131,7 +167,16 @@ def _scenario(tmp: Path, arrival: str) -> dict[str, Any]:
         actual = ctx.snapshot()
         scene = ctx.planning_scene(actual, "arm")
         target = matrix(start_pose)
-        if arrival == "bridge":
+        if arrival == "slid":  # the carriage, not the arm, moves 2 cm across the line
+            ctx.submit(
+                JointCommand(
+                    group="slide", joints=("slide",), mode=JointMode.POSITION, values=(0.02,)
+                )
+            )
+            for _ in range(2_000):
+                ctx.step()
+            out["moved"] = round(ctx.snapshot().position("slide"), 4)
+        elif arrival == "bridge":
             ik = SsikKinematics.from_package(package, "arm").bind(scene, frame)
             solutions = ik.solve(target, q_init=np.array(start_q))
             to = max(solutions, key=lambda q: float(np.abs(q - np.array(start_q)).max()))
@@ -140,13 +185,14 @@ def _scenario(tmp: Path, arrival: str) -> dict[str, Any]:
             shift = 0.02 * np.array((1.0, 0.0, 0.0)) if sideways else 0.01 * np.array(DOWN)
             target[:3, 3] += shift
             to = _nearest(scene, frame, np.array(start_q), target)
-        move = arm.plan(
-            ConfigurationGoal(configurations=(tuple(float(v) for v in to),)),
-            snapshot=actual,
-            planner=planner,
-        )
-        assert move.succeeded, move.status
-        out["moved"] = _settle(ctx, ctx.execute(move, planner=planner))
+        if arrival != "slid":
+            move = arm.plan(
+                ConfigurationGoal(configurations=(tuple(float(v) for v in to),)),
+                snapshot=actual,
+                planner=planner,
+            )
+            assert move.succeeded, move.status
+            out["moved"] = _settle(ctx, ctx.execute(move, planner=planner))
         arrived = ctx.snapshot()
         out["arrival_joint_gap"] = round(
             max(abs(arrived.position(j) - q) for j, q in zip(PANDA_JOINTS, start_q, strict=True)),
@@ -170,11 +216,19 @@ def _scenario(tmp: Path, arrival: str) -> dict[str, Any]:
             }
 
         submitted_before = sum(r.kind is TraceKind.SUBMITTED for r in records)
-        result = ctx.execute_continuation(
-            ctx.continuation(b, planner=planner, prediction=prediction),
-            arrival_tolerance=4.0,
-            rest_tolerance=0.05,
-        )
+        continuing: Any = _Misreporting(planner, start_q) if arrival == "misreported" else planner
+        try:
+            result = ctx.execute_continuation(
+                ctx.continuation(b, planner=continuing, prediction=prediction),
+                arrival_tolerance=4.0,
+                rest_tolerance=0.05,
+            )
+        except SsrobotError as e:
+            out["raised"] = e.code
+            out["submitted"] = (
+                sum(r.kind is TraceKind.SUBMITTED for r in records) - submitted_before
+            )
+            return out
         report = result.report
         out["continuation"] = {
             "accepted": report.accepted,
@@ -226,7 +280,7 @@ def test_a_continued_offset_motion_keeps_its_planned_line(artifacts: Path, tmp_p
     def evidence(tmp: Path) -> dict[str, Any]:
         return {
             arrival: _scenario(tmp / arrival, arrival)
-            for arrival in ("inside", "outside", "bridge", "explicit")
+            for arrival in ("inside", "outside", "bridge", "explicit", "slid", "misreported")
         }
 
     first = json.dumps(evidence(tmp_path / "first"), indent=2) + "\n"
@@ -262,6 +316,18 @@ def test_a_continued_offset_motion_keeps_its_planned_line(artifacts: Path, tmp_p
         "path_constraint": True,
         "submitted": 0,
     }
+
+    # A joint outside the arm's group moved: the line stays where B was planned.
+    assert out["slid"]["arrival_joint_gap"] == 0.0
+    assert out["slid"]["continuation"] == {
+        "accepted": False,
+        "refusal": "arrival_off_constraint",
+        "path_constraint": False,
+        "submitted": 0,
+    }
+    # A report about another state is not trusted to refuse, or to continue.
+    assert out["misreported"]["raised"] == "validation_mismatch"
+    assert out["misreported"]["submitted"] == 0
 
     explicit = out["explicit"]
     assert explicit["continuation"]["accepted"] and explicit["continued"] == "succeeded"
