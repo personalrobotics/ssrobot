@@ -22,8 +22,14 @@ A second portfolio, of planners that only wait for the abort signal, shows a tim
 the running attempt is aborted, and the pending ones are canceled before they start.
 Decoding refuses reports that claim an impossible outcome.
 
-The evidence is ``portfolio.json``, ``isolation.json``, ``canceled.json``, and
-``refusals.json``. Reproduce with ``pytest tests/test_planner_portfolio.py``.
+Validation runs on workers (#202), so ``validating.json`` shows what that must not
+change: two path-only planners sharing one processor that is not reentrant never call it
+at once, and a run stopped (by ``abort``, or by its timeout) while an attempt's delayed
+validation runs selects nothing, that validation unused.
+
+The evidence is ``portfolio.json``, ``isolation.json``, ``canceled.json``,
+``validating.json``, and ``refusals.json``. Reproduce with
+``pytest tests/test_planner_portfolio.py``.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -208,6 +215,59 @@ class _Patient(_Wrapped):
         )
 
 
+class _NotReentrant(_Counting):
+    """A processor that is not reentrant: it takes 0.2 s, and records the most calls
+    that overlapped."""
+
+    name = "not_reentrant"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._active = 0
+        self.overlapped = 0
+
+    def process(self, path: GeometricPath, limits: Any) -> Any:
+        with self._lock:
+            self._active += 1
+            self.overlapped = max(self.overlapped, self._active)
+        try:
+            time.sleep(0.2)
+            return super().process(path, limits)
+        finally:
+            with self._lock:
+                self._active -= 1
+
+
+class _SlowlyValidated(_Wrapped):
+    """sscbirrt whose validator takes ``delay_s`` longer to validate a trajectory, and
+    sets ``validating`` once it has begun."""
+
+    name = "slowly_validated"
+
+    def __init__(self, inner: CBiRRT, delay_s: float) -> None:
+        super().__init__(inner)
+        self.delay_s = delay_s
+        self.validating = threading.Event()
+
+    def validator(self, request: PlanningRequest, scene: PlanningScene) -> Any:
+        honest = self._inner.validator(request, scene)
+        planner = self
+
+        class Slow:
+            identity = honest.identity
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(honest, name)
+
+            def validate_trajectory(self, trajectory: Any, path: Any = None) -> Any:
+                planner.validating.set()
+                time.sleep(planner.delay_s)
+                return honest.validate_trajectory(trajectory, path)
+
+        return Slow()
+
+
 class _Unable(_Wrapped):
     """A planner that plans no goal kind: negotiation refuses it."""
 
@@ -349,6 +409,72 @@ def test_a_timeout_aborts_running_attempts_and_cancels_pending_ones(artifacts: P
     assert report["stopped"] == "timeout" and report["selected"] is None
     # Attempts that may run at once must not share a planner.
     assert result["shared"] == "shared_planner"
+
+
+def test_validating_on_workers_shares_processors_and_honors_a_stop(artifacts: Path) -> None:
+    """#202's review: processors need not be thread-safe, so a shared one is called once at
+    a time; and a stop while an attempt is validated leaves nothing selected."""
+    package = load_package(PACKAGE)
+    description = package.description
+    out: dict[str, Any] = {}
+    with RobotContext(description, MujocoRuntime(package, scene=SCENE, **OPTIONS)) as ctx:
+        _move(ctx, START)
+        arm = ctx.manipulator()
+        snapshot = ctx.snapshot()
+        request = arm.request(ConfigurationGoal(configurations=(GOAL,)), snapshot=snapshot)
+
+        shared = _NotReentrant()
+        both = plan_portfolio(
+            ctx,
+            request,
+            snapshot=snapshot,
+            attempts=[
+                PlanAttempt(planner=_PathOnly(CBiRRT(description)), processor=shared, seed=seed)
+                for seed in (0, 1)
+            ],
+            workers=2,
+        )
+        out["shared_processor"] = {
+            "calls": shared.calls,
+            "most_at_once": shared.overlapped,
+            "selected": both.report.selected,
+        }
+
+        def stopped(**stop: Any) -> dict[str, Any]:
+            slow = _SlowlyValidated(CBiRRT(description), stop.pop("delay_s"))
+            if stop.pop("abort_while_validating", False):
+                stop["abort"] = slow.validating.is_set
+            portfolio = plan_portfolio(
+                ctx, request, snapshot=snapshot, attempts=[PlanAttempt(planner=slow)], **stop
+            )
+            report = json.loads(dumps(portfolio.report))
+            (attempt,) = report["attempts"]
+            return {
+                "validation_began": slow.validating.is_set(),
+                "stopped": report["stopped"],
+                "selected": report["selected"],
+                "candidate": portfolio.candidates[0] is not None,
+                "attempt": (attempt["outcome"], attempt["status"], attempt["detail"]),
+                "validation": attempt["validation"],
+            }
+
+        out["aborted_while_validating"] = stopped(delay_s=0.5, abort_while_validating=True)
+        out["timed_out_while_validating"] = stopped(delay_s=2.0, timeout_s=1.0)
+    (artifacts / "validating.json").write_text(json.dumps(out, indent=2) + "\n")
+
+    assert out["shared_processor"] == {"calls": 2, "most_at_once": 1, "selected": 0}
+    for name, reason in (
+        ("aborted_while_validating", "aborted"),
+        ("timed_out_while_validating", "timeout"),
+    ):
+        assert out[name] == {
+            "validation_began": True,
+            "stopped": reason,
+            "selected": None,
+            "candidate": False,
+            "attempt": ("failed", "succeeded", f"{reason}: stopped while it was validated"),
+            "validation": None,
+        }, out[name]
 
 
 def test_a_report_cannot_claim_an_impossible_outcome(artifacts: Path, tmp_path: Path) -> None:

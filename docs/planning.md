@@ -254,6 +254,9 @@ state with each other or with the live context.
   abort signal through `Planner.plan`'s `abort`, which they must poll. Python cannot
   safely stop a planner that does not. The report's `stopped` (`timeout` or `aborted`)
   says why.
+  - Once the run has stopped, nothing becomes valid. A result that arrives after the
+    stop is not validated. A validation running at the stop finishes safely on its
+    worker, but is not used. Either is `failed`, with the stop's reason.
 - **Validation and candidates.** Every successful attempt is validated again by its
   own planner's validator, on a fresh scene of the same snapshot, as it would execute:
   its trajectory, or its path timed once by its processor.
@@ -261,7 +264,8 @@ state with each other or with the live context.
     context builds the fresh scene once planning succeeds; the worker, which touches
     neither the context nor the runtime, processes, validates and checks. The
     attempt's planner and worker stay occupied until its validation ends, and a valid
-    attempt cuts off lower priorities only once validated. Nothing uses a result before
+    attempt cuts off lower priorities only once validated. Processors need not be
+    thread-safe: a processor shared by attempts processes one path at a time. Nothing uses a result before
     its validation; the context keeps stepping meanwhile.
   - The fresh report must come from that validator, bound to the request, and be about
     exactly that motion with its path as evidence (`check_bound`, `check_validation`).
@@ -613,6 +617,7 @@ Every failed check is named in one `execution_unready` error. A successful
 | `artifacts/test_a_plan_made_on_a_projection_continues_that_execution/projection.json` | A plan made on where an unexecuted plan ends (#190). Rest to A is planned on a captured snapshot and projected, and A to B is planned on the projection. Then A is executed, and B, bound to that execution, continues on arrival and reaches B. The projection keeps the snapshot's stamp and names the plan and snapshot. Binding refuses: an execution of another plan, of a replanned A, or a continuation's rebased run (`unprojected_source`); a plan not made on the projection (`snapshot_mismatch`); a changed projection (`unknown_projection`). Two plans to exactly the same end (the same request with another time budget) project to the same state, and each binds to an execution of its own plan, but not to the other's (`unprojected_source`). `execute` refuses a plan made on a projection (`projected_plan`), and `project` refuses an unsuccessful plan. A second run is byte-identical. |
 | `artifacts/test_a_plan_on_a_projection_continues_a_continued_occurrence/continued_projection.json` | A plan made on a projection, continued from a continuation of the projected plan (#200). As at the seam, the right arm's continuous joint runs past pi and its arrival is reported wrapped. B is planned on the source's prediction and projected, and C is planned on the projection. B runs as a continuation, rebased a whole turn onto the arrival; C binds to that occurrence and continues. A twin of B to the same end has the same projected state, but B's occurrence does not bind to it (`unprojected_source`). A rebase that ends 1e-5 rad away is refused (`projection_mismatch`). A second run is byte-identical. |
 | `artifacts/test_the_manipulator_view_plans_on_a_projection/view.json` | The example arm's manipulator view plans on a projection as on any snapshot: the plan is made on the projected state and starts where the projected plan ends. |
+| `artifacts/test_validating_on_workers_shares_processors_and_honors_a_stop/validating.json` | What validating on workers (#202) must not change. Two path-only planners sharing one processor that is not reentrant (it takes 0.2 s) call it twice, never at once. A run stopped while an attempt's delayed validation runs, by `abort` or by its 1 s timeout, selects nothing: the attempt is `failed`, "stopped while it was validated", with no validation. |
 | `artifacts/test_a_report_cannot_claim_an_impossible_outcome/refusals.json` | Edits of a real report that decoding refuses: a selection of an invalid or a non-selected valid attempt, or of none; an unknown stop; a cancellation without a stop; a valid attempt without a duration; an invalid one without its validation; a malformed fingerprint; reordered attempts; another selection rule. |
 | `artifacts/test_a_timeout_aborts_running_attempts_and_cancels_pending_ones/canceled.json` | Three attempts that only wait for the abort signal, on one worker, with a 0.2 s timeout: the running one is aborted (`cancelled`), the two pending ones are `canceled` before they start, and nothing is selected. The same attempts, sharing one planner, are refused with two workers (`shared_planner`). |
 | `artifacts/test_neutral_providers_and_geometric_paths/` | The same query through a scene with no native checker plans on sscbirrt's Python backend and passes every check. Its path without the trajectory is refused without a processor (`untimed_result`); with `RestToRestProcessor` it is prepared and executed. A second run is byte-identical. |

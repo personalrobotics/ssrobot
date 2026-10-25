@@ -457,6 +457,9 @@ class _JobRun:
         self._running: dict[Future[PlanResult], int] = {}
         # Jobs being validated on a worker, after planning: their planners stay busy.
         self._checking: dict[Future[_Checked], int] = {}
+        # One lock per processor, by identity: processing is serialized per processor,
+        # since processors need not be thread-safe (only planners must be distinct).
+        self._processing: dict[int, threading.Lock] = {}
         self._result: _Run | None = None
         self._started = time.monotonic()
         self._deadline = None if timeout_s is None else self._started + timeout_s
@@ -638,26 +641,34 @@ class _JobRun:
             end.status, end.result = end.raw.status, fingerprint(end.raw)
             end.ended, end.detail = _Ended.FAILED, end.raw.status.value
             return
+        if self._stopped is not None:
+            # Once the run has stopped, nothing becomes valid: a result that arrives
+            # after the stop is not validated.
+            end.status, end.result = end.raw.status, fingerprint(end.raw)
+            end.ended = _Ended.FAILED
+            end.detail = f"{self._stopped.value}: stopped before it was validated"
+            return
         # The validation scene is built here, on the context's thread; everything else
-        # (processing, validation, its checks) runs on a worker.
-        request = end.job.request
+        # (processing, validation, its checks) runs on a worker, from the job and its
+        # result alone, both immutable.
+        job = end.job
+        request = job.request
         began = time.monotonic()
         scene = self._ctx.planning_scene(
-            end.job.snapshot or self._snapshot, request.group, clearance_m=request.clearance_m
+            job.snapshot or self._snapshot, request.group, clearance_m=request.clearance_m
         )
         end.scene_s = time.monotonic() - began
+        processor = job.plan_attempt.processor
+        lock = (
+            None
+            if processor is None
+            else self._processing.setdefault(id(processor), threading.Lock())
+        )
         assert self._pool is not None
-        self._checking[self._pool.submit(self._check, k, scene)] = k
-
-    def _check(self, k: int, scene: PlanningScene) -> _Checked:
-        """On a worker: validate job ``k``'s result on ``scene``, its own fresh scene."""
-        begin = time.monotonic() - self._started
-        try:
-            end = self._ends[k]
-            assert end.raw is not None
-            return _check(end.job.plan_attempt, end.job.request, end.raw, scene)
-        finally:
-            self._ends[k].validation_interval_s = (begin, time.monotonic() - self._started)
+        checking = self._pool.submit(
+            _check, job.plan_attempt, request, end.raw, scene, lock, self._started
+        )
+        self._checking[checking] = k
 
     def _validated(self, k: int, future: Future[_Checked]) -> None:
         """Record job ``k``'s validation, then, if it is valid, cut off lower ranks."""
@@ -665,10 +676,17 @@ class _JobRun:
         assert end.raw is not None
         checked = future.result()  # an unexpected error propagates
         end.status, end.result = end.raw.status, checked.result
+        end.validation_interval_s = checked.interval_s
         if k in self._told:
             # Told to stop while it was validated: its validation is not used, as a
             # result that arrives after it was told is not validated.
             end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, self._told[k]
+            return
+        if self._stopped is not None:
+            # The run stopped (cancel, abort or timeout) before this validation was
+            # taken: it is not used, so nothing becomes valid after the stop.
+            end.ended = _Ended.FAILED
+            end.detail = f"{self._stopped.value}: stopped while it was validated"
             return
         if checked.error is not None:
             end.ended, end.detail = _Ended.FAILED, checked.error
@@ -767,6 +785,8 @@ class _Checked:
     could not be validated."""
 
     result: str
+    interval_s: tuple[float, float]
+    """When it was validated, from the start of the run: timing."""
     fresh: MotionValidation | None = None
     validation: str | None = None
     candidate: PlanResult | None = None
@@ -774,15 +794,29 @@ class _Checked:
 
 
 def _check(
-    attempt: PlanAttempt, request: PlanningRequest, result: PlanResult, scene: PlanningScene
+    attempt: PlanAttempt,
+    request: PlanningRequest,
+    result: PlanResult,
+    scene: PlanningScene,
+    processing: threading.Lock | None,
+    started: float,
 ) -> _Checked:
-    """On a worker, with no context: ``result``'s fresh validation on ``scene``."""
+    """On a worker, with no context and nothing mutable of the run: ``result``'s fresh
+    validation on ``scene``, processing it under its processor's lock."""
+    begin = time.monotonic() - started
     hashed = fingerprint(result)
     try:
-        candidate, fresh = _candidate(attempt, request, result, scene)
+        candidate, fresh = _candidate(attempt, request, result, scene, processing)
     except SsrobotError as e:
-        return _Checked(result=hashed, error=f"{e.code}: {e.message}")
-    return _Checked(result=hashed, fresh=fresh, validation=fingerprint(fresh), candidate=candidate)
+        interval = (begin, time.monotonic() - started)
+        return _Checked(result=hashed, interval_s=interval, error=f"{e.code}: {e.message}")
+    return _Checked(
+        result=hashed,
+        interval_s=(begin, time.monotonic() - started),
+        fresh=fresh,
+        validation=fingerprint(fresh),
+        candidate=candidate,
+    )
 
 
 def _candidate(
@@ -790,6 +824,7 @@ def _candidate(
     request: PlanningRequest,
     result: PlanResult,
     scene: PlanningScene,
+    processing: threading.Lock | None = None,
 ) -> tuple[PlanResult | None, MotionValidation]:
     """The fresh validation of ``result``'s motion as it would execute, by its planner's
     validator on ``scene``, a fresh scene of the state it was planned in, and the
@@ -802,7 +837,9 @@ def _candidate(
     timed = result.trajectory
     if timed is None:
         assert path is not None and attempt.processor is not None  # negotiated
-        timed = attempt.processor.process(path, request.limits)  # once: the candidate's
+        assert processing is not None  # a processor is used under its own lock
+        with processing:
+            timed = attempt.processor.process(path, request.limits)  # once: the candidate's
     report = validator.validate_trajectory(timed, path)
     check_validation(
         report, validator=validator.identity, subject=trajectory_subject(timed), evidence=path
