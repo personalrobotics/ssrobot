@@ -670,3 +670,35 @@ def test_alternatives_plan_passively_while_the_robot_moves(artifacts: Path, tmp_
     assert canceled["done"] and canceled["stopped"] == "aborted"
     assert canceled["workers_left"] == []
     assert {o for row in canceled["outcomes"].values() for o in row} <= {"not_started", "failed"}
+
+
+def _drive(run: Any) -> int:
+    """Drive a passive run as a stepping driver does: wait for work in flight, then
+    advance. How many advances left it unfinished with nothing in flight (#211)."""
+    from concurrent.futures import FIRST_COMPLETED, wait
+
+    idle = 0
+    while not run.advance():
+        if not run.planning:
+            idle += 1
+            continue
+        wait(run.planning, return_when=FIRST_COMPLETED)
+    return idle
+
+
+def test_a_passive_run_has_work_in_flight_until_it_is_done(tmp_path: Path) -> None:
+    """#211: after every advance, an unfinished passive run has work in flight, so a
+    driver that steps the runtime only when nothing is in flight never steps during a
+    race. On one worker, the second alternative waits for the first one's validation: it
+    is started in the advance that takes that validation, not the next one."""
+    package_root, scene = colliding_bimanual(tmp_path)
+    package = load_package(package_root)
+    with RobotContext(package.description, MujocoRuntime(package, scene=scene)) as ctx:
+        equal = {"left_arm": 0, "right_arm": 0}
+        run = ctx.start_alternatives(
+            _alternatives(ctx, equal, CBiRRT), snapshot=ctx.snapshot(), workers=1
+        )
+        idle = _drive(run)
+        selected = _selected(json.loads(dumps(run.result.report)))
+    assert idle == 0
+    assert selected == "right_arm"

@@ -389,8 +389,10 @@ caller, so the context can keep stepping a running motion meanwhile. It returns 
 - `advance()` never waits. It starts attempts on free workers, checks `abort`, starts
   the validation of every attempt that has planned, on a worker, and records every
   validation that has ended. It returns True once the run is `done`.
-- `planning` holds the plans and validations running now, for a caller that waits on
-  them.
+- `planning` holds the plans and validations running now, as opaque futures
+  (`Future[Any]`) for a caller that only waits on them; their results are the run's. Until the run is done, it is never empty after `advance()`: every finished plan
+  or validation has been taken, and every queued attempt a free worker can run has
+  started. A driver can rely on that to decide whether the runtime may step (#211).
 - `cancel()` stops the run: attempts not started never start, and running planners are
   told to stop (`aborted`).
 - `close()` cancels an unfinished run, waits for its planners, and releases its scenes.

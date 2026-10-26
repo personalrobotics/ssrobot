@@ -576,28 +576,18 @@ class _JobRun:
             self._intervals[k] = (begin, time.monotonic() - self._started)
 
     def advance(self) -> bool:
-        """Start queued jobs on free workers, check the deadline and abort, and validate
-        every job that has finished; never waits. True once every job has ended."""
+        """Start queued jobs on free workers, check the deadline and abort, take every
+        plan and validation that has finished, and start the queued jobs that freed;
+        never waits. True once every job has ended. Until then, work is in flight
+        whenever any job is queued: none waits for a worker or planner that is free."""
         if self._result is not None:
             return True
         try:
             # In the order of the loop it replaces: start queued jobs on free workers (a
             # worker frees only once its job's result is validated), then check the
-            # deadline and abort, then validate what has finished.
-            if self._stopped is None:
-                assert self._pool is not None
-                busy = {
-                    id(self._jobs[k].planner)
-                    for k in (*self._running.values(), *self._checking.values())
-                }
-                for k in list(self._queue):
-                    if len(self._running) + len(self._checking) >= self._workers:
-                        break
-                    if id(self._jobs[k].planner) in busy:
-                        continue  # a planner plans one job at a time
-                    self._queue.remove(k)
-                    busy.add(id(self._jobs[k].planner))
-                    self._running[self._pool.submit(self._plan, k)] = k
+            # deadline and abort, then validate what has finished; then start what that
+            # freed, so a queued job never waits an advance for a free worker.
+            self._start_queued()
             if self._stopped is None:
                 if self._deadline is not None and time.monotonic() >= self._deadline:
                     self._stop(StopReason.TIMEOUT)
@@ -607,12 +597,30 @@ class _JobRun:
                 self._finished(self._running.pop(future), future)
             for checked in [f for f in self._checking if f.done()]:
                 self._validated(self._checking.pop(checked), checked)
+            self._start_queued()
             if self._sealed and not self._queue and not self._running and not self._checking:
                 self._finish()
         except BaseException:
             self._shutdown()
             raise
         return self._result is not None
+
+    def _start_queued(self) -> None:
+        """Hand queued jobs, in order, to free workers whose planners are free."""
+        if self._stopped is not None:
+            return
+        assert self._pool is not None
+        busy = {
+            id(self._jobs[k].planner) for k in (*self._running.values(), *self._checking.values())
+        }
+        for k in list(self._queue):
+            if len(self._running) + len(self._checking) >= self._workers:
+                break
+            if id(self._jobs[k].planner) in busy:
+                continue  # a planner plans one job at a time
+            self._queue.remove(k)
+            busy.add(id(self._jobs[k].planner))
+            self._running[self._pool.submit(self._plan, k)] = k
 
     def _stop(self, reason: StopReason) -> None:
         self._stopped = reason

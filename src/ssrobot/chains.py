@@ -37,7 +37,7 @@ import math
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ssrobot._wire import Record, Value, fingerprint, meta
 from ssrobot.continuation import PlanProjection, PredictedSnapshot
@@ -648,9 +648,11 @@ def _state(snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection) -> Scen
 class ChainsRun:
     """A race of chains that the caller advances, from ``start_chains``; see the module.
 
-    ``advance`` never waits: it starts stages on free workers, validates every stage that
-    has finished, and builds the next stage of each attempt from it, on the context's
-    thread. ``planning`` is the plans running now. ``cancel`` stops the run (``aborted``);
+    ``advance`` never waits: it starts stages on free workers, starts the validation of
+    every stage that has planned, on a worker, and builds the next stage of each attempt
+    from each validated one, on the context's thread. ``planning`` is the plans and
+    validations running now, for a caller that only waits on them: until the run is done,
+    it is never empty after ``advance``. ``cancel`` stops the run (``aborted``);
     ``close`` cancels an unfinished run, waits for its planners, and releases its scenes.
     Both may be called again. ``result`` once ``done``."""
 
@@ -727,6 +729,8 @@ class ChainsRun:
             sealed=False,
         )
         self._chosen: dict[int, int] = {}
+        self._taken = 0
+        """How many tries have been taken: whether a reaction made progress."""
         self._result: Chains | None = None
         order = sorted(range(len(chains)), key=lambda i: (-chains[i].priority, i))
         self._attempts: list[list[_Attempt]] = [[] for _ in chains]
@@ -745,7 +749,7 @@ class ChainsRun:
         return self._result is not None or self._run.done
 
     @property
-    def planning(self) -> tuple[Future[PlanResult], ...]:
+    def planning(self) -> tuple[Future[Any], ...]:
         return self._run.planning
 
     def _start(self, attempt: _Attempt, previous: StageResult | None) -> None:
@@ -822,10 +826,13 @@ class ChainsRun:
             return state
         return replace(state, attachments=tuple(built.attachments))
 
-    def _react(self) -> None:
+    def _react(self) -> bool:
         """Take every stage that has ended: build the next stage of its attempt, settle
         the attempt, make each chain's choice and the stops it implies, and start the
-        next seed of each chain whose every attempt so far has failed."""
+        next seed of each chain whose every attempt so far has failed. Whether it took
+        or started anything."""
+        before = self._taken
+        started = False
         while True:
             for chain in self._attempts:
                 for attempt in chain:
@@ -833,8 +840,10 @@ class ChainsRun:
             self._choose()
             if not self._next():
                 break
+            started = True
         if all(a.settled for chain in self._attempts for a in chain if a.started):
             self._run.seal()
+        return started or self._taken != before
 
     def _next(self) -> bool:
         """Start the next seed of each chain not chosen nor stopped whose attempts have all
@@ -863,6 +872,7 @@ class ChainsRun:
         if current.taken or current.job is None or not self._run.settled(current.job):
             return
         current.taken = True
+        self._taken += 1
         end = self._run.ends[current.job]
         stage = self._chains[attempt.chain].stages[current.stage]
         if end.ended is not _Ended.VALID:
@@ -938,9 +948,11 @@ class ChainsRun:
         if self.done:
             return True
         try:
+            # A stage the engine finished is taken, and what it leads to queued and
+            # started, before this returns: until the run is done, work is in flight.
             self._run.advance()
-            self._react()
-            self._run.advance()
+            while self._react():
+                self._run.advance()
         except BaseException:
             self._run.close()
             raise

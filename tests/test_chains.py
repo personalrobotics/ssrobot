@@ -468,3 +468,51 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
         "a_feasible_seed_hidden": "inconsistent_outcome",
         "onward_not_from_the_reach": "inconsistent_outcome",
     }
+
+
+def test_a_chains_run_has_work_in_flight_until_it_is_done(tmp_path: Path) -> None:
+    """#211: a stage that finishes while one advance hands work to the engine for the
+    second time is taken, and its next stage queued and started, before the advance
+    returns. Every in-flight stage here finishes between the two, and every validation
+    as soon as it is submitted, as a fast worker can: still, no advance leaves the run
+    unfinished with nothing in flight."""
+    from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, wait
+
+    from ssrobot import portfolio
+
+    package_root, scene = colliding_bimanual(tmp_path / "cube", blocked=CUBE)
+    package = load_package(package_root)
+    with RobotContext(package.description, MujocoRuntime(package, scene=scene)) as ctx:
+        d = package.description
+        # One chain, so no other chain's work can hide a gap.
+        chains = [_chain(ctx, "left_arm", priority=0, seeds=(0,), onward_planner=CBiRRT(d))]
+        run = ctx.start_chains(chains, snapshot=ctx.snapshot(), workers=1)
+        react = run._react
+        pool = run._run._pool
+        assert pool is not None
+        submit = pool.submit
+
+        def react_then_let_work_finish() -> Any:
+            out = react()
+            wait(run._run.planning, return_when=ALL_COMPLETED)
+            return out
+
+        def submit_validation_finished(fn: Any, *args: Any) -> Any:
+            # A validation, created within the engine's call, ends before the engine
+            # looks for ended validations: no scheduling decides whether it is taken.
+            future = submit(fn, *args)
+            if fn is portfolio._check:
+                wait([future])
+            return future
+
+        run._react = react_then_let_work_finish  # type: ignore[method-assign]
+        pool.submit = submit_validation_finished  # type: ignore[method-assign,assignment]
+        idle = 0
+        while not run.advance():
+            if not run.planning:
+                idle += 1
+                continue
+            wait(run.planning, return_when=FIRST_COMPLETED)
+        selected = run.result.report.selected
+    assert idle == 0
+    assert selected is not None
