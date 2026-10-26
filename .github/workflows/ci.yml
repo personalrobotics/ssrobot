@@ -60,25 +60,21 @@ jobs:
           uv pip install --python clean-mujoco "$(echo dist/*.whl)[mujoco]"
       - name: Dependency gate on the installed wheel with the mujoco extra
         run: clean-mujoco/bin/python scripts/check_core_imports.py --installed --integration mujoco --report artifacts/installed-conformance/imports-mujoco.json
-      - name: MujocoRuntime runs the README trajectory from the installed wheel
-        working-directory: ${{ github.workspace }}
-        run: |
-          sed -n '/^### Simulation in MuJoCo/,/^##/p' README.md | sed -n '/^```python$/,/^```$/p' | sed '1d;$d' > "$RUNNER_TEMP/readme_mujoco.py"
-          clean-mujoco/bin/python -P "$RUNNER_TEMP/readme_mujoco.py" | tee "$RUNNER_TEMP/readme_mujoco.txt"
-          grep -q '^succeeded ' "$RUNNER_TEMP/readme_mujoco.txt"
       - name: The mujoco and planning extras together in their own clean environment
         run: |
           uv venv --no-project clean-planning
           uv pip install --python clean-planning "$(echo dist/*.whl)[mujoco,planning]"
       - name: Dependency gate on the installed wheel with the planning extra
         run: clean-planning/bin/python scripts/check_core_imports.py --installed --integration planning --report artifacts/installed-conformance/imports-planning.json
-      - name: The README plan runs from the installed wheel
+      - name: The README's first journey runs from the installed wheel, and its trace is kept
         working-directory: ${{ github.workspace }}
         run: |
-          # The section's first Python block is the complete, runnable example.
-          sed -n '/^### Planning/,/^##/p' README.md | sed -n '/^```python$/,/^```$/{p;/^```$/q;}' | sed '1d;$d' > "$RUNNER_TEMP/readme_planning.py"
-          clean-planning/bin/python -P "$RUNNER_TEMP/readme_planning.py" | tee "$RUNNER_TEMP/readme_planning.txt"
-          grep -q '^succeeded native ' "$RUNNER_TEMP/readme_planning.txt"
+          # The section's Python block is the complete, runnable example, run from the root.
+          sed -n '/^## First journey/,/^## /p' README.md | sed -n '/^```python$/,/^```$/{p;/^```$/q;}' | sed '1d;$d' > "$RUNNER_TEMP/first_journey.py"
+          clean-planning/bin/python -P "$RUNNER_TEMP/first_journey.py" | tee "$RUNNER_TEMP/first_journey.txt"
+          grep -q '^succeeded native ' "$RUNNER_TEMP/first_journey.txt"
+          mkdir -p artifacts/installed-conformance/first-journey
+          cp -R run/. "$RUNNER_TEMP/first_journey.txt" artifacts/installed-conformance/first-journey/
       - name: A planning scene builds on sscbirrt's native scene from the installed wheel
         working-directory: ${{ runner.temp }}
         run: >-

@@ -32,6 +32,19 @@ with ssrobot.RobotContext(package.description, runtime) as ctx:  # setup
     status = ctx.run_until(execution, max_ticks=20_000)
 ```
 
+A manipulator view plans to these goals:
+
+| Goal | Public call |
+| --- | --- |
+| One joint configuration, or any of several alternatives | `plan_to_configuration`, `plan_to_configurations` |
+| A selected tool or other frame at a pose | `plan_to_end_effector_pose` |
+| A straight Cartesian approach or retreat inside a constrained corridor | `plan_to_end_effector_offset` |
+| Any pose in one or more task-space regions | `plan_to_tsr` |
+| Any of the above while a frame remains in task-space regions along the path | the call's `path_constraint` option |
+
+Pose, offset, and TSR goals, and path constraints, need kinematics for the arm
+(`CBiRRT.from_package`, below).
+
 A `plan_to_*` or `request` call without `snapshot=` captures exactly one snapshot as it
 starts, and records its fingerprint in the request. From there it is recorded in the
 result, the compiled artifact, the submission, and the trace, exactly as for an explicit
