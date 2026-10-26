@@ -37,7 +37,7 @@ import math
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ssrobot._wire import Record, Value, fingerprint, meta
 from ssrobot.continuation import PlanProjection, PredictedSnapshot
@@ -648,9 +648,11 @@ def _state(snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection) -> Scen
 class ChainsRun:
     """A race of chains that the caller advances, from ``start_chains``; see the module.
 
-    ``advance`` never waits: it starts stages on free workers, validates every stage that
-    has finished, and builds the next stage of each attempt from it, on the context's
-    thread. ``planning`` is the plans running now. ``cancel`` stops the run (``aborted``);
+    ``advance`` never waits: it starts stages on free workers, starts the validation of
+    every stage that has planned, on a worker, and builds the next stage of each attempt
+    from each validated one, on the context's thread. ``planning`` is the plans and
+    validations running now, for a caller that only waits on them: until the run is done,
+    it is never empty after ``advance``. ``cancel`` stops the run (``aborted``);
     ``close`` cancels an unfinished run, waits for its planners, and releases its scenes.
     Both may be called again. ``result`` once ``done``."""
 
@@ -747,7 +749,7 @@ class ChainsRun:
         return self._result is not None or self._run.done
 
     @property
-    def planning(self) -> tuple[Future[PlanResult], ...]:
+    def planning(self) -> tuple[Future[Any], ...]:
         return self._run.planning
 
     def _start(self, attempt: _Attempt, previous: StageResult | None) -> None:

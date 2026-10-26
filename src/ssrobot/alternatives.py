@@ -30,7 +30,7 @@ import math
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ssrobot._wire import Record, Value, fingerprint, meta
 from ssrobot.conventions import check_name
@@ -353,9 +353,11 @@ class AlternativesRun:
     """A ``plan_alternatives`` run that the caller advances, from ``start_alternatives``,
     so the context can keep stepping while it plans.
 
-    ``advance`` never waits: it starts attempts on free workers, checks ``abort``, and
-    validates, on the context's thread, every attempt that has finished. ``planning`` is
-    the plans running now, for a caller that waits on them. ``cancel`` stops the run:
+    ``advance`` never waits: it starts attempts on free workers, checks ``abort``, starts
+    the validation of every attempt that has planned, on a worker (its scene built on the
+    context's thread), and records every validation that has ended. ``planning`` is the
+    plans and validations running now, for a caller that only waits on them: until the
+    run is done, it is never empty after ``advance``. ``cancel`` stops the run:
     attempts not started never start, and running planners are told to stop
     (``aborted``). ``close`` cancels an unfinished run, waits for its planners, and
     releases its scenes. Both may be called again. ``result`` is what
@@ -420,7 +422,7 @@ class AlternativesRun:
         return self._run.done
 
     @property
-    def planning(self) -> tuple[Future[PlanResult], ...]:
+    def planning(self) -> tuple[Future[Any], ...]:
         return self._run.planning
 
     def advance(self) -> bool:
