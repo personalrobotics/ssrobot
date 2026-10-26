@@ -344,3 +344,96 @@ def test_a_continued_offset_motion_keeps_its_planned_line(artifacts: Path, tmp_p
             "ContinuationReport",
         )
     }
+
+
+ACROSS = OffsetGoal(
+    direction=(0.0, 1.0, 0.0), distance=0.12, position_tolerance=1e-3, rotation_tolerance=2e-2
+)
+"""A 12 cm line across, 1 mm wide: planned with seed 2 and no margin, a waypoint lies on
+the line's boundary (#208)."""
+
+
+def _shifted_fails(planner: Any, plan: Any, scene: Any, by: float) -> int:
+    """Against how many of four shifts of the line by ``by`` across it (as a joint outside
+    the group that moves the frame would) the plan's own path is invalid."""
+    request = plan.request
+    reference = scene.forward_kinematics(request.start, request.frame)
+    d = np.array(request.goal.direction)
+    u = np.cross(np.array([0.0, 0.0, 1.0]), d)
+    u /= np.linalg.norm(u)
+    w = np.cross(d, u)
+    fails = 0
+    for v in (u, -u, w, -w):
+        position = tuple(float(a) for a in np.array(reference.position) + by * v)
+        moved = replace(
+            request,
+            goal=replace(request.goal, reference_pose=replace(reference, position=position)),
+        )
+        fails += not planner.validator(moved, scene).validate_path(plan.path).valid
+    return fails
+
+
+def _margins(tmp: Path) -> dict[str, Any]:
+    root, scene_file = runnable_panda(tmp)
+    package = load_package(root)
+    runtime = MujocoRuntime(package, scene=scene_file, keyframe="home")
+    out: dict[str, Any] = {}
+    with RobotContext(package.description, runtime) as ctx:
+        snapshot = ctx.snapshot()
+        scene = ctx.planning_scene(snapshot, "arm")
+        request = replace(ctx.manipulator("arm").request(ACROSS, snapshot=snapshot), seed=2)
+        for name, margin in (("none", 0.0), ("declared", CBiRRT.LINE_MARGIN_M)):
+            planner = CBiRRT.from_package(package, "arm", line_margin_m=margin)
+            plan = ctx.plan(request, snapshot=snapshot, planner=planner)
+            assert plan.succeeded, (name, plan.status)
+            out[name] = {
+                "line_margin_diagnostic": [
+                    d.message for d in plan.diagnostics if d.code == "line_margin"
+                ],
+                "fails_shifted_10um": _shifted_fails(planner, plan, scene, 10e-6),
+                "fails_shifted_24um": _shifted_fails(planner, plan, scene, 24e-6),
+                "valid_as_planned": all(r.valid for r in plan.validation),
+            }
+        oversized = ctx.plan(
+            request,
+            snapshot=snapshot,
+            planner=CBiRRT.from_package(package, "arm", line_margin_m=1e-3),
+        )
+        out["oversized"] = (oversized.status.value, [d.code for d in oversized.diagnostics])
+        refused = {}
+        for bad in (-1e-6, float("nan"), True):
+            try:
+                CBiRRT(package.description, line_margin_m=bad)
+                refused[repr(bad)] = "accepted"
+            except SsrobotError as e:
+                refused[repr(bad)] = e.code
+        out["refused"] = refused
+    return out
+
+
+def test_an_offset_line_is_planned_with_a_declared_margin(artifacts: Path, tmp_path: Path) -> None:
+    """#208: CBiRRT projects onto a constraint's boundary. Planned without a margin, a
+    waypoint of this line lies on it, so the path is invalid against the same line shifted
+    10 um across it, as a joint outside the group shifts the frame. Planned against the line
+    narrowed by the declared margin (25 um) and validated against the original, it keeps
+    the margin: valid under every 10 um and 24 um shift. A margin as wide as the line's
+    half-width is refused, as are negative, non-finite and boolean ones."""
+    first = json.dumps(_margins(tmp_path / "first"), indent=2) + "\n"
+    (artifacts / "line_margin.json").write_text(first)
+    assert json.dumps(_margins(tmp_path / "again"), indent=2) + "\n" == first
+    out = json.loads(first)
+    assert out["none"]["line_margin_diagnostic"] == []
+    assert out["none"]["valid_as_planned"] and out["none"]["fails_shifted_10um"] > 0
+    declared = out["declared"]
+    assert declared["line_margin_diagnostic"] == [
+        "planned against the line narrowed by 2.5e-05 m on each side; "
+        "validated against the original"
+    ]
+    assert declared["valid_as_planned"]
+    assert declared["fails_shifted_10um"] == declared["fails_shifted_24um"] == 0
+    assert out["oversized"] == ["invalid_input", ["line_margin"]]
+    assert out["refused"] == {
+        "-1e-06": "out_of_limits",
+        "nan": "out_of_limits",
+        "True": "out_of_limits",
+    }

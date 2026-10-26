@@ -115,7 +115,20 @@ class CBiRRT:
 
     Pose, offset, and TSR goals and path constraints need ``kinematics`` for the
     request's manipulator; without it only configuration goals are offered.
+
+    An offset goal's line is planned against, not validated against, a copy narrowed by
+    ``line_margin_m`` on each side of every nonzero-width translation bound; its rotation
+    bounds, and a zero-width bound, are unchanged. CBiRRT projects onto a constraint's
+    boundary, so without it planned waypoints keep no margin, and a scene that moves the
+    frame by microns (a joint outside the group) puts them outside. Validation, a
+    rebase, and a continuation use the original line; a plan made with a margin is
+    validated against it again, and says so in a ``line_margin`` diagnostic. A margin at
+    least half a bound's width is refused (``line_margin``).
     """
+
+    LINE_MARGIN_M = 25e-6
+    """The default margin: a declared error budget, above the 9.6 um at most that
+    Geodude's frame differed by between planning and arrival (ssrobot#208)."""
 
     def __init__(
         self,
@@ -124,11 +137,19 @@ class CBiRRT:
         kinematics: SsikKinematics | None = None,
         config: CBiRRTConfig | None = None,
         backend: str = "auto",
+        line_margin_m: float = LINE_MARGIN_M,
     ) -> None:
+        if not (isinstance(line_margin_m, int | float) and math.isfinite(line_margin_m)) or (
+            isinstance(line_margin_m, bool) or line_margin_m < 0
+        ):
+            raise ValidationError(
+                "out_of_limits", "line_margin_m is a finite number >= 0", path="line_margin_m"
+            )
         self.description = description
         self.kinematics = kinematics
         self.config = config or CBiRRTConfig()
         self.backend = backend
+        self.line_margin_m = float(line_margin_m)
 
     @classmethod
     def from_package(
@@ -138,6 +159,7 @@ class CBiRRT:
         *,
         config: CBiRRTConfig | None = None,
         backend: str = "auto",
+        line_margin_m: float = LINE_MARGIN_M,
     ) -> CBiRRT:
         """A planner for ``package``'s robot with ssik kinematics for ``manipulator``, so
         it plans pose, offset, and TSR goals and path constraints for that manipulator.
@@ -148,6 +170,7 @@ class CBiRRT:
             kinematics=SsikKinematics.from_package(package, manipulator),
             config=config,
             backend=backend,
+            line_margin_m=line_margin_m,
         )
 
     @property
@@ -275,13 +298,31 @@ class CBiRRT:
             scene=scene,
             goal=self._goal_distance(request, scene, goals),
         )
+        # An offset goal's line is planned against a copy narrowed by the margin, so its
+        # waypoints keep it; everything else, its validation included, uses the original.
+        margin = 0.0
+        planning = constraints
+        goal = request.goal
+        if isinstance(goal, OffsetGoal) and self.line_margin_m > 0 and goal.position_tolerance > 0:
+            if self.line_margin_m >= goal.position_tolerance:
+                return self._failure(
+                    request,
+                    PlanStatus.INVALID_INPUT,
+                    "line_margin",
+                    f"a {self.line_margin_m:g} m margin is not inside the line's "
+                    f"{goal.position_tolerance:g} m half-width",
+                )
+            margin = self.line_margin_m
+            planning = [region(t) for t in request.path_constraint] + _offset(
+                request, scene, goal, margin
+            )[1]
         limits = request.limits
         try:
             native_result = planner.plan(
                 start=np.array(request.start),
                 goal=goals.get("goal"),
                 goal_tsrs=goals.get("goal_tsrs"),
-                constraint_tsrs=constraints or None,
+                constraint_tsrs=planning or None,
                 seed=request.seed,
                 return_details=True,
                 trajectory=TrajectoryOptions(
@@ -322,20 +363,44 @@ class CBiRRT:
                 "planner_contract", "sscbirrt timed its trajectory along another path"
             )
         trajectory = _timed(request, source)
+        diagnostics = tuple(
+            Diagnostic(code="backend_reason", message=r) for r in native_result.backend_reasons
+        )
+        if margin:
+            # sscbirrt validated against the narrowed line it planned with; the evidence is
+            # the original line's validator's own.
+            path_report = validator.validate_path(path)
+            trajectory_report = validator.validate_trajectory(trajectory, path)
+            if not (path_report.valid and trajectory_report.valid):
+                return self._failure(
+                    request,
+                    PlanStatus.BACKEND_FAILURE,
+                    "invalid_result",
+                    "planned against the narrowed line, invalid against the original",
+                    backend,
+                )
+            reports = (path_report, trajectory_report)
+            diagnostics += (
+                Diagnostic(
+                    code="line_margin",
+                    message=f"planned against the line narrowed by {margin:g} m on each side; "
+                    "validated against the original",
+                ),
+            )
+        else:
+            reports = (
+                validator.record(native_result.validation, path_subject(path)),
+                validator.record(source.validation, trajectory_subject(trajectory), evidence=path),
+            )
         return PlanResult(
             request=request,
             planner=self.name,
             backend=backend,
             status=PlanStatus.SUCCEEDED,
-            diagnostics=tuple(
-                Diagnostic(code="backend_reason", message=r) for r in native_result.backend_reasons
-            ),
+            diagnostics=diagnostics,
             path=path,
             trajectory=trajectory,
-            validation=(
-                validator.record(native_result.validation, path_subject(path)),
-                validator.record(source.validation, trajectory_subject(trajectory), evidence=path),
-            ),
+            validation=reports,
         )
 
     def rebase(
@@ -501,11 +566,13 @@ def lower_goal(request: PlanningRequest, scene: PlanningScene) -> dict[str, list
 
 
 def _offset(
-    request: PlanningRequest, scene: PlanningScene, goal: OffsetGoal
+    request: PlanningRequest, scene: PlanningScene, goal: OffsetGoal, margin: float = 0.0
 ) -> tuple[list[tsr.TSR], list[tsr.TSR]]:
     """The goal region at the end of the line, and the line as a path constraint. Both
     are expressed in a frame whose x axis is the direction of motion, at the goal's
-    reference pose: the frame's pose at the request's start when it names none."""
+    reference pose: the frame's pose at the request's start when it names none. With
+    ``margin``, the constraint's translation bounds are narrowed by it on each side (for
+    planning only); the goal region is not."""
     assert request.frame is not None
     reference = goal.reference_pose
     if reference is None:
@@ -523,7 +590,9 @@ def _offset(
     p, r, d = goal.position_tolerance, goal.rotation_tolerance, goal.distance
     across = [[-p, p], [-p, p]]
     end = box(line, offset, np.array([[d - p, d + p], *across]), r)
-    along = box(line, offset, np.array([[-p, d + p], *across]), r)
+    m = margin
+    narrowed = [[-p + m, p - m], [-p + m, p - m]]
+    along = box(line, offset, np.array([[-p + m, d + p - m], *narrowed]), r)
     return [end], [along]
 
 
