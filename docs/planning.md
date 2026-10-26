@@ -252,21 +252,42 @@ or constraint check of its own.
 `ctx.execute(plan, *, planner, processor=None, source="planner", timeout_ns=None)` is
 the normal way to run a plan. It is nonblocking and returns the ordinary `Execution`.
 It:
-1. requires the plan's snapshot to be one this context captured at the scene's current
-   revision, failing with `stale_snapshot` otherwise, and the plan's request to be the
-   one `build_request` gives from this description and that snapshot: robot,
-   description, snapshot and revision, the group's joints, and the start
-   (`check_planned_in`, `request_mismatch`);
-2. takes the runtime's `ctx.trajectory_contract`, failing with
-   `trajectory_contract_undeclared` if there is none;
-3. builds that snapshot's planning scene and `planner.validator(plan.request, scene)`;
-4. compiles with `prepare`, below;
-5. submits the command with the snapshot. The trace records the `PreparedTrajectory`
+1. prepares the command with `ctx.prepare`, below, which:
+   - requires the plan's snapshot to be one this context captured at the scene's
+     current revision, failing with `stale_snapshot` otherwise, and the plan's request
+     to be the one `build_request` gives from this description and that snapshot:
+     robot, description, snapshot and revision, the group's joints, and the start
+     (`check_planned_in`, `request_mismatch`);
+   - refuses a plan made on a prediction or a projection, which runs only as a
+     continuation (`predicted_plan`, `projected_plan`);
+   - takes the runtime's `ctx.trajectory_contract`, failing with
+     `trajectory_contract_undeclared` if there is none;
+   - builds that snapshot's planning scene and `planner.validator(plan.request,
+     scene)`, and compiles with `ssrobot.prepare` (see "Compiling a plan");
+2. submits the command with the snapshot. The trace records the `PreparedTrajectory`
    (`compiled`) just before the `submitted` record, whose `Submission.prepared` is its
    fingerprint.
 
 Any refusal comes before anything reaches the runtime. Nothing is replanned, retimed,
 or retried.
+
+`ctx.prepare(plan, *, planner, processor=None)` is that first step alone (#207): it
+returns the `PreparedTrajectory` and submits, steps and traces nothing. A plan from
+`ctx.plan` is a planner artifact, independent of any runtime; it becomes ready to execute
+only once prepared. A caller choosing among plans prepares each one it would accept, so
+that a plan whose command is not ready (`execution_unready`) is rejected before any
+executes:
+
+```python
+prepared = ctx.prepare(plan, planner=planner)  # compiled and validated, not submitted
+execution = ctx.execute(plan, planner=planner)  # reuses it, once verified
+```
+
+The context keeps each preparation by the plan's content until the scene changes, as it
+keeps every candidate that a race of alternatives, a portfolio or chains prepared.
+Preparing the plan again, or executing it, reuses the command's validation only once it
+is verified to answer exactly this request, source trajectory, contract, command and
+validator; every other readiness check runs again.
 
 ## Planner portfolios
 
