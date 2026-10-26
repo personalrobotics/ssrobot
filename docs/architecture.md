@@ -12,8 +12,8 @@ This document is normative for scope, ownership, and the architecture decisions 
 below. It describes both what exists and what v0.1 targets, and marks each with its
 status. Implemented behavior, with exact types and schemas, is specified only in
 [contracts.md](contracts.md), [packages.md](packages.md), [authoring.md](authoring.md),
-[mujoco.md](mujoco.md), and [planning.md](planning.md). The target examples here are
-illustrative; only the planning journey's calls exist yet.
+[mujoco.md](mujoco.md), and [planning.md](planning.md). The planning journey runs today;
+the policy and hybrid examples here are illustrative.
 
 ## Core concepts
 
@@ -22,7 +22,7 @@ illustrative; only the planning journey's calls exist yet.
 | `RobotDescription` | Immutable, validated semantic model of a robot: joints, links, frames, groups, manipulators, bases, end effectors, sensors, declared capabilities. Safe to share across contexts. | Implemented. Opendubs, a mobile manipulator with a mecanum base, is the first external consumer of `MobileBase` and `BaseTwistCommand`, in M2 (#85) |
 | Robot package | A model plus its `ssrobot.toml` manifest, loaded from a directory or an installed Python package into a `RobotDescription`. | Implemented |
 | `RobotContext` | The public session. Context-managed; the only path through which users observe, submit commands, step, snapshot, and close. | Implemented, with the planning views `ctx.manipulator` and `ctx.base` (#21) |
-| `Runtime` | Injected backend mechanics (replay, MuJoCo, ROS 2). Owns I/O, lifecycle, status, and capability reporting, including the trajectory-execution contract it accepts (command period, interpolation, whether the period is fixed). Contains no planning or task logic. | Implemented: the protocol, the declared trajectory contract (#128), `ReplayRuntime`, and `MujocoRuntime` with joint, trajectory, gripper, and chunk commands and robot observations: joint state, effort, poses, wrenches, and camera images (#14–#16), scenes with declared attachments (#17), and snapshots with planning scenes (#18; see [mujoco.md](mujoco.md)). Object state channels are the rest of M2; `Ros2Runtime` is M6 |
+| `Runtime` | Injected backend mechanics (replay, MuJoCo, ROS 2). Owns I/O, lifecycle, status, and capability reporting, including the trajectory-execution contract it accepts (command period, interpolation, whether the period is fixed). Contains no planning or task logic. | Implemented: the protocol, the declared trajectory contract (#128), `ReplayRuntime`, and `MujocoRuntime` with joint, trajectory, gripper, and chunk commands and robot observations: joint state, effort, poses, wrenches, and camera images (#14–#16), scenes with declared attachments (#17), object and contact observations (#101), and snapshots with planning scenes (#18; see [mujoco.md](mujoco.md)). `Ros2Runtime` is M6 |
 | `Execution` | Passive handle returned by `submit`. Owns no thread, loop, or clock. | Implemented |
 | `SceneState` | A context's scene: objects, fixtures, and attachments (object, end effector, transform, allowed contacts), with a revision. Declared state for planners and traces; it never changes physics. | Implemented (#17) |
 | `SceneSnapshot` | Immutable, serializable scene state. | Implemented (#18) |
@@ -33,7 +33,7 @@ illustrative; only the planning journey's calls exist yet.
 | Trace | Versioned JSONL record of everything a context did, with content-addressed external assets. | Implemented |
 | `PolicyRunner` | Drives policy inference timing over a context: observe, infer, validate, submit, step. | M4 |
 
-## Current journey (M1): load and understand a robot
+## Load and understand a robot
 
 This runs today. A robot package owns its manifest, written once with `ssrobot init`
 and checked with `ssrobot doctor` (see [authoring.md](authoring.md)). Anyone with the
@@ -58,10 +58,9 @@ The same description drives a `RobotContext` over `ReplayRuntime`, which
 
 ## Target v0.1 user journeys
 
-Only the planning journey's calls exist yet: `MujocoRuntime`, task scenes, attachments,
-snapshots, planning scenes, the planning contracts, `ctx.manipulator`, and the sscbirrt
-adapter (README *Planning* runs one). The snippets here are illustrative. `PolicyRunner`
-and the LeRobot adapter arrive in M4.
+The planning journey runs today: the README's *First journey* is one, and Geodude's
+four-can recycling application is a larger one. The policy and hybrid snippets are
+illustrative: `PolicyRunner` and the LeRobot adapter arrive in M4.
 
 All three journeys use the same robot package, context, command types, and trace. A
 client that works in one runtime works in another by changing only the runtime

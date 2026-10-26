@@ -1218,8 +1218,9 @@ submodules loaded, the submodules, and the top-level public names. A second clea
 environment installs the wheel with the `mujoco` extra, runs the gate with
 `--integration mujoco` (`imports-mujoco.json`), and opens `MujocoRuntime` from it. A
 third installs it with the `mujoco` and `planning` extras together, runs the gate with
-`--integration planning` (`imports-planning.json`), and runs the README's plan from it
-on sscbirrt's native backend.
+`--integration planning` (`imports-planning.json`), and runs the README's *First
+journey* from it on sscbirrt's native backend; its output and trace are kept in the
+artifact's `first-journey/`.
 
 | Artifact | Shows |
 | --- | --- |

@@ -1,169 +1,123 @@
 # ssrobot
-A small simulator-neutral robot interface for planning, policies, and real-world execution.
 
-## What works today
+> A robot program should be able to decide what to do through planning, a learned
+> policy, teleoperation, or a mixture of them, while using the same robot semantics,
+> execution contract, safety checks, observations, and evidence.
 
-ssrobot loads and inspects portable robot packages, with no runtime dependencies and no
-simulator or ROS. From a clone, with [uv](https://docs.astral.sh/uv/):
+ssrobot is the small layer that makes that composition possible. It describes a robot
+once, runs it behind one session in whatever runtime hosts it, and checks and records
+everything sent to it. It is not a planner, a simulator, a policy framework, a skill
+library, a viewer, or an application: those plug in around it, and none of them has to
+know about the others.
+
+## Why use it
+
+- **Describe a robot once.** A robot package carries its model files and the semantics
+  a program needs: manipulators, grippers, end effectors, sensors, limits. Any program
+  loads it the same way, without running the package's code.
+- **Decide on explicit state.** A plan is made in a captured snapshot of the world,
+  with an identity, never against a mutable environment that may have moved on.
+- **Inspect before moving.** A plan is data and never moves the robot. Executing it
+  compiles the motion the runtime will actually run and validates that, then submits
+  it only if every check passes.
+- **Keep the evidence.** The package, world, snapshot, request, plan, validation,
+  compiled command, and execution stay linked in a trace you can read back and replay.
+- **Swap what decides, keep what's checked.** Planners plug in behind one contract
+  today; policies and teleoperation are meant to use the same commands, observations,
+  ownership, and trace.
+
+## First journey: package to motion
+
+Load a packaged robot, open it in MuJoCo, plan an arm motion, and execute it. From a
+clone, with [uv](https://docs.astral.sh/uv/) (`uv sync` installs the MuJoCo and planning
+integrations for development):
 
 ```sh
+git clone https://github.com/personalrobotics/ssrobot && cd ssrobot
 uv sync
-uv run ssrobot inspect examples/packages/bimanual_lift   # readable summary
-uv run ssrobot inspect examples/packages/bimanual_lift --json report.json
 ```
-
-```python
-import ssrobot
-
-package = ssrobot.load_package("examples/packages/bimanual_lift")
-robot = package.description                 # immutable, validated RobotDescription
-print(robot.name, robot.fingerprint()[:12])
-for arm in robot.manipulators:
-    print(arm.name, robot.group(arm.group).joints, arm.base_frame, "->", arm.tool_frame)
-```
-
-`ssrobot.load_installed_package("geodude_assets")` loads an installed package the same
-way, without running its code. `ssrobot init` writes a package's manifest from an MJCF
-or URDF model, and `ssrobot doctor` checks the package and, given `--wheel`, its built
-wheel. A `RobotContext` over the reference `ReplayRuntime` exercises the observation,
-command, ownership, and trace contracts.
-
-### Simulation in MuJoCo
-
-With the `mujoco` extra (`uv sync` installs it for development), a package runs in
-MuJoCo behind the same `RobotContext`. This moves the example arm along a trajectory in
-simulated time:
-
-```python
-import ssrobot
-from ssrobot.mujoco import MujocoRuntime
-
-package = ssrobot.load_package("examples/packages/mujoco_arm")
-arm_q = ssrobot.ObservationRequest(channels=("arm_q",))
-with ssrobot.RobotContext(package.description, MujocoRuntime(package)) as ctx:  # at home
-    start = ctx.observe(arm_q).readings[0].value
-    move = ssrobot.JointTrajectory(
-        group="arm",
-        joints=("shoulder", "elbow", "wrist"),
-        time_from_start_ns=(0, 1_000_000_000),
-        positions=(start, (1.0, -0.5, -0.5)),
-    )
-    status = ctx.run_until(ctx.submit(move), max_ticks=2_000)  # steps simulated time
-    print(status.state.value, ctx.observe(arm_q).readings[0].value)
-```
-
-It also observes joint state and effort, frame poses, wrenches, and camera images. A
-`GuardedJointTrajectory` runs a joint trajectory and stops it within one tick when a
-force-torque guard triggers, as for placing or skewering; the status says whether it
-triggered or completed.
-`MujocoRuntime(package, scene="tabletop.xml")` adds task objects from an MJCF scene.
-`ctx.attach(object, end_effector)` then declares a grasp for planners and the trace
-without changing physics: friction alone holds the object, and a slip is reported.
-`ctx.snapshot()` freezes the world, and `ctx.planning_scene(snapshot, "arm")` answers a
-planner's collision and kinematics queries on that copy, built on sscbirrt's native
-MuJoCo checker. `ctx.submit(command, snapshot=snapshot)` refuses a command planned on a
-snapshot whose scene has since changed. [docs/mujoco.md](docs/mujoco.md) describes what it binds and how commands run.
-
-### Planning
-
-With the `planning` extra as well, sscbirrt plans in a snapshot and times the motion
-under the arm's velocity and acceleration limits. `ctx.execute` compiles the plan for
-the runtime's declared trajectory contract, has the planner's own validator check the
-command, and submits it only if every check passes:
-
-| Goal | Public call |
-| --- | --- |
-| One joint configuration, or any of several alternatives | `plan_to_configuration`, `plan_to_configurations` |
-| A selected tool or other frame at a pose | `plan_to_end_effector_pose` |
-| A straight Cartesian approach or retreat inside a constrained corridor | `plan_to_end_effector_offset` |
-| Any pose in one or more task-space regions | `plan_to_tsr` |
-| Any of the above while a frame remains in task-space regions along the path | the call's `path_constraint` option |
-
-Pose, offset, and TSR goals, and path constraints, need kinematics for the arm:
-`CBiRRT.from_package(package, "right_arm")` builds the planner with ssik kinematics for
-that manipulator, or fails with `kinematics_unavailable`. `CBiRRT(description)` offers
-configuration goals only: any other goal is refused at negotiation (`unsupported_goal`),
-and a path constraint with `unsupported_constraint`.
-
-The request may select the controlled frame, scale velocity and acceleration, and set a
-timeout and random seed. Declared attachments move with the robot during collision
-checking, so the same calls plan while carrying an object and apply its contact
-allowances.
 
 ```python
 import ssrobot
 from ssrobot.mujoco import MujocoRuntime
 from ssrobot.planning import CBiRRT
 
-package = ssrobot.load_package("examples/packages/mujoco_arm")
+package = ssrobot.load_package("examples/packages/mujoco_arm")  # model + semantics
 runtime = MujocoRuntime(package, scene="examples/scenes/pedestal.xml")
-with ssrobot.RobotContext(package.description, runtime) as ctx:
-    arm = ctx.manipulator()                                  # the only manipulator
-    planner = CBiRRT(package.description)                    # configuration goals
-    plan = arm.plan_to_configuration(                        # in the world as it is now
+with ssrobot.JsonlTrace("run/trace.jsonl") as trace, ssrobot.RobotContext(
+    package.description, runtime, sinks=[trace]
+) as ctx:
+    arm = ctx.manipulator()                         # the robot's only manipulator
+    planner = CBiRRT(package.description)
+    plan = arm.plan_to_configuration(               # planned in a captured snapshot
         (-0.6, -0.4, 0.0), planner=planner, velocity_scaling=0.5
-    )                                                        # carries its request
-    execution = ctx.execute(plan, planner=planner)           # compile, validate, submit
+    )
+    execution = ctx.execute(plan, planner=planner)  # compile, validate, then submit
     status = ctx.run_until(execution, max_ticks=5_000)
     print(status.state.value, plan.backend, round(plan.trajectory.duration, 2), "s")
+
+records = ssrobot.read_trace("run/trace.jsonl")     # the run's evidence, decoded
+print(len(records), "trace records:", sorted({r.kind.value for r in records}))
 ```
 
-Without `snapshot=`, a planning call captures exactly one snapshot as it starts and
-plans in it; pass `snapshot=ctx.snapshot()` to plan several requests in exactly the same
-world. What stays explicit is deliberate:
-- the runtime, because nothing chooses a simulator or a robot for you;
-- the manipulator, when the robot has several (Geodude never guesses);
-- the planner, with its kinematics and validation policy, because there is no registry;
-- planning, then `execute`, because planning never moves the robot, and the plan can
-  be inspected first;
-- `planner=` again at `execute`, because a plan is data, and its validator comes from
-  the planner you name;
-- `max_ticks`, because the wait is bounded and blocking. That is for a manual clock, as
-  in simulation; on an external clock, as on hardware, `run_until` takes `timeout_s`.
+It prints `succeeded native 1.01 s` and the kinds of record the trace holds. Run it with
+`uv run python` from the repository's root. The runtime, the manipulator, the planner,
+and the step from plan to execution are each explicit on purpose;
+[the ordinary journey](docs/planning.md#the-ordinary-journey) says why, and lists every
+kind of goal an arm can plan to.
 
-On Geodude and ADA in simulation, a straight move of the tool is three setup lines and
-three motion lines:
+## What works today
 
-```python
-planner = CBiRRT.from_package(package, "right_arm")
-with ssrobot.RobotContext(package.description, runtime) as ctx:
-    arm = ctx.manipulator("right_arm")
-    plan = arm.plan_to_end_effector_offset((0.0, 0.0, 1.0), 0.05, planner=planner)
-    execution = ctx.execute(plan, planner=planner)
-    status = ctx.run_until(execution, max_ticks=20_000)
-```
+| Capability | Status | Where to read more |
+| --- | --- | --- |
+| Robot packages: load, inspect, and author from an MJCF or URDF model (`ssrobot init`, `inspect`, `doctor`) | Implemented. Geodude and ADA (Kinova JACO) ship packages, checked in CI | [authoring](docs/authoring.md), [packages](docs/packages.md) |
+| MuJoCo runtime: joint, trajectory, guarded, gripper, and chunk commands; joint, pose, wrench, and camera observations; task scenes, attachments, snapshots | Implemented | [mujoco](docs/mujoco.md) |
+| Planning with sscbirrt: configuration, pose, straight-line, and task-space-region goals, path constraints, clearance, validated execution | Implemented. Geodude and ADA each run one planning scenario from their installed packages in CI | [planning](docs/planning.md) |
+| Racing alternatives and multi-stage candidates; planning the next motion while the current one runs, and continuing it on arrival | Implemented in ssrobot; used by ssgrasping and Geodude | [planning](docs/planning.md) |
+| Manipulation skills: grasp, place, drop, racing two arms, lookahead | Demonstrated on Geodude in MuJoCo, through [ssgrasping](https://github.com/personalrobotics/ssgrasping) | ssgrasping |
+| Recycling cans with both arms, racing them and planning ahead | Demonstrated on Geodude in MuJoCo: the [Geodude 4.0 application](https://github.com/personalrobotics/geodude/tree/main/v4) | Geodude |
+| Traces and run bundles: record, read back strictly, replay | Implemented | [contracts](docs/contracts.md) |
+| Live visualization of a run | Through [mj_viser](https://github.com/personalrobotics/mj_viser)'s optional ssrobot integration (ssmjviser) | mj_viser |
+| Learned policies and teleoperation | Not yet: the shared execution boundary is designed, not implemented (M4) | [architecture](docs/architecture.md) |
+| Physical hardware, through ROS 2 | Not yet (M6) | [architecture](docs/architecture.md) |
 
-A plan made before the scene changed (an object attached or
-detached) is refused with `stale_snapshot`, and the trace links each execution to the
-compiled command and validation evidence it ran. `ssrobot.plan_portfolio` runs several
-planner, seed, and processor attempts at one request in isolated scenes of one snapshot,
-and selects by declared priority and duration, never by which finished first. The
-validation guarantee is discrete:
-`CBiRRTConfig.edge_resolution` is the user-selected largest joint-space distance between
-checked states, and nothing is claimed between them. [docs/planning.md](docs/planning.md)
-describes the adapter, validation policy, and checks.
+Everything above runs in MuJoCo with sscbirrt. Portability to other simulators,
+planners, and hardware is the architecture's goal, not yet a demonstrated result.
 
-The two reference robots, Geodude and ADA (Kinova JACO), run one planning scenario from
-their installed packages in CI: the same function plans to a task space region and to a
-named configuration, executes both, and is byte-identical across two runs, with no
-robot-specific code. So does the concise journey above. See *Reference robots* in [docs/packages.md](docs/packages.md).
+## How the ecosystem fits
 
-## Target v0.1
+| Layer | Owns |
+| --- | --- |
+| ssrobot | Robot semantics, runtimes, state, commands, observations, planning contracts, execution, and evidence |
+| sscbirrt, ssik, sstsr | Planning, inverse kinematics, and constraint mathematics |
+| ssgrasping | Robot-neutral manipulation skills |
+| mj_viser, ssmjviser | General read-only MuJoCo visualization, and its optional ssrobot integration |
+| Geodude, ADA, Opendubs | Robot- and task-specific applications |
+| sspilot (future) | Discoverable operator, CLI, and agent-facing interfaces |
 
-Core arm planning works in simulation. M3's remaining work is isolated and parallel
-planner execution (#23), jointed tools (#121), and force-guarded trajectory execution
-(#124). The neutral contracts include base-pose requests and allow other planner
-adapters, but end-to-end base planning, coupled bimanual planning, and an adapter other
-than CBiRRT are not implemented. Object state channels (the rest of M2) and policies
-(M4) are not implemented yet. The policy-only and hybrid examples in
-[docs/architecture.md](docs/architecture.md) show the target v0.1 behavior.
+Robot-specific behavior belongs in the robot's own application. A skill that works for
+any robot belongs in ssgrasping. ssrobot holds only what every one of them shares.
 
-## Documentation
+## Current limits and roadmap
 
-See [docs/architecture.md](docs/architecture.md) for the charter: scope, ownership,
-non-goals, status, and the architecture decisions that bind v0.1, and
-[docs/contracts.md](docs/contracts.md) for the implemented public types, conventions,
-and wire schemas. [docs/packages.md](docs/packages.md) describes portable robot
-packages, and [docs/authoring.md](docs/authoring.md) shows how to create one from a
-model file with `ssrobot init`. [docs/mujoco.md](docs/mujoco.md) covers `MujocoRuntime`,
-and [docs/planning.md](docs/planning.md) the planning adapter and executing plans.
+- **Integrations:** MuJoCo is the only runtime that simulates, and sscbirrt the only
+  planner adapter. The contracts allow others; none is implemented yet.
+- **Not yet available:** learned policies and teleoperation (M4), physical deployment
+  (M6), another simulator, mobile-base execution, and coupled bimanual planning.
+- **Known limitations that weaken a current claim:**
+  - [#207](https://github.com/personalrobotics/ssrobot/issues/207): a motion valid when
+    planned can be refused once compiled, 0.05 mm inside its clearance.
+  - [ssgrasping#22](https://github.com/personalrobotics/ssgrasping/issues/22): a race
+    of candidates has once let the simulated robot move before its selection, in CI.
+
+## Where to go next
+
+| To | Read |
+| --- | --- |
+| Bring up a new robot, or distribute its package | [docs/authoring.md](docs/authoring.md), [docs/packages.md](docs/packages.md) |
+| Simulate it: scenes, observations, commands, attachments | [docs/mujoco.md](docs/mujoco.md) |
+| Plan: goals, validation, clearance, alternatives, chains, interleaving | [docs/planning.md](docs/planning.md) |
+| Understand what ssrobot owns, and what it leaves to others | [docs/architecture.md](docs/architecture.md) |
+| Implement an integration against the public types and invariants | [docs/contracts.md](docs/contracts.md) |
+| Grasp, place, and drop objects | [ssgrasping](https://github.com/personalrobotics/ssgrasping) |
+| See a complete application | [Geodude 4.0](https://github.com/personalrobotics/geodude/tree/main/v4) |
