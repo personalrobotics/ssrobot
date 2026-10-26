@@ -506,7 +506,7 @@ def test_a_chains_run_has_work_in_flight_until_it_is_done(tmp_path: Path) -> Non
             return future
 
         run._react = react_then_let_work_finish  # type: ignore[method-assign]
-        pool.submit = submit_validation_finished  # type: ignore[method-assign]
+        pool.submit = submit_validation_finished  # type: ignore[method-assign,assignment]
         idle = 0
         while not run.advance():
             if not run.planning:
