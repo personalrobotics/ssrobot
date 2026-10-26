@@ -11,8 +11,8 @@ uv add "ssrobot[mujoco,planning]"
 
 | Name | What it is |
 | --- | --- |
-| `CBiRRT(description, *, kinematics=None, config=None, backend="auto")` | A `Planner`: sscbirrt's constrained bidirectional RRT, timed by sscbirrt |
-| `CBiRRT.from_package(package, manipulator, *, config=None, backend="auto")` | The same, with `SsikKinematics.from_package(package, manipulator)`, so it plans pose, offset, and TSR goals and path constraints for that manipulator; `kinematics_unavailable` if ssik cannot solve it |
+| `CBiRRT(description, *, kinematics=None, config=None, backend="auto", line_margin_m=25e-6)` | A `Planner`: sscbirrt's constrained bidirectional RRT, timed by sscbirrt |
+| `CBiRRT.from_package(package, manipulator, *, config=None, backend="auto", line_margin_m=25e-6)` | The same, with `SsikKinematics.from_package(package, manipulator)`, so it plans pose, offset, and TSR goals and path constraints for that manipulator; `kinematics_unavailable` if ssik cannot solve it |
 | `SsikKinematics.from_package(package, manipulator)` | Analytic IK for one manipulator from the package's canonical MJCF |
 | `CBiRRT.validator(request, scene)` | The `MotionValidator` the planner applies to `request`: an `SscbirrtValidator` over sscbirrt's public `Validator` |
 | `RestToRestProcessor()` | A path-preserving `TrajectoryProcessor` for a plan that has only a path |
@@ -142,7 +142,7 @@ A plan lowers the request into sscbirrt:
 | `start` | the start configuration |
 | `ConfigurationGoal` | goal configurations, any one suffices |
 | `PoseGoal` | one goal TSR about the pose, bounded by the tolerances |
-| `OffsetGoal` | a goal TSR at the end of the line, and a path-constraint TSR along it, both in a frame whose x axis is the direction, at the goal's `reference_pose`: the frame's pose at `start` when it names none |
+| `OffsetGoal` | a goal TSR at the end of the line, and a path-constraint TSR along it, both in a frame whose x axis is the direction, at the goal's `reference_pose`: the frame's pose at `start` when it names none. The path constraint is planned narrowed by `line_margin_m` (below) |
 | `TsrGoal`, `path_constraint` | goal TSRs (any one), constraint TSRs (all) |
 | the scene's `native()` checker, or its `is_valid` | the collision checker |
 | (the planner's own `config`) | the validation policy: `CBiRRTConfig.edge_resolution`, recorded in every report |
@@ -156,6 +156,23 @@ supports the arm's family (`ssik.cpp.NATIVE_FAMILIES`), as it does for the UR5e 
 JACO2. Other kinematics, or a scene without a native checker, use the Python backend,
 and the result's diagnostics give the reasons. The validator reports which backend
 answered.
+
+**An offset line is planned with a margin.** CBiRRT projects onto a path constraint's
+boundary, so a planned waypoint can lie on it, valid to within numerical precision. A
+scene that moves the constrained frame by microns, such as a joint outside the group at
+arrival, then puts it outside (#208). So an `OffsetGoal`'s line is planned against a copy
+narrowed by `line_margin_m` on each side of
+every nonzero-width translation bound; its rotation bounds, and a zero-width bound, are
+unchanged. Everything else uses the original line: the validator, `rebase`, and a
+continuation. A plan made with a margin is validated against the original line again,
+and that is its evidence, with a `line_margin` diagnostic saying so. A margin at least
+half the line's width is refused (`line_margin`); `0` plans as before.
+
+The default, 25 um, is a budget measured for Geodude, whose frame moved at most 9.6 um
+between planning and arrival. It is not a guarantee for every robot: one whose passive
+or out-of-group joints can move the constrained frame farther must set a measured
+`line_margin_m`. Its evidence should be rerun, and the default reconsidered, when TSR
+membership becomes exact (personalrobotics/sstsr#190).
 
 Results map to `PlanStatus`:
 
@@ -628,6 +645,7 @@ Every failed check is named in one `execution_unready` error. A successful
 | `artifacts/test_a_plan_made_on_a_projection_continues_that_execution/projection.json` | A plan made on where an unexecuted plan ends (#190). Rest to A is planned on a captured snapshot and projected, and A to B is planned on the projection. Then A is executed, and B, bound to that execution, continues on arrival and reaches B. The projection keeps the snapshot's stamp and names the plan and snapshot. Binding refuses: an execution of another plan, of a replanned A, or a continuation's rebased run (`unprojected_source`); a plan not made on the projection (`snapshot_mismatch`); a changed projection (`unknown_projection`). Two plans to exactly the same end (the same request with another time budget) project to the same state, and each binds to an execution of its own plan, but not to the other's (`unprojected_source`). `execute` refuses a plan made on a projection (`projected_plan`), and `project` refuses an unsuccessful plan. A second run is byte-identical. |
 | `artifacts/test_a_plan_on_a_projection_continues_a_continued_occurrence/continued_projection.json` | A plan made on a projection, continued from a continuation of the projected plan (#200). As at the seam, the right arm's continuous joint runs past pi and its arrival is reported wrapped. B is planned on the source's prediction and projected, and C is planned on the projection. B runs as a continuation, rebased a whole turn onto the arrival; C binds to that occurrence and continues. A twin of B to the same end has the same projected state, but B's occurrence does not bind to it (`unprojected_source`). A rebase that ends 1e-5 rad away is refused (`projection_mismatch`). A second run is byte-identical. |
 | `artifacts/test_a_continued_offset_motion_keeps_its_planned_line/offset_continuation.json` | A continued offset motion keeps its planned line (#203), on a runnable Franka Panda with ssik kinematics. A 5 cm line down (5 mm, 0.02 rad) is planned on a source motion's prediction, and the arm is moved before it continues. 1 cm further down the line, inside the tube, it continues, held to the line through its planned start; re-anchored at the arrival, the same rebase is refused (`path_constraint`). 2 cm across, it is refused (`arrival_off_constraint`) and nothing is submitted. At the same hand pose in another arm configuration, the bridge's interior leaves the line: `rebase_failed` (`path_constraint`). An explicit reference pose is kept unchanged. With the arm on a carriage, a joint outside its group, sliding 2 cm across the line before the arm continues, the line stays where it was planned: `arrival_off_constraint`. A validator answering the arrival check about another state is refused (`validation_mismatch`), and nothing is submitted. `OffsetGoal`, `PlanningRequest`, `PlanResult`, `PreparedTrajectory`, `TraceRecord` and `ContinuationReport` refuse their previous versions. A second run is byte-identical. |
+| `artifacts/test_an_offset_line_is_planned_with_a_declared_margin/line_margin.json` | An offset line planned with a declared margin (#208), on the runnable Panda: a 12 cm line across, 1 mm wide. Planned with no margin, a waypoint lies on the line's boundary, so its own path is invalid against the line shifted 10 um across it, as a joint outside the group shifts the frame. Planned against the line narrowed by 25 um and validated against the original, it keeps the margin: valid under every 10 um and 24 um shift, with a `line_margin` diagnostic. A margin as wide as the line's half-width is refused (`line_margin`), as are negative, non-finite and boolean ones. A second run is byte-identical. |
 | `artifacts/test_the_manipulator_view_plans_on_a_projection/view.json` | The example arm's manipulator view plans on a projection as on any snapshot: the plan is made on the projected state and starts where the projected plan ends. |
 | `artifacts/test_validating_on_workers_shares_processors_and_honors_a_stop/validating.json` | What validating on workers (#202) must not change. Two path-only planners sharing one processor that is not reentrant (it takes 0.2 s) call it twice, never at once. A run stopped while an attempt's delayed validation runs, by `abort` or by its 1 s timeout, selects nothing: the attempt is `failed`, "stopped while it was validated", with no validation. |
 | `artifacts/test_a_report_cannot_claim_an_impossible_outcome/refusals.json` | Edits of a real report that decoding refuses: a selection of an invalid or a non-selected valid attempt, or of none; an unknown stop; a cancellation without a stop; a valid attempt without a duration; an invalid one without its validation; a malformed fingerprint; reordered attempts; another selection rule. |
