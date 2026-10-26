@@ -5,8 +5,8 @@
 > execution contract, safety checks, observations, and evidence.
 
 ssrobot is the small layer that makes that composition possible. It describes a robot
-once, runs it behind one session in whatever runtime hosts it, and checks and records
-everything sent to it. It is not a planner, a simulator, a policy framework, a skill
+once, runs it behind one session in whatever runtime hosts it, checks everything that
+crosses that boundary, and can record it. It is not a planner, a simulator, a policy framework, a skill
 library, a viewer, or an application: those plug in around it, and none of them has to
 know about the others.
 
@@ -20,8 +20,9 @@ know about the others.
 - **Inspect before moving.** A plan is data and never moves the robot. Executing it
   compiles the motion the runtime will actually run and validates that, then submits
   it only if every check passes.
-- **Keep the evidence.** The package, world, snapshot, request, plan, validation,
-  compiled command, and execution stay linked in a trace you can read back and replay.
+- **Keep the evidence.** With a trace attached, the package, world, snapshot, request,
+  plan, validation, compiled command, and execution stay linked in it. A trace reads back
+  strictly; a run bundle adds the robot and scene files that replaying it needs.
 - **Swap what decides, keep what's checked.** Planners plug in behind one contract
   today; policies and teleoperation are meant to use the same commands, observations,
   ownership, and trace.
@@ -78,7 +79,8 @@ kind of goal an arm can plan to.
 | Recycling cans with both arms, racing them and planning ahead | Demonstrated on Geodude in MuJoCo: the [Geodude 4.0 application](https://github.com/personalrobotics/geodude/tree/main/v4) | Geodude |
 | Traces and run bundles: record, read back strictly, replay | Implemented | [contracts](docs/contracts.md) |
 | Live visualization of a run | Through [mj_viser](https://github.com/personalrobotics/mj_viser)'s optional ssrobot integration (ssmjviser) | mj_viser |
-| Learned policies and teleoperation | Not yet: the shared execution boundary is designed, not implemented (M4) | [architecture](docs/architecture.md) |
+| Learned policies | Not yet: the shared execution boundary is designed, not implemented (M4) | [architecture](docs/architecture.md) |
+| Teleoperation | Not yet, and not scheduled | [architecture](docs/architecture.md) |
 | Physical hardware, through ROS 2 | Not yet (M6) | [architecture](docs/architecture.md) |
 
 Everything above runs in MuJoCo with sscbirrt. Portability to other simulators,
@@ -102,8 +104,9 @@ any robot belongs in ssgrasping. ssrobot holds only what every one of them share
 
 - **Integrations:** MuJoCo is the only runtime that simulates, and sscbirrt the only
   planner adapter. The contracts allow others; none is implemented yet.
-- **Not yet available:** learned policies and teleoperation (M4), physical deployment
-  (M6), another simulator, mobile-base execution, and coupled bimanual planning.
+- **Not yet available:** learned policies (M4), physical deployment (M6), another
+  simulator, mobile-base execution, and coupled bimanual planning. Teleoperation is not
+  yet scheduled.
 - **Known limitations that weaken a current claim:**
   - [#207](https://github.com/personalrobotics/ssrobot/issues/207): a motion valid when
     planned can be refused once compiled, 0.05 mm inside its clearance.
