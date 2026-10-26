@@ -12,7 +12,7 @@ uv add "ssrobot[mujoco,planning]"
 | Name | What it is |
 | --- | --- |
 | `CBiRRT(description, *, kinematics=None, config=None, backend="auto", line_margin_m=25e-6)` | A `Planner`: sscbirrt's constrained bidirectional RRT, timed by sscbirrt |
-| `CBiRRT.from_package(package, manipulator, *, config=None, backend="auto")` | The same, with `SsikKinematics.from_package(package, manipulator)`, so it plans pose, offset, and TSR goals and path constraints for that manipulator; `kinematics_unavailable` if ssik cannot solve it |
+| `CBiRRT.from_package(package, manipulator, *, config=None, backend="auto", line_margin_m=25e-6)` | The same, with `SsikKinematics.from_package(package, manipulator)`, so it plans pose, offset, and TSR goals and path constraints for that manipulator; `kinematics_unavailable` if ssik cannot solve it |
 | `SsikKinematics.from_package(package, manipulator)` | Analytic IK for one manipulator from the package's canonical MJCF |
 | `CBiRRT.validator(request, scene)` | The `MotionValidator` the planner applies to `request`: an `SscbirrtValidator` over sscbirrt's public `Validator` |
 | `RestToRestProcessor()` | A path-preserving `TrajectoryProcessor` for a plan that has only a path |
@@ -161,12 +161,18 @@ answered.
 boundary, so a planned waypoint can lie on it, valid to within numerical precision. A
 scene that moves the constrained frame by microns, such as a joint outside the group at
 arrival, then puts it outside (#208). So an `OffsetGoal`'s line is planned against a copy
-narrowed by `line_margin_m` (25 um by default, a declared error budget) on each side of
+narrowed by `line_margin_m` on each side of
 every nonzero-width translation bound; its rotation bounds, and a zero-width bound, are
 unchanged. Everything else uses the original line: the validator, `rebase`, and a
 continuation. A plan made with a margin is validated against the original line again,
 and that is its evidence, with a `line_margin` diagnostic saying so. A margin at least
 half the line's width is refused (`line_margin`); `0` plans as before.
+
+The default, 25 um, is a budget measured for Geodude, whose frame moved at most 9.6 um
+between planning and arrival. It is not a guarantee for every robot: one whose passive
+or out-of-group joints can move the constrained frame farther must set a measured
+`line_margin_m`. Its evidence should be rerun, and the default reconsidered, when TSR
+membership becomes exact (personalrobotics/sstsr#190).
 
 Results map to `PlanStatus`:
 

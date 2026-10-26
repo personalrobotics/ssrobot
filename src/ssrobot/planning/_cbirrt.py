@@ -127,8 +127,9 @@ class CBiRRT:
     """
 
     LINE_MARGIN_M = 25e-6
-    """The default margin: a declared error budget, above the 9.6 um at most that
-    Geodude's frame differed by between planning and arrival (ssrobot#208)."""
+    """The default margin: a budget measured for Geodude, whose frame differed by at most
+    9.6 um between planning and arrival (ssrobot#208). Not a guarantee for every robot:
+    one whose passive or out-of-group joints move the frame farther sets a measured one."""
 
     def __init__(
         self,
