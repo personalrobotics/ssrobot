@@ -32,14 +32,18 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from ssrobot._wire import Record, Value, fingerprint, meta
+from ssrobot.commands import TrajectoryContract
 from ssrobot.conventions import check_name
+from ssrobot.description import RobotDescription
 from ssrobot.errors import SsrobotError, ValidationError
 from ssrobot.planning_contracts import (
     MotionValidation,
+    MotionValidator,
     Planner,
     PlanningRequest,
     PlanResult,
     PlanStatus,
+    PreparedTrajectory,
     TrajectoryProcessor,
     check_bound,
     check_planned_in,
@@ -48,6 +52,7 @@ from ssrobot.planning_contracts import (
     negotiate,
     trajectory_subject,
 )
+from ssrobot.preparation import compile_plan
 from ssrobot.scene import PlanningScene, SceneSnapshot
 
 if TYPE_CHECKING:
@@ -88,7 +93,8 @@ class AttemptOutcome(enum.StrEnum):
     """The planner did not succeed, or the planner, its processor, or its validator
     raised an expected error."""
     INVALID = "invalid"
-    """It succeeded, but its motion failed validation on a fresh scene."""
+    """It succeeded, but its motion failed validation on a fresh scene, or its command,
+    compiled for the runtime, is not ready to execute."""
     VALID = "valid"
     """It succeeded, and its motion is valid: a candidate."""
 
@@ -441,6 +447,10 @@ class _JobRun:
         for job in jobs:
             check_planned_in(job.request, ctx.description, job.snapshot or snapshot)
         self._ctx, self._snapshot = ctx, snapshot
+        # Each valid motion is also compiled for the runtime's contract, and the command
+        # validated, so a candidate is one it can execute. Without a contract, nothing
+        # executes, and a candidate is validated as the planner's motion alone.
+        self._contract = ctx.info.trajectory
         self._workers, self._abort, self._cutoff = workers, abort, cutoff
         # Unsealed, jobs may be added as others end (``add``), and the run ends only once
         # it is sealed (``seal``) and every job has ended.
@@ -674,7 +684,15 @@ class _JobRun:
         )
         assert self._pool is not None
         checking = self._pool.submit(
-            _check, job.plan_attempt, request, end.raw, scene, lock, self._started
+            _check,
+            job.plan_attempt,
+            request,
+            end.raw,
+            scene,
+            lock,
+            self._started,
+            self._ctx.description,
+            self._contract,
         )
         self._checking[checking] = k
 
@@ -702,13 +720,18 @@ class _JobRun:
         assert checked.fresh is not None
         end.validation = checked.validation
         if checked.candidate is None:
+            end.ended = _Ended.INVALID
+            if checked.unready is not None:
+                end.detail = checked.unready
+                return
             witness = checked.fresh.witness
             assert witness is not None
-            end.ended = _Ended.INVALID
             end.detail = f"{witness.failure.value} at t = {witness.time_s} s"
             return
         assert checked.candidate.trajectory is not None
         end.candidate = checked.candidate
+        if checked.prepared is not None:
+            self._ctx._prepared[fingerprint(checked.candidate)] = checked.prepared
         end.ended, end.detail = _Ended.VALID, "valid"
         end.duration_s = checked.candidate.trajectory.duration
         if self._cutoff and end.ended is _Ended.VALID:
@@ -798,6 +821,11 @@ class _Checked:
     fresh: MotionValidation | None = None
     validation: str | None = None
     candidate: PlanResult | None = None
+    prepared: PreparedTrajectory | None = None
+    """The candidate's command for the runtime's contract, if it has one."""
+    unready: str | None = None
+    """Why the motion, valid as planned, is not ready to execute as compiled: then
+    ``fresh`` is the command's validation."""
     error: str | None = None
 
 
@@ -808,13 +836,26 @@ def _check(
     scene: PlanningScene,
     processing: threading.Lock | None,
     started: float,
+    description: RobotDescription,
+    contract: TrajectoryContract | None,
 ) -> _Checked:
     """On a worker, with no context and nothing mutable of the run: ``result``'s fresh
-    validation on ``scene``, processing it under its processor's lock."""
+    validation on ``scene``, processing it under its processor's lock, and, with a
+    ``contract``, the preparation of its command for it."""
     begin = time.monotonic() - started
     hashed = fingerprint(result)
+    prepared = unready = None
     try:
-        candidate, fresh = _candidate(attempt, request, result, scene, processing)
+        validator = attempt.planner.validator(request, scene)
+        candidate, fresh = _candidate(attempt, request, result, scene, processing, validator)
+        if candidate is not None and contract is not None:
+            preparation = compile_plan(
+                candidate, scene, validator=validator, description=description, contract=contract
+            )
+            prepared = preparation.prepared
+            if prepared is None:
+                candidate, fresh = None, preparation.compiled_validation
+                unready = preparation.refusal
     except SsrobotError as e:
         interval = (begin, time.monotonic() - started)
         return _Checked(result=hashed, interval_s=interval, error=f"{e.code}: {e.message}")
@@ -824,6 +865,8 @@ def _check(
         fresh=fresh,
         validation=fingerprint(fresh),
         candidate=candidate,
+        prepared=prepared,
+        unready=unready,
     )
 
 
@@ -832,14 +875,14 @@ def _candidate(
     request: PlanningRequest,
     result: PlanResult,
     scene: PlanningScene,
-    processing: threading.Lock | None = None,
+    processing: threading.Lock | None,
+    validator: MotionValidator,
 ) -> tuple[PlanResult | None, MotionValidation]:
     """The fresh validation of ``result``'s motion as it would execute, by its planner's
     validator on ``scene``, a fresh scene of the state it was planned in, and the
     candidate plan carrying exactly that motion and report; no candidate if the motion is
     invalid. The report is checked to come from that validator, bound to the request,
     about exactly that motion with its path as evidence."""
-    validator = attempt.planner.validator(request, scene)
     check_bound(validator.identity, request, path="validator")
     path = result.path
     timed = result.trajectory

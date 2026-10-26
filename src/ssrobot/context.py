@@ -388,6 +388,10 @@ class RobotContext:
         # Each execution a continuation submitted, by execution id: the plan it continued.
         self._continued: dict[str, _ContinuedOccurrence] = {}
         self._accepted: dict[str, Timestamp] = {}  # when the runtime accepted each execution
+        # Commands a race of candidates prepared for this runtime, by their plan's
+        # fingerprint: evidence ``execute`` verifies before reusing it. Older revisions'
+        # plans cannot execute, so a scene change drops them.
+        self._prepared: dict[str, PreparedTrajectory] = {}
         self._planning_pool: ThreadPoolExecutor | None = None
 
     # -- Properties ------------------------------------------------------------------
@@ -1443,7 +1447,10 @@ class RobotContext:
         current revision (``stale_snapshot`` otherwise). Its command is compiled by
         ``prepare`` for ``trajectory_contract``, with ``planner``'s validator for the
         plan's request in that snapshot's planning scene, then submitted with the
-        snapshot. Any refusal comes before anything reaches the runtime. The trace
+        snapshot. A plan selected from a race of candidates was already prepared for
+        this runtime; ``prepare`` reuses that command's validation only once it has
+        verified it answers exactly this command. Any refusal comes before anything reaches
+        the runtime. The trace
         records the ``PreparedTrajectory`` (``compiled``) just before its ``submitted``
         record, which names it. ``processor`` times a path-only plan, as in ``prepare``;
         nothing is replanned, retimed, or retried.
@@ -1484,6 +1491,7 @@ class RobotContext:
             description=self._description,
             contract=contract,
             processor=processor,
+            prior=self._prepared.get(fingerprint(plan)),
         )
         execution = self._submit(
             prepared.command,
@@ -1803,6 +1811,7 @@ class RobotContext:
         scene = replace(scene, revision=scene.revision + 1)
         self._scene = scene
         self._captured.clear()
+        self._prepared.clear()
         self._emit(TraceKind.SCENE, source, scene, stamp)
         return scene
 
