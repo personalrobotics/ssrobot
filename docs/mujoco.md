@@ -1,8 +1,13 @@
 # MuJoCo runtime
 
 `ssrobot.mujoco.MujocoRuntime` simulates a robot package in MuJoCo behind the
-`Runtime` protocol ([contracts.md](contracts.md)). Install it with the `mujoco` extra,
-which pins MuJoCo exactly:
+`Runtime` protocol ([contracts.md](contracts.md)).
+
+`MujocoRuntime` is the execution mechanism, not the user session. An application binds
+it to a `RobotDescription` through `RobotContext`, which owns lifecycle, validation,
+command ownership, snapshots, and tracing.
+
+Install it with the `mujoco` extra, which pins MuJoCo exactly:
 
 ```sh
 uv add "ssrobot[mujoco]"
@@ -48,7 +53,9 @@ Still to come:
 | --- | --- |
 | #85 | Base twist commands, for Opendubs |
 | #108 | A kinematic (no-dynamics) mode, where an attached object is carried by copying its pose |
-| #109 | Grasp and release helpers that decide when to attach, above the core |
+
+Robot-neutral grasp and release decisions belong to
+[ssgrasping](https://github.com/personalrobotics/ssgrasping), above this runtime.
 
 There is no explicit reset: every `open` starts from the same state, so a new context
 is a reset. The runtime never exposes MuJoCo's `MjModel` or `MjData`.
