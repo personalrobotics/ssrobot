@@ -641,8 +641,13 @@ and the old and new durations.
 ## Compiling a plan
 
 `ssrobot.prepare(result, scene, *, validator, description, contract, processor=None,
-tolerance=1e-3)` is the compilation `ctx.execute` uses, available offline with
-explicit inputs; it gives the same `PreparedTrajectory` for the same inputs. It is core
+tolerance=1e-3, prior=None)` is the compilation `ctx.execute` uses, available offline
+with explicit inputs; it gives the same `PreparedTrajectory` for the same inputs.
+`prior`, an earlier `PreparedTrajectory` (anything else is `wrong_type`), lets it reuse
+that command validation instead of validating again, but only when the request, source
+trajectory, contract, command, and validator identity all match and the report is bound
+to exactly this command; mismatched evidence is ignored and the command validated again.
+Every other check always runs. It is core
 and depends only on the neutral contracts. It refuses anything but a `PlanResult`
 (`wrong_type`), a request not built from `description` and the scene's snapshot
 (`request_mismatch`), and a validator bound to another snapshot, group, constraints, or

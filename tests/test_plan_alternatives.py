@@ -764,7 +764,8 @@ def test_a_candidate_whose_command_is_refused_is_never_selected(
     motion valid as planned whose command is refused: it is recorded invalid, with the
     command's witness, and the left arm is selected. Executing the selection reuses the
     command's validation, verified to answer exactly that command, rather than
-    validating it again; evidence for another contract is not reused. ``ctx.prepare``
+    validating it again; evidence for another contract is not reused, and anything but
+    a ``PreparedTrajectory`` is refused (``wrong_type``). ``ctx.prepare``
     refuses a raw plan whose command is refused, before anything is submitted."""
     from dataclasses import replace
 
@@ -818,6 +819,17 @@ def test_a_candidate_whose_command_is_refused_is_never_selected(
                 prior=evidence_,
             )
             reuse[case] = list(log)
+        try:
+            prepare(
+                plan,
+                planned_in,
+                validator=attempt.planner.validator(plan.request, planned_in),
+                description=d,
+                contract=contract,
+                prior=dumps(prior),  # type: ignore[arg-type]
+            )
+        except ValidationError as e:
+            malformed_prior = f"{e.code} at {e.path}"
         # ctx.prepare, public: a raw plan whose command is refused is not ready, and
         # nothing is submitted; the selected plan, prepared again, validates nothing.
         right_alternative = alternatives[1]
@@ -849,6 +861,7 @@ def test_a_candidate_whose_command_is_refused_is_never_selected(
         "commands_validated_at_execute": compiled_at_execute,
         "commands_validated_by_prepare_given": reuse,
         "raw_right_arm_refusal": raw_refusal,
+        "malformed_prior": malformed_prior,
         "executed": status.state.value,
     }
     (artifacts / "compiled_refusal.json").write_text(json.dumps(evidence, indent=2) + "\n")
@@ -863,5 +876,6 @@ def test_a_candidate_whose_command_is_refused_is_never_selected(
         "ctx_prepare_selected": [],
     }
     assert raw_refusal.startswith("execution_unready: compiled_motion:")
+    assert malformed_prior == "wrong_type at prior"
     assert compiled_at_execute == []
     assert evidence["executed"] == "succeeded"

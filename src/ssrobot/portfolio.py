@@ -730,7 +730,11 @@ class _JobRun:
             return
         assert checked.candidate.trajectory is not None
         end.candidate = checked.candidate
-        if checked.prepared is not None:
+        # Kept only while its snapshot is current: a scene change during validation
+        # has already cleared the context's evidence, and must not see it restored.
+        if checked.prepared is not None and (
+            checked.candidate.request.snapshot in self._ctx._captured
+        ):
             self._ctx._prepared[fingerprint(checked.candidate)] = checked.prepared
         end.ended, end.detail = _Ended.VALID, "valid"
         end.duration_s = checked.candidate.trajectory.duration

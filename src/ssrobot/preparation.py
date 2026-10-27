@@ -133,6 +133,10 @@ def compile_plan(
     candidates. A plan that cannot be compiled at all still raises, as in ``prepare``."""
     if not isinstance(result, PlanResult):
         raise ValidationError("wrong_type", "the plan must be a PlanResult", path="plan")
+    if prior is not None and not isinstance(prior, PreparedTrajectory):
+        raise ValidationError(
+            "wrong_type", "prior must be a PreparedTrajectory or None", path="prior"
+        )
     request = result.request
     if not result.succeeded:
         raise ValidationError("execution_unready", f"the plan did not succeed: {result.status}")
