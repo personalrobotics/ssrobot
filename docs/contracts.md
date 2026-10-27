@@ -14,12 +14,19 @@ architecture.md with their milestones, and enter this document when they land.
 ## Boundary
 
 ```
-RobotContext ──uses──▶ Runtime (protocol) ──binds──▶ RobotDescription
-      └──────────────────validates against──────────────────┘
+Application ◀──────────────▶ RobotContext
+                                  │
+                         binds one of each
+                         ┌────────┴────────┐
+                 RobotDescription      Runtime
 ```
 
-`RobotDescription` knows nothing about contexts or runtimes. A runtime sees only the
-description it is opened with. Only `RobotContext` is user-facing.
+`RobotDescription` is stable robot meaning and knows nothing about sessions or
+backends. `Runtime` is the backend protocol: I/O, time, command application, status,
+and capability reporting. `RobotContext` binds one description and one runtime into a
+session, owns lifecycle and execution semantics, and validates both directions across
+that boundary. A runtime sees only the description it is opened with. Applications use
+the context rather than calling the runtime directly.
 
 ### Public surface
 
@@ -998,6 +1005,10 @@ guard and the stop: no IK, Cartesian interpolation, or force control.
   a failure for other motions.
 
 ## Traces
+
+For the operational distinctions among traces, run bundles, state reconstruction, and
+`ReplayRuntime`, see [traces.md](traces.md). This section is the normative trace
+contract.
 
 Every event becomes one `TraceRecord`, passed synchronously to each sink in order.
 `JsonlTrace(path)` writes one JSON object per line, with arrays in `assets/` beside it.

@@ -1,7 +1,22 @@
 # Authoring a robot package
 
-The shortest path from a model file to an installed, inspectable robot package. The
-package format itself is specified in [packages.md](packages.md).
+A robot package keeps the information needed to use a robot in one place. Its MJCF,
+URDF, or SRDF remains the authority for the mechanical structure and backend model it
+expresses, and runtimes continue to read those original files.
+
+The manifest records the application-level semantics that these formats do not
+represent uniformly: named manipulators and mobile bases, end effectors, command
+capabilities, observation channels, limits, configurations, model choices, and runtime
+profiles. Loading validates the manifest and model together and produces one immutable
+`RobotDescription`.
+
+![MJCF or URDF and SRDF provide the mechanical model. ssrobot.toml adds portable semantic roles, capabilities, channels, limits, and profiles. Both are validated into one RobotDescription while runtimes retain the original resources.](figures/robot-package.svg)
+
+*The manifest complements the established model formats. It does not copy their
+physics or geometry into another model.*
+
+The package format itself is specified in [packages.md](packages.md). The shortest
+path from a model file to an installed, inspectable package is:
 
 ```console
 $ ssrobot init path/to/robot.xml --robot my_robot      # answer what structure can't decide

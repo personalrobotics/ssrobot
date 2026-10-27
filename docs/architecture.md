@@ -1,19 +1,16 @@
 # ssrobot architecture and charter
 
-ssrobot is a small, simulator-neutral robot interface. It gives planners, learned
-policies, teleoperators, and recorders one shared way to describe a robot, observe it,
-command it, and trace what happened, whether the robot is replayed, simulated in
-MuJoCo, or physical hardware.
-
-ssrobot owns the *contract* between those clients and backends. It does not own the
-algorithms on either side of it.
+ssrobot defines the contract between a robot program and the system that executes its
+commands. This contract gives the robot a stable meaning across backends and lets
+planning or learning operate without acquiring authority over live execution. The
+planning, learning, control, visualization, and task algorithms themselves remain
+outside ssrobot.
 
 This document is normative for scope, ownership, and the architecture decisions listed
 below. It describes both what exists and what v0.1 targets, and marks each with its
 status. Implemented behavior, with exact types and schemas, is specified only in
 [contracts.md](contracts.md), [packages.md](packages.md), [authoring.md](authoring.md),
-[mujoco.md](mujoco.md), and [planning.md](planning.md). The planning journey runs today;
-the policy and hybrid examples here are illustrative.
+[mujoco.md](mujoco.md), [planning.md](planning.md), and [traces.md](traces.md).
 
 ## Core concepts
 
@@ -21,8 +18,8 @@ the policy and hybrid examples here are illustrative.
 | --- | --- | --- |
 | `RobotDescription` | Immutable, validated semantic model of a robot: joints, links, frames, groups, manipulators, bases, end effectors, sensors, declared capabilities. Safe to share across contexts. | Implemented, including the `MobileBase` and `BaseTwistCommand` contracts. Their first validation, on Opendubs, a mobile manipulator with a mecanum base, is tracked by #85 |
 | Robot package | A model plus its `ssrobot.toml` manifest, loaded from a directory or an installed Python package into a `RobotDescription`. | Implemented |
-| `RobotContext` | The public session. Context-managed; the only path through which users observe, submit commands, step, snapshot, and close. | Implemented, with the planning views `ctx.manipulator` and `ctx.base` (#21) |
-| `Runtime` | Injected backend mechanics (replay, MuJoCo, ROS 2). Owns I/O, lifecycle, status, and capability reporting, including the trajectory-execution contract it accepts (command period, interpolation, whether the period is fixed). Contains no planning or task logic. | Implemented: the protocol, the declared trajectory contract (#128), `ReplayRuntime`, and `MujocoRuntime` with joint, trajectory, gripper, and chunk commands and robot observations: joint state, effort, poses, wrenches, and camera images (#14–#16), scenes with declared attachments (#17), object and contact observations (#101), and snapshots with planning scenes (#18; see [mujoco.md](mujoco.md)). `Ros2Runtime` is M6 |
+| `RobotContext` | The public session. It binds exactly one description, runtime, and world, and is the only path through which users observe, submit commands, step, snapshot, and close. | Implemented, with the planning views `ctx.manipulator` and `ctx.base` (#21) |
+| `Runtime` | Injected execution mechanics (replay, MuJoCo, future ROS 2). Owns backend I/O, time, status, and capability reporting, including the trajectory-execution contract it accepts. Contains no planning, policy, or task logic. | Implemented: the protocol, the declared trajectory contract (#128), `ReplayRuntime`, and `MujocoRuntime` with joint, trajectory, gripper, and chunk commands and robot observations: joint state, effort, poses, wrenches, and camera images (#14–#16), scenes with declared attachments (#17), object and contact observations (#101), and snapshots with planning scenes (#18; see [mujoco.md](mujoco.md)). `Ros2Runtime` is M6 |
 | `Execution` | Passive handle returned by `submit`. Owns no thread, loop, or clock. | Implemented |
 | `SceneState` | A context's scene: objects, fixtures, and attachments (object, end effector, transform, allowed contacts), with a revision. Declared state for planners and traces; it never changes physics. | Implemented (#17) |
 | `SceneSnapshot` | Immutable, serializable scene state. | Implemented (#18) |
@@ -56,68 +53,43 @@ for arm in robot.manipulators:
 The same description drives a `RobotContext` over `ReplayRuntime`, which
 [contracts.md](contracts.md) specifies.
 
-## Target v0.1 user journeys
+## Architectural separation
 
-The planning journey runs today: the README's *First journey* is one, and Geodude's
-four-can recycling application is a larger one. The policy and hybrid snippets are
-illustrative: `PolicyRunner` and the LeRobot adapter arrive in M4.
+### Robot packages and identity
 
-All three journeys use the same robot package, context, command types, and trace. A
-client that works in one runtime works in another by changing only the runtime
-argument.
+A package keeps established model formats, assets, portable semantics, capabilities,
+and profiles in one validated file closure. Loading produces a `RobotDescription`,
+while runtimes continue to read the original model artifacts. See
+[authoring.md](authoring.md).
 
-### Planning only
+### Contexts and runtimes
 
-```python
-import ssrobot
-from ssrobot.mujoco import MujocoRuntime            # `mujoco` extra
-from ssrobot.planning import CBiRRT                 # `planning` extra
+A runtime implements backend I/O, time, status, and the capabilities that an execution
+system can provide. A `RobotContext` combines exactly one runtime with one description
+and world. The context then owns lifecycle, command ownership, scene revisions,
+execution semantics, and evidence for that session. Applications use contexts;
+integration authors implement runtimes. Selecting another backend creates another
+context rather than mutating an open session.
 
-package = ssrobot.load_installed_package("geodude_assets")
-planner = CBiRRT.from_package(package, "right_arm")    # with ssik kinematics for that arm
-with ssrobot.RobotContext(package.description, MujocoRuntime(package, scene="tabletop.xml")) as ctx:
-    arm = ctx.manipulator("right_arm")              # explicit; there is no active arm
-    goal = ssrobot.Pose(position=(0.6, -0.2, 1.0), quat_wxyz=(0.0, 1.0, 0.0, 0.0))
-    plan = arm.plan_to_end_effector_pose(goal, planner=planner)  # in the world as it is now
-    execution = ctx.execute(plan, planner=planner)  # compiled for this runtime, then submitted
-    result = ctx.run_until(execution, max_ticks=20_000)  # steps the manual clock to the end
-```
+### Snapshots and live state
 
-No learning dependency is installed or imported.
+Planning scenes are isolated, timeless views materialized from immutable snapshots.
+They may be used concurrently without advancing or commanding the live robot. Before
+a result can execute, it returns to the context for preparation and validation against
+the runtime's trajectory contract. See [planning.md](planning.md).
 
-### Policy only
+### Decision sources
 
-```python
-from ssrobot import PolicyRunner
-from ssrobot.lerobot import load_policy             # `lerobot` extra
+Planners, learned policies, and operators may arrive at commands in different ways.
+They share declared observations, typed commands, ownership, execution states, and
+tracing. Planning is implemented today. Policy execution is M4, hardware is M6, and
+teleoperation is not scheduled.
 
-policy = load_policy("checkpoints/act-tiny")
-with ssrobot.RobotContext(robot, MujocoRuntime(scene="tabletop.xml")) as ctx:
-    runner = PolicyRunner(ctx, policy, rate_hz=30)  # schemas negotiated before any motion
-    episode = runner.run_episode(max_steps=300)     # observe → infer → validate → submit → step
-```
+### Evidence
 
-No planner is installed or imported.
-
-### Hybrid
-
-```python
-with ssrobot.RobotContext(robot, MujocoRuntime(scene="tabletop.xml")) as ctx:
-    ctx.add_sink(recorder)                          # optional LeRobotDataset recorder
-    arm = ctx.manipulator("right_arm")
-    approach = arm.plan_to_tsr(pregrasp, planner=planner)
-    ctx.run_until(ctx.execute(approach, planner=planner), max_ticks=20_000)  # planner owns the arm…
-    PolicyRunner(ctx, grasp_policy).run_episode()   # …then ownership passes to the policy
-```
-
-The trace records, per step, whether a command came from a planner, a policy, or a
-human or scripted source.
-
-### Moving to hardware (v0.2)
-
-Replace `MujocoRuntime(...)` with `Ros2Runtime(profile=...)`. Hardware is externally
-clocked: `run_until` and `PolicyRunner` wait for timestamped updates instead of
-stepping, and `ctx.step()` is unavailable. Nothing else in the client changes.
+A trace connects the world and state used for a decision to the request, validation,
+command, execution, and subsequent observations. A bundle adds the exact files needed
+to inspect that record elsewhere. See [traces.md](traces.md).
 
 ## Ownership
 

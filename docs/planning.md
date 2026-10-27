@@ -1,5 +1,12 @@
 # Planning with sscbirrt, ssik, and sstsr
 
+Planning needs a stable statement of its initial conditions. A `RobotContext` captures
+those conditions in an immutable `SceneSnapshot`, from which a runtime can materialize
+any number of isolated `PlanningScene` values. These scenes do not advance time,
+change the context, or command the robot. They can therefore support concurrent
+planning, while preparation, validation, and execution remain operations of the live
+context.
+
 `ssrobot.planning` puts sscbirrt (planning and timing), ssik (analytic inverse
 kinematics), and sstsr (task space regions) behind ssrobot's neutral planning contracts
 ([contracts.md](contracts.md), *Planning requests and results*). Install it with the
@@ -21,7 +28,7 @@ Executing a plan is core: `ctx.execute(plan, planner=planner)` compiles it with
 `ssrobot.prepare` for the runtime's declared contract, asking `planner.validator`, and
 submits it (see *Executing a plan*).
 
-## The ordinary journey
+## Ordinary planning
 
 ```python
 planner = CBiRRT.from_package(package, "right_arm")              # setup
@@ -53,7 +60,7 @@ Pass `snapshot=ctx.snapshot()` explicitly to plan several requests in exactly th
 world. A plan captured either way is refused at `execute` once the scene changes
 (`stale_snapshot`).
 
-This journey is for a manual clock, as in simulation, where `run_until` steps the runtime
+This example is for a manual clock, as in simulation, where `run_until` steps the runtime
 and `max_ticks` bounds it. On an external clock, as on hardware, `run_until` polls
 instead and needs `timeout_s`, wall-clock seconds; it refuses `max_ticks` alone.
 
@@ -69,7 +76,7 @@ What stays explicit is deliberate:
 - `max_ticks` (manual clock) or `timeout_s` (external clock), because `run_until` blocks,
   and the wait is bounded.
 
-The reference check runs this journey on Geodude and ADA and reports its cost:
+The reference check runs this example on Geodude and ADA and reports its cost:
 - 7 concepts: package, runtime, context, manipulator view, planner, plan, and
   execution;
 - 3 setup lines and 3 motion lines;
@@ -510,6 +517,11 @@ is infeasible. `plan_chains(ctx, chains, snapshot=...)` races them, and `start_c
   and isn't part of the claim.
 
 ## Interleaving planning and execution
+
+![Motion A executes on the live context while a worker plans motion B from A's projected result. At the measured arrival, the context either checks, rebases, validates, and executes B or refuses it and replans from reality.](figures/interleaved-planning.svg)
+
+*Planning may overlap execution, but a speculative plan acquires no authority until
+the live context checks its particular source execution and measured arrival.*
 
 A robot running a sequence of motions can plan motion k+1 while motion k runs, and execute
 it when the robot arrives. Three pieces make that safe:
