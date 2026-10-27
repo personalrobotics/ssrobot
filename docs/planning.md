@@ -1,10 +1,11 @@
 # Planning with sscbirrt, ssik, and sstsr
 
-Planning begins by separating speculative computation from live authority. A
-`SceneSnapshot` is immutable state captured by a `RobotContext`. A runtime can
-materialize any number of isolated `PlanningScene` values from it; none advances time,
-changes the context, or commands the robot. Plans return to the live context only
-through preparation, validation, and explicit execution.
+Planning needs a stable statement of its initial conditions. A `RobotContext` captures
+those conditions in an immutable `SceneSnapshot`, from which a runtime can materialize
+any number of isolated `PlanningScene` values. These scenes do not advance time,
+change the context, or command the robot. They can therefore support concurrent
+planning, while preparation, validation, and execution remain operations of the live
+context.
 
 `ssrobot.planning` puts sscbirrt (planning and timing), ssik (analytic inverse
 kinematics), and sstsr (task space regions) behind ssrobot's neutral planning contracts

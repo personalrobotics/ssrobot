@@ -1,14 +1,14 @@
 # Traces, run bundles, and replay
 
-An execution log is useful only if its events retain their meaning. ssrobot therefore
-records a causal chain rather than an untyped stream of messages: which robot and world
-were open, which state a decision used, which command was accepted, how execution
-progressed, and what was observed.
+An execution log is useful only when its events retain their meaning. ssrobot records
+the robot and world that were open, the state on which a decision was based, the
+command that was accepted, the progress of its execution, and the observations that
+followed. References between these records preserve their causal order.
 
 ![Robot and world identities lead through a snapshot, request, plan, validation, command, execution, and observations. A trace links those records, while a run bundle adds the exact files needed to inspect them elsewhere.](figures/trace-causality.svg)
 
-*A trace connects decisions to the state and contract under which they were made. A
-run bundle makes the referenced files portable and verifiable.*
+*A trace connects a decision to the state and contract under which it was made. A run
+bundle makes the referenced files portable and verifiable.*
 
 This document explains how to use that evidence. The exact schemas, invariants, and
 refusal codes are specified in [contracts.md](contracts.md#traces) and
@@ -45,7 +45,7 @@ A trace records the observations the application requested and the snapshots it
 captured. It is not an implicit per-tick state dump. Choose observation and snapshot
 cadence according to the evidence or dataset the application needs.
 
-## Preserve portability explicitly
+## Run bundles
 
 A trace names robot, model, scene, and snapshot identities, but it does not copy all of
 their files. `write_bundle` closes that gap after a run:

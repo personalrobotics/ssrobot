@@ -66,15 +66,15 @@ jobs:
           uv pip install --python clean-planning "$(echo dist/*.whl)[mujoco,planning]"
       - name: Dependency gate on the installed wheel with the planning extra
         run: clean-planning/bin/python scripts/check_core_imports.py --installed --integration planning --report artifacts/installed-conformance/imports-planning.json
-      - name: The README's complete planning example runs from the installed wheel, and its trace is kept
+      - name: The README's planning example runs from the installed wheel, and its trace is kept
         working-directory: ${{ github.workspace }}
         run: |
           # The section's Python block is the complete, runnable example, run from the root.
-          sed -n '/^## A complete planning example/,/^## /p' README.md | sed -n '/^```python$/,/^```$/{p;/^```$/q;}' | sed '1d;$d' > "$RUNNER_TEMP/first_journey.py"
-          clean-planning/bin/python -P "$RUNNER_TEMP/first_journey.py" | tee "$RUNNER_TEMP/first_journey.txt"
-          grep -q '^succeeded native ' "$RUNNER_TEMP/first_journey.txt"
-          mkdir -p artifacts/installed-conformance/first-journey
-          cp -R run/. "$RUNNER_TEMP/first_journey.txt" artifacts/installed-conformance/first-journey/
+          sed -n '/^## Planning and execution in MuJoCo/,/^## /p' README.md | sed -n '/^```python$/,/^```$/{p;/^```$/q;}' | sed '1d;$d' > "$RUNNER_TEMP/readme_example.py"
+          clean-planning/bin/python -P "$RUNNER_TEMP/readme_example.py" | tee "$RUNNER_TEMP/readme_example.txt"
+          grep -q '^succeeded native ' "$RUNNER_TEMP/readme_example.txt"
+          mkdir -p artifacts/installed-conformance/readme-example
+          cp -R run/. "$RUNNER_TEMP/readme_example.txt" artifacts/installed-conformance/readme-example/
       - name: A planning scene builds on sscbirrt's native scene from the installed wheel
         working-directory: ${{ runner.temp }}
         run: >-

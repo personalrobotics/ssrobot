@@ -1,18 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="600" viewBox="0 0 1100 600" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="510" viewBox="0 50 1100 510" role="img" aria-labelledby="title desc">
   <title id="title">A robot package combines an established model with explicit portable semantics</title>
   <desc id="desc">MJCF or URDF and SRDF provide the mechanical model. ssrobot.toml provides semantic roles, capabilities, channels, profiles, and limits. Both are validated together into one RobotDescription, while the package retains the original model files and assets for runtimes.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L10,5 L0,10 Z" fill="#334155"/></marker>
     <style>
-      .title { font: 600 29px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #17212b; }
-      .label { font: 600 19px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #17212b; }
-      .body { font: 400 15px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
-      .eyebrow { font: 600 13px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 1.1px; fill: #64748b; }
-      .code { font: 600 17px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #17212b; }
+      .label { font: 600 19px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #17212b; }
+      .body { font: 400 15px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #475569; }
+      .eyebrow { font: 600 13px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; letter-spacing: 1.1px; fill: #64748b; }
+      .code { font: 600 17px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #17212b; }
     </style>
   </defs>
-  <rect width="1100" height="600" rx="24" fill="#fafaf7"/>
-  <text x="52" y="56" class="title">Keep the model format; add the semantics applications need</text>
+  <rect y="50" width="1100" height="510" rx="24" fill="#fafaf7"/>
 
   <rect x="42" y="92" width="660" height="450" rx="22" fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="8 7"/>
   <text x="70" y="122" class="eyebrow">ROBOT PACKAGE · PORTABLE FILE CLOSURE</text>

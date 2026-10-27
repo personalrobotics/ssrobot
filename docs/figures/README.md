@@ -1,8 +1,14 @@
 # Documentation figures
 
 The SVG files in this directory are both the editable sources and the published
-artifacts. They use only embedded shapes, text, and styles, with no external fonts or
-resources.
+artifacts. They are plain XML written directly in the repository, not exports from a
+design tool or generated binaries. Every label, position, path, color, and style can
+therefore be changed in a text editor and reviewed as an ordinary diff.
+
+The figures use embedded shapes and styles with no external resources. Visible text
+uses Palatino, with Palatino Linotype, Book Antiqua, and Georgia as fallbacks. The SVG
+`title` and `desc` elements are accessibility metadata and are not visible figure
+titles.
 
 Each figure has one canonical owner:
 
@@ -23,8 +29,9 @@ Use the color roles consistently when revising or adding a figure:
 - slate: snapshots and recorded evidence.
 
 Every figure must remain self-contained, include an SVG `title` and `desc`, and be
-legible at the width of its owning document. Add a figure only when it answers a
-technical question that the existing figures do not.
+legible at the width of its owning document. Edit the SVG directly and render it at
+both the normal documentation width and 360 pixels before committing. Add a figure
+only when it answers a technical question that the existing figures do not.
 
 The planned README opening visual is not in this directory yet. It must use the same
 robot, scene, camera, and run for its plan-preview, live-execution, and replay panels.

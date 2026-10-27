@@ -1,9 +1,10 @@
 # ssrobot architecture and charter
 
-ssrobot owns the contract between robot programs and execution backends. It separates
-the stable meaning of a robot from the mechanism that runs it, and separates
-speculative decisions from authority over live execution. It does not own the planning,
-learning, control, visualization, or task algorithms on either side of that boundary.
+ssrobot defines the contract between a robot program and the system that executes its
+commands. This contract gives the robot a stable meaning across backends and lets
+planning or learning operate without acquiring authority over live execution. The
+planning, learning, control, visualization, and task algorithms themselves remain
+outside ssrobot.
 
 This document is normative for scope, ownership, and the architecture decisions listed
 below. It describes both what exists and what v0.1 targets, and marks each with its
@@ -54,32 +55,41 @@ The same description drives a `RobotContext` over `ReplayRuntime`, which
 
 ## Architectural separation
 
-**Robot packages establish identity.** A package keeps established model formats,
-assets, portable semantics, capabilities, and profiles in one validated file closure.
-Loading produces a `RobotDescription`; runtimes continue to read the original model
-artifacts. See [authoring.md](authoring.md).
+### Robot packages and identity
 
-**A runtime is an implementation; a context is a session.** A runtime owns backend
-I/O, time, status, and the capabilities it can provide. A `RobotContext` binds exactly
-one runtime to one description and world, then owns lifecycle, command ownership,
-scene revisions, execution semantics, and evidence. Applications use contexts;
-integration authors implement runtimes. Another backend means another context, not an
-in-place mutation of an open session.
+A package keeps established model formats, assets, portable semantics, capabilities,
+and profiles in one validated file closure. Loading produces a `RobotDescription`,
+while runtimes continue to read the original model artifacts. See
+[authoring.md](authoring.md).
 
-**Snapshots separate speculation from authority.** Planning scenes are isolated,
-timeless views materialized from immutable snapshots. They may be used concurrently
-without advancing or commanding the live robot. A result returns through preparation
-and validation against the live context's runtime contract before it can execute. See
-[planning.md](planning.md).
+### Contexts and runtimes
 
-**Decision makers share a boundary, not an algorithm.** Planners, learned policies,
-and operators may choose actions differently. They share declared observations, typed
-commands, ownership, execution states, and tracing. Planning is implemented today;
-policy execution is M4, hardware is M6, and teleoperation is not scheduled.
+A runtime implements backend I/O, time, status, and the capabilities that an execution
+system can provide. A `RobotContext` combines exactly one runtime with one description
+and world. The context then owns lifecycle, command ownership, scene revisions,
+execution semantics, and evidence for that session. Applications use contexts;
+integration authors implement runtimes. Selecting another backend creates another
+context rather than mutating an open session.
 
-**Evidence follows causality.** Traces link the world and state a decision used to the
-request, validation, command, execution, and observations that followed. Bundles add
-the exact files needed to inspect that record elsewhere. See [traces.md](traces.md).
+### Snapshots and live state
+
+Planning scenes are isolated, timeless views materialized from immutable snapshots.
+They may be used concurrently without advancing or commanding the live robot. Before
+a result can execute, it returns to the context for preparation and validation against
+the runtime's trajectory contract. See [planning.md](planning.md).
+
+### Decision sources
+
+Planners, learned policies, and operators may arrive at commands in different ways.
+They share declared observations, typed commands, ownership, execution states, and
+tracing. Planning is implemented today. Policy execution is M4, hardware is M6, and
+teleoperation is not scheduled.
+
+### Evidence
+
+A trace connects the world and state used for a decision to the request, validation,
+command, execution, and subsequent observations. A bundle adds the exact files needed
+to inspect that record elsewhere. See [traces.md](traces.md).
 
 ## Ownership
 

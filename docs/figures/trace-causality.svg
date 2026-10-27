@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="345" viewBox="0 50 1200 345" role="img" aria-labelledby="title desc">
   <title id="title">A trace preserves the causal chain from world state to observation</title>
   <desc id="desc">Robot and world identities lead to a snapshot, planning request, plan, validation, prepared command, execution, and observations. A trace links each record, while a run bundle adds the files needed to inspect it elsewhere.</desc>
   <defs>
@@ -6,14 +6,12 @@
       <path d="M0,0 L10,5 L0,10 Z" fill="#64748b"/>
     </marker>
     <style>
-      .title { font: 600 30px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #17212b; }
-      .label { font: 600 17px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #17212b; }
-      .body { font: 400 14px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
-      .eyebrow { font: 600 13px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 1.1px; fill: #64748b; }
+      .label { font: 600 17px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #17212b; }
+      .body { font: 400 14px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #475569; }
+      .eyebrow { font: 600 13px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; letter-spacing: 1.1px; fill: #64748b; }
     </style>
   </defs>
-  <rect width="1200" height="430" rx="24" fill="#fafaf7"/>
-  <text x="54" y="58" class="title">A causal record, not a stream of unrelated log messages</text>
+  <rect y="50" width="1200" height="345" rx="24" fill="#fafaf7"/>
 
   <rect x="45" y="104" width="1110" height="188" rx="20" fill="#f1f5f8" stroke="#cbd5df" stroke-width="2"/>
   <text x="72" y="132" class="eyebrow">TRACE</text>
