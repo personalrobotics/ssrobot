@@ -14,19 +14,20 @@ ssrobot = "ssrobot.cli:main"
 # Exact: sscbirrt's native MuJoCo adapter is built against this MuJoCo and refuses
 # another, and MujocoRuntime checks it at open. Planning scenes are built on that adapter.
 # sscbirrt is exact too: 3.13.0 keeps a planning clearance in each collision checker
-# (sscbirrt#256), and checks no environment-against-environment pairs (sscbirrt#254).
-mujoco = ["mujoco==3.14.0", "sscbirrt[mujoco]==3.13.0"]
+# (sscbirrt#256), and checks no environment-against-environment pairs (sscbirrt#254);
+# 3.14.0 times a given path through public API, CBiRRT.time_path (sscbirrt#267).
+mujoco = ["mujoco==3.14.0", "sscbirrt[mujoco]==3.14.0"]
 # The sscbirrt, ssik, and sstsr adapter. 3.9 is the first sscbirrt release to expose
-# the same public validator that planning applies; 3.13.0, as the mujoco extra pins. The adapter measures goal regions
+# the same public validator that planning applies; 3.14.0, as the mujoco extra pins. The adapter measures goal regions
 # with sstsr directly; 3.5 is the first release whose distance wraps angles to the
 # representative nearest the bound (sstsr#186).
-planning = ["sscbirrt[ssik]==3.13.0", "sstsr>=3.5,<4"]
+planning = ["sscbirrt[ssik]==3.14.0", "sstsr>=3.5,<4"]
 
 [dependency-groups]
 dev = [
     "jsonschema>=4.23",
     "mujoco==3.14.0",
-    "sscbirrt[mujoco,ssik]==3.13.0",
+    "sscbirrt[mujoco,ssik]==3.14.0",
     "sstsr>=3.5,<4",
     "mypy>=1.13",
     "pytest>=8.3",
