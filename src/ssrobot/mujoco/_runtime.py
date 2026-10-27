@@ -40,6 +40,10 @@ from ssrobot.execution import (
     Diagnostic,
     ExecutionState,
     ExecutionStatus,
+    GripperDirection,
+    GripperEvidence,
+    GripperResult,
+    GripperTermination,
     GuardCause,
     GuardOutcome,
     HealthState,
@@ -58,6 +62,7 @@ from ssrobot.mujoco._model import (
     ChannelBinding,
     CommandBinding,
     FrameBinding,
+    GripperCompletion,
     JointBinding,
     MujocoMapping,
     MujocoObject,
@@ -95,6 +100,7 @@ class _Gripper:
     low: float
     high: float
     measure: tuple[int, float, float] | None = None  # (qpos address, closed, open)
+    completion: GripperCompletion | None = None
 
 
 @dataclass
@@ -104,6 +110,11 @@ class _Running:
     ended_ns: int | None = None  # a trajectory: when its last waypoint was applied
     baseline: tuple[float, ...] | None = None  # a tared guard: the wrench at the start
     window: list[tuple[float, ...]] = field(default_factory=list)  # a guard's last readings
+    # A gripper command: its applied target, the opening it started from, and its
+    # openings since, (time_ns, opening), back to one complete stall window.
+    target: float | None = None
+    start_opening: float | None = None
+    openings: list[tuple[int, float]] = field(default_factory=list)
 
 
 def _trajectory(command: Command) -> JointTrajectory | None:
@@ -403,6 +414,20 @@ class MujocoRuntime:
                         trajectory.group,
                     ),
                 )
+        if (
+            isinstance(command, GripperCommand)
+            and self._grippers[command.gripper].completion is None
+        ):
+            return ExecutionStatus(
+                execution=execution,
+                state=ExecutionState.REJECTED,
+                stamp=self._now(),
+                diagnostic=_unavailable(
+                    "no_gripper_completion",
+                    "the MuJoCo profile declares no completion detector for this gripper",
+                    command.gripper,
+                ),
+            )
         self._running[execution] = _Running(command=command)
         return ExecutionStatus(execution=execution, state=ExecutionState.PENDING, stamp=self._now())
 
@@ -425,7 +450,13 @@ class MujocoRuntime:
                     self._status(execution, ExecutionState.ACTIVE, applied_at)
             for command in due:
                 command, clamped = clamp_positions(self._described(), command)
+                gripping = isinstance(running.command, GripperCommand)
+                if gripping and isinstance(command, GripperCommand):
+                    running.start_opening = self._opening(command.gripper)
                 applied, modifications = self._apply(command)
+                if gripping and isinstance(applied, GripperCommand):
+                    running.target = applied.opening
+                    running.openings = [(applied_at.time_ns, running.start_opening or 0.0)]
                 modifications = clamped + modifications
                 self._events.append(
                     AppliedCommand(
@@ -453,6 +484,8 @@ class MujocoRuntime:
         for execution, running in list(self._running.items()):
             if running.ended_ns is not None:
                 self._settle(execution, running, now)
+            elif running.target is not None:
+                self._grip(execution, running, now)
         for name, tracked in self._attached.items():
             if not tracked.held:
                 continue
@@ -898,7 +931,11 @@ class MujocoRuntime:
                     gripper.opening.open,
                 )
             bound[gripper.gripper] = _Gripper(
-                drives=tuple(drives), low=low, high=high, measure=measure
+                drives=tuple(drives),
+                low=low,
+                high=high,
+                measure=measure,
+                completion=gripper.completion,
             )
         return bound
 
@@ -1061,6 +1098,9 @@ class MujocoRuntime:
             )
             return list(command.steps[index]), index == len(command.steps) - 1
         assert not isinstance(command, JointTrajectory | GuardedJointTrajectory)
+        if isinstance(command, GripperCommand):
+            # Applied once; it then runs until the fingers' motion ends (``_grip``).
+            return ([command] if running.started_ns is None else []), False
         return [command], True
 
     def _apply(self, command: InstantCommand) -> tuple[InstantCommand, tuple[Modification, ...]]:
@@ -1124,6 +1164,42 @@ class MujocoRuntime:
                     command.group,
                 ),
             )
+
+    def _grip(self, execution: str, running: _Running, now: Timestamp) -> None:
+        """End a gripper command once its fingers' motion has ended, by the gripper's
+        declared completion detector on the measured opening. The target stays applied."""
+        command = running.command
+        assert isinstance(command, GripperCommand) and running.target is not None
+        completion = self._grippers[command.gripper].completion
+        assert completion is not None and running.start_opening is not None
+        opening = self._opening(command.gripper)
+        openings = running.openings
+        openings.append((now.time_ns, opening))
+        since = now.time_ns - completion.stall_dwell_ns
+        while len(openings) > 1 and openings[1][0] <= since:
+            del openings[0]  # keep exactly one reading at or before the window's start
+        if abs(opening - running.target) <= completion.goal_tolerance:
+            termination = GripperTermination.REACHED_TARGET
+        elif openings[0][0] <= since and (
+            max(o for _, o in openings) - min(o for _, o in openings) <= completion.stall_delta
+        ):
+            termination = GripperTermination.STOPPED_SHORT
+        else:
+            return
+        del self._running[execution]
+        direction = (
+            GripperDirection.CLOSING
+            if running.target < running.start_opening
+            else GripperDirection.OPENING
+        )
+        result = GripperResult(
+            termination=termination,
+            direction=direction,
+            requested_opening=running.target,
+            final_opening=opening,
+            evidence=GripperEvidence.INFERRED,
+        )
+        self._status(execution, ExecutionState.SUCCEEDED, now, gripper=result)
 
     def _current(self) -> Any:
         """The live data with its derived quantities (body, site, and camera poses,
@@ -1299,10 +1375,16 @@ class MujocoRuntime:
         stamp: Timestamp,
         diagnostic: Diagnostic | None = None,
         guard: GuardOutcome | None = None,
+        gripper: GripperResult | None = None,
     ) -> None:
         self._events.append(
             ExecutionStatus(
-                execution=execution, state=state, stamp=stamp, diagnostic=diagnostic, guard=guard
+                execution=execution,
+                state=state,
+                stamp=stamp,
+                diagnostic=diagnostic,
+                guard=guard,
+                gripper=gripper,
             )
         )
 

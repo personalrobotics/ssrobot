@@ -51,7 +51,7 @@ uses them:
 | --- | --- |
 | Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `ResolvedFile`, `SourceItem`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointLimitDeclaration`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
-| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `GuardedJointTrajectory`, `WrenchGuard`, `WrenchPart`, `GuardOutcome`, `GuardCause`, `ActionChunk`, `GripperCommand`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
+| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `GuardedJointTrajectory`, `WrenchGuard`, `WrenchPart`, `GuardOutcome`, `GuardCause`, `ActionChunk`, `GripperCommand`, `GripperResult`, `GripperTermination`, `GripperDirection`, `GripperEvidence`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
 | Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `GuardCapability`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
 | Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `TimedTrajectory`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `PreparedTrajectory`, `prepare`, `MotionValidator`, `MotionValidation`, `plan_portfolio`, `PlanAttempt`, `Portfolio`, `PortfolioReport`, `AttemptRecord`, `AttemptOutcome`, `plan_alternatives`, `start_alternatives`, `AlternativesRun`, `Alternative`, `Alternatives`, `AlternativesReport`, `AlternativeRecord`, `AlternativeAttempt`, `AlternativeOutcome`, `plan_chains`, `start_chains`, `ChainsRun`, `Chain`, `Stage`, `StageRequest`, `StageResult`, `Chains`, `ChainsReport`, `ChainRecord`, `ChainAttempt`, `StageAttempt`, `StageOutcome`, `PredictedSnapshot`, `PlanProjection`, `Continuation`, `ContinuationReport`, `ContinuationResult`, `Discrepancy` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
@@ -959,7 +959,7 @@ readings must carry a unit quaternion.
 | --- | --- | --- |
 | `pending` | no | — |
 | `active` | no | — |
-| `succeeded` | yes | —; a guarded trajectory's carries its `GuardOutcome` |
+| `succeeded` | yes | —; a guarded trajectory's carries its `GuardOutcome`, a gripper command's its `GripperResult` |
 | `canceled` | yes | optional |
 | `timed_out` | yes | required |
 | `rejected` | yes | required |
@@ -1003,6 +1003,38 @@ guard and the stop: no IK, Cartesian interpolation, or force control.
   always does.
 - **Classifying it** is the caller's: contact is the goal of placing or skewering, and
   a failure for other motions.
+
+### Gripper commands
+
+Closing a gripper takes time, and how the motion ends carries information: fingers that
+close on nothing reach their target, while fingers that close on an object stop short of
+it. A client needs that moment, and that distinction, before it can judge a grasp. A
+`GripperCommand` execution therefore stays `active` after its target is applied and
+ends when the fingers' motion ends.
+
+- **The outcome.** The execution ends `succeeded`, and its status carries a
+  `GripperResult` (`ExecutionStatus` version 3): its `termination`, `reached_target` or
+  `stopped_short`; its `direction`, `closing` when the target is smaller than the opening
+  the fingers had when it was applied and `opening` otherwise; the `requested_opening`
+  in effect, after any clipping; the measured `final_opening`; and its `evidence`.
+- **Who decides.** A gripper whose controller reports the end of its own motion gives a
+  `native` result. Otherwise the runtime infers it from the measured opening with a
+  completion detector the package declares, and the result is `inferred`. The detector
+  reaches its target once the opening is within `goal_tolerance` of it, and otherwise
+  stops short once its openings over a complete `stall_dwell_ns` window vary by no more
+  than `stall_delta`. Reaching takes precedence. The detector reads only the opening,
+  never contacts or the identity of what the fingers touch.
+- **After it ends.** The target stays applied, so the hand keeps its grip, or keeps
+  closing if what it holds slips. Ending reports only that the opening or closing
+  transition is over.
+- **Classifying it** is the caller's. Stopping short while closing means that the
+  fingers met resistance, not that an object is held.
+- **Refusals.** A runtime that cannot decide the end of a gripper's motion refuses the
+  command (`no_gripper_completion`) rather than report it finished early. Gripper steps
+  inside an `ActionChunk` are setpoints and are unaffected. Deadlines, cancellation, and
+  faults keep their states, with no result. Only a gripper command's `succeeded` status
+  may carry a result, and it always does; anything else is a contract breach
+  (`runtime_contract`).
 
 ## Traces
 
@@ -1108,7 +1140,9 @@ reference implementation of the runtime contract.
   recorded readings. `ReplayScript.hold(...)` builds a still robot.
 - **Trajectory contract.** A script with evenly spaced ticks declares that spacing as a
   fixed `linear` period. A script with uneven ticks declares None.
-- **Instantaneous commands** are applied and succeed on the next tick.
+- **Instantaneous commands** are applied and succeed on the next tick. A gripper command
+  is refused (`no_gripper_completion`): a recording cannot say when fingers it does not
+  move stop moving. A chunk's gripper steps are setpoints and still apply.
 - **Trajectories** start on the next tick, are sampled by linear interpolation, and
   succeed when their last waypoint is applied. A trajectory whose first waypoint is
   more than `START_TOLERANCE` from the observed positions is rejected
@@ -1271,7 +1305,7 @@ artifact's `first-journey/`.
 | `artifacts/test_writes_are_safe/safety.json` | An existing manifest survives a refusal, an unknown answer, and an invalid result, with no temporary files left; `--force` replaces it. |
 | `artifacts/test_operational_errors_are_diagnostics/operational-errors.json` | Missing files, unwritable outputs, unreadable or corrupt wheels, and repeated answers each exit with status 1 and a message, never a traceback. |
 | `artifacts/test_doctor_verifies_the_built_wheel/` | `doctor --wheel` passing on a complete wheel and naming the missing texture in an incomplete one. |
-| `artifacts/reference-robots/` (CI job `reference-robots`, run with the built ssrobot wheel in a clean environment) | Geodude and ADA from their pinned asset commits: `doctor` and installed `inspect` reports for each, and `references.json` with commits, hashes, licenses, fingerprints, the build toolchain, and the Franka fixture's provenance. Each robot's `mujoco-startup.json` records what `MujocoRuntime` confirmed from the installed package and the result of driving it. Geodude: its four arm-group trajectories, and each gripper's requested and observed settled openings, measured from its spring-link joint (0.000 closed, 1.000 open). ADA: its arm and articutool trajectories, and its gripper (0.001 closed, 0.998 open). The job renders with OSMesa, so ADA's wrist camera channels are confirmed. `scenario/run-{1,2}/` holds the two-robot planning proof (#24): the same function plans, prepares, and executes a region goal and a named configuration on each robot, byte-identically twice. `guarded/run-{1,2}/` holds the guarded-contact proof (#124), and `concise/run-{1,2}/` the concise planning journey (#142) with its cost report. `mujoco-startup.json` records where ssrobot itself was loaded from. See *Reference robots* in packages.md. |
+| `artifacts/reference-robots/` (CI job `reference-robots`, run with the built ssrobot wheel in a clean environment) | Geodude and ADA from their pinned asset commits: `doctor` and installed `inspect` reports for each, and `references.json` with commits, hashes, licenses, fingerprints, the build toolchain, and the Franka fixture's provenance. Each robot's `mujoco-startup.json` records what `MujocoRuntime` confirmed from the installed package and the result of driving it. Geodude: its four arm-group trajectories, and each gripper's close and open, each ending `reached_target` by its declared completion detector, with the opening measured from its spring-link joint (0.003 closed after 574 ms, 0.996 open after 996 ms). ADA: its arm and articutool trajectories, and its gripper (0.010 closed after 128 ms, 0.990 open after 1.49 s). The job renders with OSMesa, so ADA's wrist camera channels are confirmed. `scenario/run-{1,2}/` holds the two-robot planning proof (#24): the same function plans, prepares, and executes a region goal and a named configuration on each robot, byte-identically twice. `guarded/run-{1,2}/` holds the guarded-contact proof (#124), and `concise/run-{1,2}/` the concise planning journey (#142) with its cost report. `mujoco-startup.json` records where ssrobot itself was loaded from. See *Reference robots* in packages.md. |
 | `artifacts/test_core_imports_no_backend/gate.txt` | Where `ssrobot` was imported from, and the gate's verdict. |
 | `artifacts/test_gate_finds_backend_imports_in_every_form/gate-forms.json` | Planted eager, lazy, `from`, aliased, multiline, dotted, and `import_module` backend imports, each failing the gate with its module, line, and dependency. An integration subpackage importing its own backend passes; one importing another backend, and a core module importing an integration, fail. |
 | `artifacts/test_planning_calls_requests_results_and_execution/planning_contracts.json` | On the example arm at its home snapshot: the request every planning call builds (configuration, configurations, pose at half speed and quarter acceleration, offset, and TSR with a path constraint), a scripted straight-line planner refused when it returns only geometry and no processor is selected (`untimed_result`), for a pose goal (`unsupported_goal`), and for effort limits (`unsupported_constraint`). Then `plan_to_configuration` returns a self-contained result (request, path, and a timed trajectory), which is sampled at 2 ms, checked against the effective limits, executed in MuJoCo, and reached, with nothing rebuilt. The result in wire form decodes equal. |

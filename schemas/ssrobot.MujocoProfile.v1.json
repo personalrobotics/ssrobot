@@ -29,6 +29,33 @@
       ],
       "additionalProperties": false
     },
+    "GripperCompletion": {
+      "type": "object",
+      "description": "How the runtime decides that a gripper command's motion has ended, from the",
+      "properties": {
+        "goal_tolerance": {
+          "type": "number",
+          "description": "How close to the target counts as reached.",
+          "x-unit": "1"
+        },
+        "stall_delta": {
+          "type": "number",
+          "description": "How much the opening may vary while it counts as still.",
+          "x-unit": "1"
+        },
+        "stall_dwell_ns": {
+          "type": "integer",
+          "description": "How long it must stay still to count as stopped.",
+          "x-unit": "ns"
+        }
+      },
+      "required": [
+        "goal_tolerance",
+        "stall_delta",
+        "stall_dwell_ns"
+      ],
+      "additionalProperties": false
+    },
     "GripperOpening": {
       "type": "object",
       "description": "The gripper joint whose position measures the opening, calibrated: the opening is",
@@ -80,6 +107,17 @@
             }
           ],
           "description": "The joint that measures the opening; the actuators' lengths if none."
+        },
+        "completion": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GripperCompletion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a gripper command's motion is decided to have ended. Without one, a gripper command is refused (no_gripper_completion); an action chunk's gripper steps are unaffected."
         }
       },
       "required": [

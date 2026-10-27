@@ -400,10 +400,10 @@ the uv version. The script then runs two public commands, and opens the runtime:
   capabilities and channels it confirms must equal the pin's `confirmed_commands` and
   `confirmed_channels`. It then **drives** the robot. Every confirmed trajectory group
   moves from where it is a small step toward the middle of each joint's range, and
-  must succeed, which means reaching its goal. Every confirmed gripper closes, then
-  opens, and its own `gripper_opening` channel must reach each end within 0.05 and stay
-  there after settling, since a gripper command succeeds as soon as its target is
-  applied. A gripper without a confirmed opening channel fails. It
+  must succeed, which means reaching its goal. Every confirmed gripper closes on
+  nothing, then opens unobstructed, and each command must end `reached_target`, as the
+  gripper's declared completion detector decides; its own `gripper_opening` channel is
+  recorded beside it. A gripper without a confirmed opening channel fails. It
   writes `mujoco-startup.json`, holding the mapping in [mujoco.md](mujoco.md) and what
   was driven, and requires exact time and a package loaded from the install.
 - The **two-robot planning proof** (#24), when the pin has a `scenario` table. One

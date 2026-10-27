@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.ExecutionStatus v2",
+  "title": "ssrobot.ExecutionStatus v3",
   "$ref": "#/$defs/ExecutionStatus",
   "$defs": {
     "Diagnostic": {
@@ -41,7 +41,7 @@
           "const": "ssrobot.ExecutionStatus"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "execution": {
           "type": "string",
@@ -85,6 +85,17 @@
             }
           ],
           "description": "How a guarded trajectory ended; on its succeeded status only."
+        },
+        "gripper": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GripperResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a gripper command's motion ended; on its succeeded status only."
         }
       },
       "required": [
@@ -93,6 +104,54 @@
         "execution",
         "state",
         "stamp"
+      ],
+      "additionalProperties": false
+    },
+    "GripperResult": {
+      "type": "object",
+      "description": "How a ``GripperCommand`` execution's motion ended. The gripper keeps its target",
+      "properties": {
+        "termination": {
+          "type": "string",
+          "enum": [
+            "reached_target",
+            "stopped_short"
+          ],
+          "description": "How the motion ended."
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "opening",
+            "closing"
+          ],
+          "description": "Which way the command moved."
+        },
+        "requested_opening": {
+          "type": "number",
+          "description": "The target opening in effect, after any clipping.",
+          "x-unit": "1"
+        },
+        "final_opening": {
+          "type": "number",
+          "description": "The measured opening when it ended.",
+          "x-unit": "1"
+        },
+        "evidence": {
+          "type": "string",
+          "enum": [
+            "native",
+            "inferred"
+          ],
+          "description": "Who decided it."
+        }
+      },
+      "required": [
+        "termination",
+        "direction",
+        "requested_opening",
+        "final_opening",
+        "evidence"
       ],
       "additionalProperties": false
     },
