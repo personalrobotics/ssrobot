@@ -129,6 +129,7 @@ ALLOWED_STATES: dict[str, frozenset[ContextState]] = {
     "observe": frozenset({_S.OPEN, _S.FAULTED}),
     "submit": frozenset({_S.OPEN}),
     "execute": frozenset({_S.OPEN}),
+    "prepare": frozenset({_S.OPEN}),
     "cancel": frozenset({_S.OPEN, _S.FAULTED}),
     "stop": frozenset({_S.OPEN, _S.FAULTED}),
     "step": frozenset({_S.OPEN, _S.FAULTED}),
@@ -388,6 +389,10 @@ class RobotContext:
         # Each execution a continuation submitted, by execution id: the plan it continued.
         self._continued: dict[str, _ContinuedOccurrence] = {}
         self._accepted: dict[str, Timestamp] = {}  # when the runtime accepted each execution
+        # Commands prepared for this runtime, by ``prepare`` or a race of candidates, by
+        # their plan's fingerprint: evidence ``prepare`` verifies before reusing it. Older
+        # revisions' plans cannot execute, so a scene change drops them.
+        self._prepared: dict[str, PreparedTrajectory] = {}
         self._planning_pool: ThreadPoolExecutor | None = None
 
     # -- Properties ------------------------------------------------------------------
@@ -1439,16 +1444,51 @@ class RobotContext:
     ) -> Execution:
         """Compile a successful plan for this runtime and submit it; nonblocking.
 
-        The plan must have been made on a snapshot this context captured at the scene's
-        current revision (``stale_snapshot`` otherwise). Its command is compiled by
-        ``prepare`` for ``trajectory_contract``, with ``planner``'s validator for the
-        plan's request in that snapshot's planning scene, then submitted with the
-        snapshot. Any refusal comes before anything reaches the runtime. The trace
-        records the ``PreparedTrajectory`` (``compiled``) just before its ``submitted``
-        record, which names it. ``processor`` times a path-only plan, as in ``prepare``;
-        nothing is replanned, retimed, or retried.
+        The command is ``ctx.prepare``'s, then submitted with the plan's snapshot. Any
+        refusal comes before anything reaches the runtime. The trace records the
+        ``PreparedTrajectory`` (``compiled``) just before its ``submitted`` record, which
+        names it. ``processor`` times a path-only plan, as in ``prepare``; nothing is
+        replanned, retimed, or retried.
         """
         self._require("execute")
+        prepared = self.prepare(plan, planner=planner, processor=processor)
+        snapshot = self._captured[plan.request.snapshot]
+        execution = self._submit(
+            prepared.command,
+            source=source,
+            timeout_ns=timeout_ns,
+            snapshot=snapshot,
+            prepared=prepared,
+        )
+        self._ran[execution.id] = (fingerprint(plan), snapshot.fingerprint())
+        return execution
+
+    def prepare(
+        self,
+        plan: PlanResult,
+        *,
+        planner: Planner,
+        processor: TrajectoryProcessor | None = None,
+    ) -> PreparedTrajectory:
+        """The command ``execute`` would submit for a successful plan, compiled for
+        ``trajectory_contract`` and validated, without submitting, stepping, or tracing
+        anything. A caller choosing among plans uses it to reject one whose command is not
+        ready (``execution_unready``) before executing any.
+
+        The plan must have been made on a snapshot this context captured at the scene's
+        current revision (``stale_snapshot`` otherwise); a plan made on a prediction or a
+        projection runs only as a continuation (``predicted_plan``, ``projected_plan``).
+        A runtime with no trajectory contract fails (``trajectory_contract_undeclared``).
+        The command is compiled by ``preparation.prepare``, with ``planner``'s validator
+        for the plan's request in that snapshot's planning scene.
+
+        The result is kept by the plan's content until the scene changes, as is every
+        candidate a race of alternatives, a portfolio or chains prepared. Preparing the
+        plan again, or executing it, reuses the command's validation only once it is
+        verified to answer exactly this request, trajectory, contract, command and
+        validator; every other readiness check runs again.
+        """
+        self._require("prepare")
         if not isinstance(plan, PlanResult):
             raise ValidationError("wrong_type", "the plan must be a PlanResult", path="plan")
         if plan.request.snapshot in self._predicted:
@@ -1477,6 +1517,7 @@ class RobotContext:
         scene = self.planning_scene(
             snapshot, plan.request.group, clearance_m=plan.request.clearance_m
         )
+        key = fingerprint(plan)
         prepared = prepare(
             plan,
             scene,
@@ -1484,16 +1525,10 @@ class RobotContext:
             description=self._description,
             contract=contract,
             processor=processor,
+            prior=self._prepared.get(key),
         )
-        execution = self._submit(
-            prepared.command,
-            source=source,
-            timeout_ns=timeout_ns,
-            snapshot=snapshot,
-            prepared=prepared,
-        )
-        self._ran[execution.id] = (fingerprint(plan), snapshot.fingerprint())
-        return execution
+        self._prepared[key] = prepared
+        return prepared
 
     def _submit(
         self,
@@ -1803,6 +1838,7 @@ class RobotContext:
         scene = replace(scene, revision=scene.revision + 1)
         self._scene = scene
         self._captured.clear()
+        self._prepared.clear()
         self._emit(TraceKind.SCENE, source, scene, stamp)
         return scene
 

@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
-from ssrobot.commands import TrajectoryContract
+from ssrobot._wire import fingerprint
+from ssrobot.commands import JointTrajectory, TrajectoryContract
 from ssrobot.description import RobotDescription
 from ssrobot.errors import CapabilityError, SsrobotError, ValidationError
 from ssrobot.planning_contracts import (
@@ -20,10 +22,12 @@ from ssrobot.planning_contracts import (
     GeometricPath,
     MotionValidation,
     MotionValidator,
+    PlanningRequest,
     PlanResult,
     PreparedTrajectory,
     TimedTrajectory,
     TrajectoryProcessor,
+    ValidatorIdentity,
     check_bound,
     check_planned_in,
     check_validation,
@@ -64,6 +68,7 @@ def prepare(
     contract: TrajectoryContract,
     processor: TrajectoryProcessor | None = None,
     tolerance: float = GOAL_TOLERANCE,
+    prior: PreparedTrajectory | None = None,
 ) -> PreparedTrajectory:
     """The runtime command for a successful plan, ready to execute.
 
@@ -80,9 +85,58 @@ def prepare(
     only readiness: the description's and the request's limits, the start, and the goal,
     whose distance the validator answers (``MotionValidator.goal_distance``). Any
     failure raises ``execution_unready`` naming every one.
+
+    ``prior`` is an earlier preparation of this plan. Its command's validation is reused,
+    instead of validating the command again, only if it was prepared for this request,
+    source trajectory and contract, compiled exactly this command, and its report is bound
+    to this validator and to exactly that command; otherwise it is ignored. Every other
+    check runs again.
     """
+    preparation = compile_plan(
+        result,
+        scene,
+        validator=validator,
+        description=description,
+        contract=contract,
+        processor=processor,
+        tolerance=tolerance,
+        prior=prior,
+    )
+    if preparation.prepared is None:
+        raise ValidationError("execution_unready", preparation.refusal)
+    return preparation.prepared
+
+
+@dataclass(frozen=True, slots=True)
+class Preparation:
+    """``compile_plan``'s answer: the prepared command, or why it is not ready, with the
+    validation of the command either way."""
+
+    prepared: PreparedTrajectory | None
+    compiled_validation: MotionValidation
+    refusal: str = ""
+
+
+def compile_plan(
+    result: PlanResult,
+    scene: PlanningScene,
+    *,
+    validator: MotionValidator,
+    description: RobotDescription,
+    contract: TrajectoryContract,
+    processor: TrajectoryProcessor | None = None,
+    tolerance: float = GOAL_TOLERANCE,
+    prior: PreparedTrajectory | None = None,
+) -> Preparation:
+    """``prepare``, answering a command that is not ready instead of raising: for a
+    caller that records the command's validation when it fails, such as a race of
+    candidates. A plan that cannot be compiled at all still raises, as in ``prepare``."""
     if not isinstance(result, PlanResult):
         raise ValidationError("wrong_type", "the plan must be a PlanResult", path="plan")
+    if prior is not None and not isinstance(prior, PreparedTrajectory):
+        raise ValidationError(
+            "wrong_type", "prior must be a PreparedTrajectory or None", path="prior"
+        )
     request = result.request
     if not result.succeeded:
         raise ValidationError("execution_unready", f"the plan did not succeed: {result.status}")
@@ -127,7 +181,9 @@ def prepare(
         waypoints=command.positions,
         interpolation=COMMAND_PATHS[contract.interpolation],
     )
-    compiled = validator.validate_path(compiled_path)
+    compiled = _reused(prior, request, timed, contract, command, identity, compiled_path)
+    if compiled is None:
+        compiled = validator.validate_path(compiled_path)
     rows = command.positions
     checks: list[ExecutionCheck] = []
 
@@ -170,10 +226,9 @@ def prepare(
     )
     failed = [c for c in checks if not c.passed]
     if failed:
-        raise ValidationError(
-            "execution_unready", "; ".join(f"{c.name}: {c.detail}" for c in failed)
-        )
-    return PreparedTrajectory(
+        refusal = "; ".join(f"{c.name}: {c.detail}" for c in failed)
+        return Preparation(None, compiled, refusal)
+    prepared = PreparedTrajectory(
         request=request,
         source=trajectory_identity(timed),
         source_law=timed.law,
@@ -184,6 +239,37 @@ def prepare(
         compiled_validation=compiled,
         geometry_preserved=path is not None and traces(compiled_path, path),
     )
+    return Preparation(prepared, compiled)
+
+
+def _reused(
+    prior: PreparedTrajectory | None,
+    request: PlanningRequest,
+    timed: TimedTrajectory,
+    contract: TrajectoryContract,
+    command: JointTrajectory,
+    identity: ValidatorIdentity,
+    compiled_path: GeometricPath,
+) -> MotionValidation | None:
+    """``prior``'s validation of the command, if it answers exactly this question; by
+    content, never by which objects they are."""
+    if prior is None or (
+        fingerprint(prior.request),
+        prior.source,
+        fingerprint(prior.contract),
+        fingerprint(prior.command),
+        fingerprint(prior.compiled_validation.validator),
+    ) != (
+        fingerprint(request),
+        trajectory_identity(timed),
+        fingerprint(contract),
+        fingerprint(command),
+        fingerprint(identity),
+    ):
+        return None
+    report = prior.compiled_validation
+    check_validation(report, validator=identity, subject=path_subject(compiled_path))
+    return report
 
 
 TRACE_TOLERANCE = 1e-9

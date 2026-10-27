@@ -22,11 +22,13 @@ each attempt validated on a worker, with a validator slowed by 0.2 s, while the 
 steps a motion, the report the blocking run's; a planner shared by two chains planning
 nothing while it validates; and a chain stopped while its stage is validated recorded as
 canceled, its validation unused.
-``inputs_and_outranked.json`` shows a
-caller's attempts changed after planning change nothing, and how an outranked attempt
-that raises is recorded. ``refusals.json`` holds forged reports refused. Reproduce with
-``uv run pytest tests/test_plan_alternatives.py``; compare ``alternatives.json`` across
-runs to verify.
+``compiled_refusal.json`` (#207) shows a candidate whose motion is valid as planned but
+whose command is refused recorded invalid and not selected, and the selection executed
+on the race's command validation, reused only once verified.
+``inputs_and_outranked.json`` shows a caller's attempts changed after planning change
+nothing, and how an outranked attempt that raises is recorded. ``refusals.json`` holds
+forged reports refused. Reproduce with ``uv run pytest tests/test_plan_alternatives.py``;
+compare ``alternatives.json`` across runs to verify.
 """
 
 from __future__ import annotations
@@ -702,3 +704,178 @@ def test_a_passive_run_has_work_in_flight_until_it_is_done(tmp_path: Path) -> No
         selected = _selected(json.loads(dumps(run.result.report)))
     assert idle == 0
     assert selected == "right_arm"
+
+
+class _Compiled:
+    """sscbirrt whose validator logs every command it validates, and, with ``refuse``,
+    finds each command in collision at its middle waypoint while still finding the
+    planned trajectory valid: two discrete checks that sample a motion at different
+    points and disagree (#207)."""
+
+    name = "compiled"
+
+    def __init__(self, inner: CBiRRT, *, refuse: bool, log: list[str]) -> None:
+        self._inner, self.refuse, self.log = inner, refuse, log
+
+    def capabilities(self, request: PlanningRequest) -> PlannerCapabilities:
+        return self._inner.capabilities(request)
+
+    def plan(
+        self, request: PlanningRequest, scene: PlanningScene, *, abort: Any = None
+    ) -> PlanResult:
+        return self._inner.plan(request, scene, abort=abort)
+
+    def validator(self, request: PlanningRequest, scene: PlanningScene) -> Any:
+        return _CompiledValidator(self, self._inner.validator(request, scene))
+
+
+class _CompiledValidator:
+    def __init__(self, planner: _Compiled, inner: Any) -> None:
+        self._planner, self._inner = planner, inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def validate_path(self, path: Any) -> Any:
+        from dataclasses import replace
+
+        from ssrobot.planning_contracts import InvalidWitness, ValidationFailure
+
+        self._planner.log.append(path.group)
+        report = self._inner.validate_path(path)
+        if not self._planner.refuse:
+            return report
+        middle = len(path.waypoints) // 2
+        witness = InvalidWitness(
+            failure=ValidationFailure.COLLISION,
+            segment=middle - 1,
+            fraction=1.0,
+            configuration=tuple(path.waypoints[middle]),
+            detail="scripted: a sample the trajectory's validation stepped over",
+        )
+        return replace(report, valid=False, witness=witness)
+
+
+def test_a_candidate_whose_command_is_refused_is_never_selected(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    """#207: a candidate is selectable only once its motion, compiled for the runtime's
+    contract, is valid as the runtime will execute it. The preferred right arm plans a
+    motion valid as planned whose command is refused: it is recorded invalid, with the
+    command's witness, and the left arm is selected. Executing the selection reuses the
+    command's validation, verified to answer exactly that command, rather than
+    validating it again; evidence for another contract is not reused, and anything but
+    a ``PreparedTrajectory`` is refused (``wrong_type``). ``ctx.prepare``
+    refuses a raw plan whose command is refused, before anything is submitted."""
+    from dataclasses import replace
+
+    from ssrobot._wire import fingerprint
+    from ssrobot.preparation import prepare
+
+    package_root, scene = colliding_bimanual(tmp_path)
+    package = load_package(package_root)
+    d = package.description
+    log: list[str] = []
+    refuse = {"left_arm": False, "right_arm": True}
+    with RobotContext(d, MujocoRuntime(package, scene=scene)) as ctx:
+        alternatives = [
+            replace(
+                a,
+                attempts=(
+                    PlanAttempt(
+                        planner=_Compiled(CBiRRT(d), refuse=refuse[a.label], log=log), seed=0
+                    ),
+                ),
+            )
+            for a in _alternatives(ctx, {"left_arm": 0, "right_arm": 1}, CBiRRT)
+        ]
+        raced = plan_alternatives(ctx, alternatives, snapshot=ctx.snapshot(), workers=1)
+        report = json.loads(dumps(raced.report))
+        compiled_in_race = list(log)
+        assert _outcomes(report) == {"left_arm": ["valid"], "right_arm": ["invalid"]}
+        assert raced.selected is not None
+        _, attempt, plan = raced.selected
+        # Reuse is verified, not assumed: evidence prepared for another contract is
+        # ignored, and the command validated again; the exact evidence is reused.
+        contract = ctx.trajectory_contract
+        prior = ctx._prepared[fingerprint(plan)]
+        planned_in = ctx.planning_scene(
+            ctx._captured[plan.request.snapshot],
+            plan.request.group,
+            clearance_m=plan.request.clearance_m,
+        )
+        reuse: dict[str, list[str]] = {}
+        for case, evidence_ in (
+            ("another_contract", replace(prior, contract=replace(contract, period_ns=1))),
+            ("exact", prior),
+        ):
+            log.clear()
+            prepare(
+                plan,
+                planned_in,
+                validator=attempt.planner.validator(plan.request, planned_in),
+                description=d,
+                contract=contract,
+                prior=evidence_,
+            )
+            reuse[case] = list(log)
+        try:
+            prepare(
+                plan,
+                planned_in,
+                validator=attempt.planner.validator(plan.request, planned_in),
+                description=d,
+                contract=contract,
+                prior=dumps(prior),  # type: ignore[arg-type]
+            )
+        except ValidationError as e:
+            malformed_prior = f"{e.code} at {e.path}"
+        # ctx.prepare, public: a raw plan whose command is refused is not ready, and
+        # nothing is submitted; the selected plan, prepared again, validates nothing.
+        right_alternative = alternatives[1]
+        right_planner = right_alternative.attempts[0].planner
+        raw = ctx.plan(
+            right_alternative.request,
+            snapshot=ctx._captured[right_alternative.request.snapshot],
+            planner=right_planner,
+        )
+        log.clear()
+        try:
+            ctx.prepare(raw, planner=right_planner)
+        except ValidationError as e:
+            raw_refusal = f"{e.code}: {e.message}"
+        reuse["ctx_prepare_raw_refused"] = list(log)
+        log.clear()
+        ctx.prepare(plan, planner=attempt.planner)
+        reuse["ctx_prepare_selected"] = list(log)
+        log.clear()
+        execution = ctx.execute(plan, planner=attempt.planner)
+        compiled_at_execute = list(log)
+        status = ctx.run_until(execution, max_ticks=5_000)
+    right = report["alternatives"][1]["attempts"][0]
+    evidence = {
+        "outcomes": _outcomes(report),
+        "selected": _selected(report),
+        "right_arm_detail": right["detail"],
+        "commands_validated_in_race": compiled_in_race,
+        "commands_validated_at_execute": compiled_at_execute,
+        "commands_validated_by_prepare_given": reuse,
+        "raw_right_arm_refusal": raw_refusal,
+        "malformed_prior": malformed_prior,
+        "executed": status.state.value,
+    }
+    (artifacts / "compiled_refusal.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    assert evidence["outcomes"] == {"left_arm": ["valid"], "right_arm": ["invalid"]}
+    assert evidence["selected"] == "left_arm"
+    assert right["detail"].startswith("compiled_motion: the command as executed: collision")
+    assert compiled_in_race == ["right_arm", "left_arm"]
+    assert reuse == {
+        "another_contract": ["left_arm"],
+        "exact": [],
+        "ctx_prepare_raw_refused": ["right_arm"],
+        "ctx_prepare_selected": [],
+    }
+    assert raw_refusal.startswith("execution_unready: compiled_motion:")
+    assert malformed_prior == "wrong_type at prior"
+    assert compiled_at_execute == []
+    assert evidence["executed"] == "succeeded"
