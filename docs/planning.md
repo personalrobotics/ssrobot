@@ -184,8 +184,12 @@ half the line's width is refused (`line_margin`); `0` plans as before.
 The default, 25 um, is a budget measured for Geodude, whose frame moved at most 9.6 um
 between planning and arrival. It is not a guarantee for every robot: one whose passive
 or out-of-group joints can move the constrained frame farther must set a measured
-`line_margin_m`. Its evidence should be rerun, and the default reconsidered, when TSR
-membership becomes exact (personalrobotics/sstsr#190).
+`line_margin_m`. Under sstsr 4, whose membership is exact (personalrobotics/sstsr#190),
+the margin is measured from the line's true bound rather than from the edge of a 1 mm
+acceptance band. The default was kept after the evidence was rerun there. A
+no-margin line still lands on its boundary at some seeds, and the declared margin
+clears every one of 30. On Geodude, 20 seeds of each configuration at its 2 mm line
+give the same cans recycled and no line-related refusal, before and after.
 
 Results map to `PlanStatus`:
 
