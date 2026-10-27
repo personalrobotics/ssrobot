@@ -349,7 +349,7 @@ def test_a_continued_offset_motion_keeps_its_planned_line(artifacts: Path, tmp_p
 ACROSS = OffsetGoal(
     direction=(0.0, 1.0, 0.0), distance=0.12, position_tolerance=1e-3, rotation_tolerance=2e-2
 )
-"""A 12 cm line across, 1 mm wide: planned with seed 2 and no margin, a waypoint lies on
+"""A 12 cm line across, 1 mm wide: planned with seed 23 and no margin, a waypoint lies on
 the line's boundary (#208)."""
 
 
@@ -381,7 +381,7 @@ def _margins(tmp: Path) -> dict[str, Any]:
     with RobotContext(package.description, runtime) as ctx:
         snapshot = ctx.snapshot()
         scene = ctx.planning_scene(snapshot, "arm")
-        request = replace(ctx.manipulator("arm").request(ACROSS, snapshot=snapshot), seed=2)
+        request = replace(ctx.manipulator("arm").request(ACROSS, snapshot=snapshot), seed=23)
         for name, margin in (("none", 0.0), ("declared", CBiRRT.LINE_MARGIN_M)):
             planner = CBiRRT.from_package(package, "arm", line_margin_m=margin)
             plan = ctx.plan(request, snapshot=snapshot, planner=planner)
