@@ -177,26 +177,30 @@ JACO2. Other kinematics, or a scene without a native checker, use the Python bac
 and the result's diagnostics give the reasons. The validator reports which backend
 answered.
 
-**An offset line is planned with a margin.** CBiRRT projects onto a path constraint's
-boundary, so a planned waypoint can lie on it, valid to within numerical precision. A
-scene that moves the constrained frame by microns, such as a joint outside the group at
-arrival, then puts it outside (#208). So an `OffsetGoal`'s line is planned against a copy
-narrowed by `line_margin_m` on each side of
-every nonzero-width translation bound; its rotation bounds, and a zero-width bound, are
-unchanged. Everything else uses the original line: the validator, `rebase`, and a
-continuation. A plan made with a margin is validated against the original line again,
-and that is its evidence, with a `line_margin` diagnostic saying so. A margin at least
-half the line's width is refused (`line_margin`); `0` plans as before.
+**Offset lines and their margin.** CBiRRT satisfies a path constraint by projecting
+samples onto it, so a planned waypoint often lies exactly on the boundary of the
+permitted region. Such a waypoint is valid when the plan is made, but only to numerical
+precision. By the time the robot arrives, joints outside the planned group, such as a
+passive rail or the links of a gripper, may have moved the constrained frame by a few
+micrometres. The same waypoint is then outside the line, and a continuation along it is
+refused although nothing meaningful has changed.
 
-The default, 25 um, is a budget measured for Geodude, whose frame moved at most 9.6 um
-between planning and arrival. It is not a guarantee for every robot: one whose passive
-or out-of-group joints can move the constrained frame farther must set a measured
-`line_margin_m`. Under sstsr 4, whose membership is exact (personalrobotics/sstsr#190),
-the margin is measured from the line's true bound rather than from the edge of a 1 mm
-acceptance band. The default was kept after the evidence was rerun there. A
-no-margin line still lands on its boundary at some seeds, and the declared margin
-clears every one of 30. On Geodude, 20 seeds of each configuration at its 2 mm line
-give the same cans recycled and no line-related refusal, before and after.
+The adapter therefore plans an `OffsetGoal`'s line against a narrower copy of it. Each
+translation bound of nonzero width is narrowed by `line_margin_m` on each side, while
+rotation bounds and zero-width bounds are unchanged. Everything else, including the
+validator, `rebase`, and the checks made by a continuation, uses the original line.
+Because sscbirrt's own report describes the narrowed problem, a plan made with a margin
+is validated again against the original line, and that report becomes its evidence. A
+`line_margin` diagnostic records the margin that was used. A margin of at least half the
+line's width would leave nothing to plan in and is refused (`line_margin`). A margin of
+zero plans against the original line.
+
+The default margin, 25 um, is an error budget derived from Geodude, whose constrained
+frame moved by at most 9.6 um between planning and arrival. It is not a property of
+every robot. A robot whose passive or out-of-group joints can move the frame farther
+needs a margin measured for that robot. The margin is measured from the region's exact
+bound, because sstsr's membership test is exact up to round-off and has no tolerance
+band outside a region's bounds.
 
 Results map to `PlanStatus`:
 
@@ -282,23 +286,31 @@ It:
 Any refusal comes before anything reaches the runtime. Nothing is replanned, retimed,
 or retried.
 
-`ctx.prepare(plan, *, planner, processor=None)` is that first step alone (#207): it
-returns the `PreparedTrajectory` and submits, steps and traces nothing. A plan from
-`ctx.plan` is a planner artifact, independent of any runtime; it becomes ready to execute
-only once prepared. A caller choosing among plans prepares each one it would accept, so
-that a plan whose command is not ready (`execution_unready`) is rejected before any
-executes:
+A plan returned by `ctx.plan` describes a motion, not yet the command that a particular
+runtime will execute. Preparation samples the trajectory at the period declared by the
+runtime's trajectory contract and validates that command again. The two validations
+examine the motion at different points, so a plan that was valid when planned can still
+be refused when prepared. A caller that simply executes the plan learns this at
+execution. A caller choosing among several plans needs to learn it while another choice
+is still available.
+
+`ctx.prepare(plan, *, planner, processor=None)` performs the first step of `execute` by
+itself. It applies the same checks and returns the `PreparedTrajectory`, but it submits
+nothing, advances no time, and writes nothing to the trace. A plan whose command is not
+ready is refused with `execution_unready`, so the caller can reject it and consider
+another:
 
 ```python
 prepared = ctx.prepare(plan, planner=planner)  # compiled and validated, not submitted
-execution = ctx.execute(plan, planner=planner)  # reuses it, once verified
+execution = ctx.execute(plan, planner=planner)  # reuses the preparation once verified
 ```
 
-The context keeps each preparation by the plan's content until the scene changes, as it
-keeps every candidate that a race of alternatives, a portfolio or chains prepared.
-Preparing the plan again, or executing it, reuses the command's validation only once it
-is verified to answer exactly this request, source trajectory, contract, command and
-validator; every other readiness check runs again.
+The context keeps each preparation, keyed by the content of the plan, until the scene
+changes. Every candidate that alternatives, portfolios, or chains prepare is kept in the
+same way. When the plan is prepared again or executed, the context reuses the stored
+validation of the command only after confirming that it answers exactly the same
+request, source trajectory, trajectory contract, command, and validator. Otherwise the
+command is validated again. The remaining readiness checks are always repeated.
 
 ## Planner portfolios
 
@@ -332,22 +344,16 @@ state with each other or with the live context.
   - The fresh report must come from that validator, bound to the request, and be about
     exactly that motion with its path as evidence (`check_bound`, `check_validation`).
   - A motion that fails is `invalid`, whatever the planner reported.
-  - A valid motion is then prepared for the runtime's trajectory contract, on the same
-    worker (#207): compiled as `execute` compiles it, and the command validated by the
-    same validator, at the same clearance and resolution, with the readiness checks.
-    Two discrete validations sample a motion at different points and can disagree, so
-    a motion valid as planned can still be refused as a command. Such an attempt is
-    `invalid`, its detail the refusal and its validation the command's, and the next
-    seed, candidate or arm recovers. A runtime without a trajectory contract executes
-    nothing, so there a candidate is validated as planned alone.
-  - The context keeps the prepared command as evidence, by the plan's content.
-    `execute` passes it to `prepare`, which reuses the command's validation only once
-    it has verified that the evidence answers exactly this request, trajectory,
-    contract, command and validator; otherwise it validates the command again. Every
-    other readiness check runs again, and a scene change drops the evidence. A
-    continuation's rebased motion is a different motion, and is always validated
-    again. A raw `PlanResult`, from `ctx.plan`, stays a planner artifact, independent
-    of any runtime, until `execute` prepares it.
+  - A valid motion is then prepared for the runtime's trajectory contract on the same
+    worker, exactly as `ctx.prepare` would prepare it, with the same validator,
+    clearance, and resolution. If the command is refused, the attempt is `invalid`. Its
+    detail is the refusal and its validation is the command's report, so the next seed,
+    candidate, or arm can be selected before anything executes. A runtime without a
+    trajectory contract executes nothing, and there a candidate is validated only as
+    planned.
+  - The context keeps the prepared command as evidence, and `execute` reuses it as
+    described in "Executing a plan". A continuation's rebased motion is a different
+    motion and is always prepared again.
   - A valid motion becomes the attempt's candidate plan. That is the planner's result,
     carrying the exact trajectory validated and the fresh report as its trajectory
     evidence.
@@ -646,27 +652,24 @@ motion not yet run would end, and that check plan can be kept:
 - `execute_continuation` checks and rebases the bound plan as any other: rest, arrival,
   scene, rebase, and fresh-scene validation. Every hop returns to an actual snapshot.
 
-**sscbirrt's rebase** keeps the planned path exactly, but for whole turns of a continuous
-joint: the path moves to the turn nearest the actual start, the same motion. When the
-actual start differs from its first waypoint, it puts a straight bridge from the actual
-start first. An invalid bridge, or a path sscbirrt refuses to time (`InvalidPath`), is
-`rebase_failed`; any other exception propagates. It then times the whole path again with
-sscbirrt's public `CBiRRT.time_path`, shortcut as `plan`'s trajectories are
-(`geometry="shortcut"`), under the request's limits and the planner's validator and
-clearance (#187), and validates it as `plan`'s results are. Its `rebase` diagnostic gives the bridge's length,
+**sscbirrt's rebase** keeps the planned path exactly, apart from whole turns of a
+continuous joint: the path is moved to the turn nearest the actual start, which describes
+the same motion. When the actual start differs from the path's first waypoint, a straight
+bridge from the actual start is placed in front of it. The bridge is validated first, so
+a blocked bridge fails as `rebase_failed` with its own witness. The whole path is then
+timed again by sscbirrt's `CBiRRT.time_path`, which validates it with the validator and
+clearance that `plan` uses and shortcuts it as `plan`'s trajectories are shortcut
+(`geometry="shortcut"`). A path that sscbirrt refuses to time (`InvalidPath`) is also
+`rebase_failed`. Any other exception indicates a defect and propagates. The result is
+validated as `plan`'s results are, and its `rebase` diagnostic gives the bridge's length
 and the old and new durations.
 
 ## Compiling a plan
 
 `ssrobot.prepare(result, scene, *, validator, description, contract, processor=None,
 tolerance=1e-3, prior=None)` is the compilation `ctx.execute` uses, available offline
-with explicit inputs; it gives the same `PreparedTrajectory` for the same inputs.
-`prior`, an earlier `PreparedTrajectory` (anything else is `wrong_type`), lets it reuse
-that command validation instead of validating again, but only when the request, source
-trajectory, contract, command, and validator identity all match and the report is bound
-to exactly this command; mismatched evidence is ignored and the command validated again.
-Every other check always runs. It is core
-and depends only on the neutral contracts. It refuses anything but a `PlanResult`
+with explicit inputs; it gives the same `PreparedTrajectory` for the same inputs. It is
+core and depends only on the neutral contracts. It refuses anything but a `PlanResult`
 (`wrong_type`), a request not built from `description` and the scene's snapshot
 (`request_mismatch`), and a validator bound to another snapshot, group, constraints, or
 goal than the request (`validation_mismatch`). Then it works as follows:
@@ -684,6 +687,12 @@ goal than the request (`validation_mismatch`). Then it works as follows:
   corner a command waypoint, and every command waypoint on the path in order, within
   1e-9. A one-segment path stopped at rest compiles to the same line; a shortcut does
   not.
+- **Reusing earlier evidence.** `prior` is an earlier `PreparedTrajectory` for the same
+  plan. When its request, source trajectory, contract, command, and validator identity
+  all match, and its report is bound to exactly this command, its validation of the
+  command is reused rather than repeated. Evidence that does not match is ignored, and
+  the command is validated again. A value that is not a `PreparedTrajectory` is refused
+  (`wrong_type`). The remaining checks always run.
 
 The checks:
 
