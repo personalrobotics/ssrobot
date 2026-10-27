@@ -1,5 +1,9 @@
 # Documentation figures
 
+The repository-wide writing and documentation conventions are in the
+[documentation guide](../documentation.md). This file records the additional rules for
+figures.
+
 The SVG files in this directory are both the editable sources and the published
 artifacts. They are plain XML written directly in the repository, not exports from a
 design tool or generated binaries. Every label, position, path, color, and style can

@@ -214,6 +214,7 @@ that all of them must share.
 | Record, bundle, inspect, and replay a run | [Traces and replay](docs/traces.md) |
 | Implement a runtime or consume exact public records | [Contracts](docs/contracts.md) |
 | Understand scope and dependency ownership | [Architecture and charter](docs/architecture.md) |
+| Write or review documentation | [Documentation guide](docs/documentation.md) |
 
 The README introduces the design. The documents above contain the operational and
 normative details without repeating the same material here.
