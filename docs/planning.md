@@ -633,9 +633,11 @@ motion not yet run would end, and that check plan can be kept:
 **sscbirrt's rebase** keeps the planned path exactly, but for whole turns of a continuous
 joint: the path moves to the turn nearest the actual start, the same motion. When the
 actual start differs from its first waypoint, it puts a straight bridge from the actual
-start first. An invalid bridge, or timing sscbirrt cannot do, is `rebase_failed`. It then times
-the whole path again with sscbirrt's trajectory smoother, under the request's limits, and
-validates it as `plan`'s results are. Its `rebase` diagnostic gives the bridge's length,
+start first. An invalid bridge, or a path sscbirrt refuses to time (`InvalidPath`), is
+`rebase_failed`; any other exception propagates. It then times the whole path again with
+sscbirrt's public `CBiRRT.time_path`, shortcut as `plan`'s trajectories are
+(`geometry="shortcut"`), under the request's limits and the planner's validator and
+clearance (#187), and validates it as `plan`'s results are. Its `rebase` diagnostic gives the bridge's length,
 and the old and new durations.
 
 ## Compiling a plan

@@ -17,11 +17,10 @@ from sscbirrt.exceptions import (
     AllGoalConfigurationsInvalid,
     AllStartConfigurationsInCollision,
     AllStartConfigurationsInvalid,
+    InvalidPath,
     MotionContractError,
-    PlanningError,
     UnsupportedCapability,
 )
-from sscbirrt.legacy import legacy_problem
 
 from ssrobot.description import JointKind, RobotDescription
 from ssrobot.errors import CapabilityError, ValidationError
@@ -414,12 +413,12 @@ class CBiRRT:
         The planned path is kept exactly, but for a whole turn of a continuous joint:
         the path is moved to the turn nearest the actual start, the same motion.
         When the actual start differs from the path's first waypoint, a straight bridge
-        from the actual start to it comes first. A bridge that is invalid, or timing that
-        sscbirrt cannot do (``PlanningError``), is a failure (``rebase_failed``). The
-        whole path is then timed again by sscbirrt's trajectory smoother under the
-        request's limits, and validated as ``plan``'s results are: the path and the
-        trajectory, by the validator ``plan`` applies. The ``rebase`` diagnostic says what
-        changed."""
+        from the actual start to it comes first. A bridge that is invalid is a failure
+        (``rebase_failed``), as is a path sscbirrt refuses to time (``InvalidPath``, its
+        one expected failure). The whole path is then timed again by ``CBiRRT.time_path``,
+        shortcut as ``plan``'s trajectories are, under the request's limits, and validated
+        as ``plan``'s results are: the path and the trajectory, by the validator ``plan``
+        applies. The ``rebase`` diagnostic says what changed."""
         path = plan.path
         if path is None:
             return self._failure(request, PlanStatus.INVALID_INPUT, "rebase_failed", "no path")
@@ -458,30 +457,19 @@ class CBiRRT:
                 "rebase_failed",
                 f"the bridge from the actual start is invalid: {path_report.witness}",
             )
-        problem = legacy_problem(
-            planner.robot,
-            planner.ik,
-            planner.collision,
-            planner.space,
-            planner.config,
-            None,
-            None,
-            None,
-            None,
-            constraints or None,
-        )
         limits = request.limits
         try:
-            source = planner.smooth_trajectory(
-                problem,
+            source = planner.time_path(
                 [np.array(q, dtype=float) for q in waypoints],
                 TrajectoryOptions(
                     velocity_limits=np.array(limits.effective_velocity),
                     acceleration_limits=np.array(limits.effective_acceleration),
                     seed=request.seed,
                 ),
+                constraints or None,
+                geometry="shortcut",
             )
-        except PlanningError as e:
+        except InvalidPath as e:
             return self._failure(
                 request, PlanStatus.INFEASIBLE, "rebase_failed", f"timing failed: {e}"
             )
