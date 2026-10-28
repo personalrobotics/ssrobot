@@ -110,11 +110,16 @@ class GripperTermination(enum.StrEnum):
 
 
 class GripperDirection(enum.StrEnum):
-    """Which way a gripper command moved the fingers, from the command: toward a smaller
-    opening than they had when it was applied, or not."""
+    """Which way a gripper command asked the fingers to move, from its target and the
+    opening they had when it was applied. A target equal to that opening asks for
+    neither: an absolute target carries no intent to open or close."""
 
     OPENING = "opening"
+    """A target larger than the opening when it was applied."""
     CLOSING = "closing"
+    """A target smaller than the opening when it was applied."""
+    STATIONARY = "stationary"
+    """A target equal to the opening when it was applied."""
 
 
 class GripperEvidence(enum.StrEnum):

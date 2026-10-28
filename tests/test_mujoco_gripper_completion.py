@@ -6,6 +6,8 @@ until it ends, observing the portable ``gripper_opening`` channel every tick:
   targets (``reached_target``, closing then opening);
 - ``already_open``: an opening already within the goal tolerance that does not change
   ends ``reached_target`` at once, not ``stopped_short``: reaching takes precedence;
+- ``hold_closed``, ``hold_open``: at each end of the fingers' travel, a target exactly
+  equal to the opening carries no intent to move, so the command is ``stationary``;
 - ``close_on_box``: the box of ``pedestal.xml`` between the fingers stops them
   (``stopped_short``, closing). After the command ends, the finger servos keep their
   target (their controls stay closed), so over 500 more ticks the fingers never relax
@@ -134,6 +136,16 @@ def _already_open(ctx: RobotContext, runtime: MujocoRuntime) -> dict[str, Any]:
     return _grip(ctx, runtime, 1.0)
 
 
+def _hold_closed(ctx: RobotContext, runtime: MujocoRuntime) -> dict[str, Any]:
+    _grip(ctx, runtime, 0.0)
+    return _grip(ctx, runtime, _opening(ctx))
+
+
+def _hold_open(ctx: RobotContext, runtime: MujocoRuntime) -> dict[str, Any]:
+    _grip(ctx, runtime, 1.0)
+    return _grip(ctx, runtime, _opening(ctx))
+
+
 def _close_on_box(ctx: RobotContext, runtime: MujocoRuntime) -> dict[str, Any]:
     _move(ctx, ABOVE)
     _move(ctx, LEVEL)
@@ -152,6 +164,8 @@ SCENARIOS: dict[str, tuple[Path | None, Scenario]] = {
     "close_empty": (None, _close_empty),
     "open_empty": (None, _open_empty),
     "already_open": (None, _already_open),
+    "hold_closed": (None, _hold_closed),
+    "hold_open": (None, _hold_open),
     "close_on_box": (PEDESTAL, _close_on_box),
     "open_against_walls": (Path("walls.xml"), _open_against_walls),
 }
@@ -219,6 +233,8 @@ def test_a_gripper_command_ends_when_its_fingers_stop(artifacts: Path, tmp_path:
         "close_empty": ("reached_target", "closing"),
         "open_empty": ("reached_target", "opening"),
         "already_open": ("reached_target", "opening"),
+        "hold_closed": ("reached_target", "stationary"),
+        "hold_open": ("reached_target", "stationary"),
         "close_on_box": ("stopped_short", "closing"),
         "open_against_walls": ("stopped_short", "opening"),
     }

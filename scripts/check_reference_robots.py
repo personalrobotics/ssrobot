@@ -1002,6 +1002,110 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
     return finish(record)
 
 
+def gripped(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path) -> dict[str, Any]:
+    """The gripper-contact proof (#219): one function for every robot, like ``guarded``.
+
+    From the robot's grip table, it finds where the hand frame is at the start, and
+    stages a scene with a fixed cylinder there, between the fingers, posed in that frame
+    as the table declares. In that scene it opens the gripper, then closes it, observing
+    the portable ``gripper_opening`` channel every tick, and records each command's
+    ``GripperResult``, its terminal tick, and the opening history. The fingers meet the
+    cylinder, so the close must end ``stopped_short`` while closing. As ground truth
+    only, never read by the runtime's detector, it records whether the fingers touch the
+    cylinder at the start and when the close ends. Writes ``grip.json`` and the scene
+    under ``out``.
+    """
+    import mujoco
+    import numpy as np
+
+    from ssrobot import GripperCommand, ObservationRequest, Quantity, RobotContext
+    from ssrobot.mujoco import MujocoRuntime
+
+    out.mkdir(parents=True, exist_ok=True)
+    g = spec["grip"]
+    description = package.description
+    manipulator = description.manipulator(spec["manipulator"])
+    group = manipulator.group
+    assert manipulator.end_effector is not None
+    gripper = description.end_effector(manipulator.end_effector).gripper
+    assert gripper is not None
+    channel = next(
+        c.name
+        for c in description.channels
+        if c.quantity is Quantity.GRIPPER_OPENING and c.source == gripper
+    )
+    opening = ObservationRequest(channels=(channel,))
+
+    with RobotContext(description, MujocoRuntime(package, keyframe=keyframe)) as ctx:
+        snapshot = ctx.snapshot()
+        start = tuple(snapshot.position(j) for j in description.group(group).joints)
+        hand = _matrix(ctx.planning_scene(snapshot, group).forward_kinematics(start, g["frame"]))
+    local = np.eye(4)
+    rotation = np.zeros(9)
+    mujoco.mju_quat2Mat(rotation, np.asarray(g["quat_in_frame_wxyz"], dtype=float))
+    local[:3, :3] = rotation.reshape(3, 3)
+    local[:3, 3] = g.get("position_in_frame", (0.0, 0.0, 0.0))
+    T = hand @ local
+    quat = np.zeros(4)
+    mujoco.mju_mat2Quat(quat, T[:3, :3].flatten())
+    position = " ".join(f"{v:.9f}" for v in T[:3, 3])
+    orientation = " ".join(f"{v:.9f}" for v in quat)
+    scene = out / "grip-scene.xml"
+    scene.write_text(
+        f"""<mujoco model="grip">
+  <worldbody>
+    <body name="grip_cylinder" pos="{position}" quat="{orientation}">
+      <geom type="cylinder" size="{g["radius"]} {g["half_length"]}"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+    )
+
+    def observed(ctx: Any) -> float:
+        return float(ctx.observe(opening).readings[0].value[0])
+
+    def touching(runtime: Any) -> bool:
+        """Ground truth from the simulation: whether any contact involves the cylinder."""
+        model, data = runtime._model, runtime._data
+        body = model.body("grip_cylinder").id
+        return any(
+            body in (model.geom_bodyid[c.geom1], model.geom_bodyid[c.geom2])
+            for c in data.contact[: data.ncon]
+        )
+
+    def grip(ctx: Any, target: float) -> dict[str, Any]:
+        history = [observed(ctx)]
+        execution = ctx.submit(GripperCommand(gripper=gripper, opening=target))
+        tick = 0
+        while not execution.done and tick < GRIPPER_DEADLINE_TICKS:
+            ctx.step()
+            tick += 1
+            history.append(observed(ctx))
+        status = execution.status
+        result = status.gripper
+        return {
+            "state": status.state.value,
+            "termination": None if result is None else result.termination.value,
+            "direction": None if result is None else result.direction.value,
+            "requested_opening": None if result is None else result.requested_opening,
+            "final_opening": None if result is None else result.final_opening,
+            "evidence": None if result is None else result.evidence.value,
+            "ended_tick": tick,
+            "openings": [round(v, 6) for v in history],
+        }
+
+    record: dict[str, Any] = {"frame": g["frame"], "radius": g["radius"]}
+    runtime = MujocoRuntime(package, keyframe=keyframe, scene=scene)
+    with RobotContext(description, runtime) as ctx:
+        record["touching_at_start"] = touching(runtime)
+        record["open"] = grip(ctx, 1.0)
+        record["close"] = grip(ctx, 0.0)
+        record["touching_when_closed"] = touching(runtime)
+    (out / "grip.json").write_text(json.dumps(record, indent=2) + "\n")
+    return record
+
+
 def render(ctx: Any, runtime: Any) -> dict[str, Any]:
     """What a viewer gets through ``ssrobot.mujoco.render_handle`` (#125): a capture that
     names the context's time and world, into data MuJoCo can draw offscreen."""
@@ -1084,6 +1188,16 @@ def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] |
             f.name: f.read_bytes() == (second / f.name).read_bytes()
             for f in sorted(first.iterdir())
         }
+        if "grip" in spec:
+            runs = [
+                gripped(package, spec, keyframe, out.parent / "grip" / f"run-{i}") for i in (1, 2)
+            ]
+            first, second = (out.parent / "grip" / f"run-{i}" for i in (1, 2))
+            record["grip"] = runs[0]
+            record["grip_identical"] = {
+                f.name: f.read_bytes() == (second / f.name).read_bytes()
+                for f in sorted(first.iterdir())
+            }
         if "guard" in spec:
             runs = [
                 guarded(package, spec, keyframe, out.parent / "guarded" / f"run-{i}")
@@ -1286,6 +1400,33 @@ def check(
         identical = startup_record["scenario_identical"]
         add(
             "planning_deterministic",
+            bool(identical) and all(identical.values()),
+            f"two runs, byte for byte: {identical}",
+        )
+    if spec is not None and "grip" in spec:
+        grip = startup_record.get("grip", {})
+        close = grip.get("close", {})
+        add(
+            "gripper_contact",
+            grip.get("touching_at_start") is False
+            and grip.get("open", {}).get("termination") == "reached_target"
+            and close.get("state") == "succeeded"
+            and close.get("termination") == "stopped_short"
+            and close.get("direction") == "closing"
+            and close.get("evidence") == "inferred"
+            and grip.get("touching_when_closed") is True,
+            json.dumps(
+                {
+                    "touching_at_start": grip.get("touching_at_start"),
+                    "touching_when_closed": grip.get("touching_when_closed"),
+                    "open": {k: v for k, v in grip.get("open", {}).items() if k != "openings"},
+                    "close": {k: v for k, v in close.items() if k != "openings"},
+                }
+            ),
+        )
+        identical = startup_record.get("grip_identical", {})
+        add(
+            "gripper_contact_deterministic",
             bool(identical) and all(identical.values()),
             f"two runs, byte for byte: {identical}",
         )

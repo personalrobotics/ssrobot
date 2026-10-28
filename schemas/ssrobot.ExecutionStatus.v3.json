@@ -123,7 +123,8 @@
           "type": "string",
           "enum": [
             "opening",
-            "closing"
+            "closing",
+            "stationary"
           ],
           "description": "Which way the command moved."
         },

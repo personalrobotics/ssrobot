@@ -6,7 +6,7 @@
 [[robots]]
 name = "geodude"
 repository = "personalrobotics/geodude_assets"
-commit = "395991d3fbcc0f5a8e9a62fdfa7abcd391a6d5e2"
+commit = "e8f4b720687d7fcfa8a26c9dc9d7734f5f82b59e"
 module = "geodude_assets"
 package_root = "src/geodude_assets"
 # No keyframe: the package's MuJoCo profile starts it at "ready" (#95).
@@ -62,10 +62,21 @@ direction_in_frame = [0.0, 0.0, 1.0]
 distance = 0.20
 duration_ns = 4_000_000_000
 
+# The gripper-contact proof (#219): a fixed cylinder, 4 cm across and 12 cm long, between
+# the open fingers at the start, 2.5 cm ahead of the TCP along its approach axis (z), clear
+# of the palm. Its axis is the TCP's x, across the fingers, which close along y. Closing
+# on it must stop short.
+[robots.scenario.grip]
+frame = "right_ur5e/gripper/grasp_site"
+radius = 0.02
+half_length = 0.06
+position_in_frame = [0.0, 0.0, 0.025]
+quat_in_frame_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
+
 [[robots]]
 name = "ada"
 repository = "personalrobotics/ada_assets"
-commit = "c5cac66558151730eac36e2521503870bdf47198"
+commit = "4d168d6437f47b7ada25e2efb59d0b64619a0ed7"
 module = "ada_assets"
 package_root = "src/ada_assets"
 # No keyframe: the package's MuJoCo profile starts it at "resting" (#95,
@@ -131,3 +142,9 @@ rotation_bounds = [[-0.6981317007977318, 0.6981317007977318], [-0.69813170079773
 direction_in_world = [0.0, 0.0, -1.0]
 distance = 0.10
 duration_ns = 3_000_000_000
+
+# No gripper-contact proof (#219) yet: this package mounts the articutool in the hand,
+# its handle where the fingers close, with the fingers' contacts with it excluded, so no
+# object can be placed in ADA's grasp. Closing on an object waits for mounted-tool
+# composition (#121), which lets the hand run without its tool. Its empty close and
+# unobstructed open are still driven, and each must end reached_target.

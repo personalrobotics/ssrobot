@@ -1187,11 +1187,12 @@ class MujocoRuntime:
         else:
             return
         del self._running[execution]
-        direction = (
-            GripperDirection.CLOSING
-            if running.target < running.start_opening
-            else GripperDirection.OPENING
-        )
+        if running.target < running.start_opening:
+            direction = GripperDirection.CLOSING
+        elif running.target > running.start_opening:
+            direction = GripperDirection.OPENING
+        else:
+            direction = GripperDirection.STATIONARY
         result = GripperResult(
             termination=termination,
             direction=direction,

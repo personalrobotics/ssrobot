@@ -475,6 +475,23 @@ the uv version. The script then runs two public commands, and opens the runtime:
   - **Geodude:** the open hand moves along its approach axis from the side-grasp band
     into the cylinder.
   - **ADA:** the fork tip moves down onto the cylinder's top.
+- The **gripper-contact proof** (#219), when the scenario has a `grip` table. One
+  function, `gripped`, serves every robot. The table gives the hand frame, a cylinder's
+  radius and half-length, and its pose in that frame. The function finds where the
+  frame is at the start and stages a scene with that cylinder fixed there, between the
+  fingers. It opens the gripper, then closes it, observing the portable
+  `gripper_opening` channel every tick.
+
+  It passes when the cylinder touches nothing at the start, the open ends
+  `reached_target`, and the close ends `stopped_short` while closing, by the gripper's
+  declared detector, with the fingers then touching the cylinder. Contacts are read
+  from the simulation as ground truth only; the detector never reads them. Both runs
+  must give the same `grip.json` and scene, byte for byte.
+  - **Geodude:** a 4 cm cylinder across the open fingers, 2.5 cm ahead of the TCP.
+  - **ADA:** none yet. Its package mounts the articutool in the hand, with the tool's
+    handle where the fingers close and the fingers' contacts with it excluded, so no
+    object can be placed in its grasp. Closing on an object waits for mounted-tool
+    composition (#121).
 
 It then checks that the report is a valid `ssrobot.PackageReport`, that its fingerprint
 matches its description, that nothing is ambiguous, and that the description
