@@ -400,10 +400,10 @@ the uv version. The script then runs two public commands, and opens the runtime:
   capabilities and channels it confirms must equal the pin's `confirmed_commands` and
   `confirmed_channels`. It then **drives** the robot. Every confirmed trajectory group
   moves from where it is a small step toward the middle of each joint's range, and
-  must succeed, which means reaching its goal. Every confirmed gripper closes, then
-  opens, and its own `gripper_opening` channel must reach each end within 0.05 and stay
-  there after settling, since a gripper command succeeds as soon as its target is
-  applied. A gripper without a confirmed opening channel fails. It
+  must succeed, which means reaching its goal. Every confirmed gripper closes on
+  nothing, then opens unobstructed, and each command must end `reached_target`, as the
+  gripper's declared completion detector decides; its own `gripper_opening` channel is
+  recorded beside it. A gripper without a confirmed opening channel fails. It
   writes `mujoco-startup.json`, holding the mapping in [mujoco.md](mujoco.md) and what
   was driven, and requires exact time and a package loaded from the install.
 - The **two-robot planning proof** (#24), when the pin has a `scenario` table. One
@@ -475,6 +475,23 @@ the uv version. The script then runs two public commands, and opens the runtime:
   - **Geodude:** the open hand moves along its approach axis from the side-grasp band
     into the cylinder.
   - **ADA:** the fork tip moves down onto the cylinder's top.
+- The **gripper-contact proof** (#219), when the scenario has a `grip` table. One
+  function, `gripped`, serves every robot. The table gives the hand frame, a cylinder's
+  radius and half-length, and its pose in that frame. The function finds where the
+  frame is at the start and stages a scene with that cylinder fixed there, between the
+  fingers. It opens the gripper, then closes it, observing the portable
+  `gripper_opening` channel every tick.
+
+  It passes when the cylinder touches nothing at the start, the open ends
+  `reached_target`, and the close ends `stopped_short` while closing, by the gripper's
+  declared detector, with the fingers then touching the cylinder. Contacts are read
+  from the simulation as ground truth only; the detector never reads them. Both runs
+  must give the same `grip.json` and scene, byte for byte.
+  - **Geodude:** a 4 cm cylinder across the open fingers, 2.5 cm ahead of the TCP.
+  - **ADA:** none yet. Its package mounts the articutool in the hand, with the tool's
+    handle where the fingers close and the fingers' contacts with it excluded, so no
+    object can be placed in its grasp. Closing on an object waits for mounted-tool
+    composition (#121).
 
 It then checks that the report is a valid `ssrobot.PackageReport`, that its fingerprint
 matches its description, that nothing is ambiguous, and that the description

@@ -22,6 +22,7 @@ from ssrobot.commands import (
     ActionChunk,
     Command,
     CommandKind,
+    GripperCommand,
     GuardedJointTrajectory,
     JointTrajectory,
     TrajectoryContract,
@@ -2031,6 +2032,11 @@ class RobotContext:
                         check_guard_outcome(command.guard, event.guard)
                     except SsrobotError as e:
                         raise self._breach(f"{execution.id}'s guard outcome: {e}") from None
+                gripping = isinstance(command, GripperCommand)
+                if (event.gripper is not None) != (gripping and event.state is _E.SUCCEEDED):
+                    raise self._breach(
+                        f"{execution.id} ended {event.state} with gripper result {event.gripper!r}"
+                    )
                 self._record(event, self._runtime_source)
         self._now = update.stamp
         if stepped:

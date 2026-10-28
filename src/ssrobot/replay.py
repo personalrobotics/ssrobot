@@ -129,11 +129,12 @@ class _Running:
 class ReplayRuntime:
     """Replays a ``ReplayScript`` one tick per ``step()``.
 
-    Instantaneous commands are applied, and succeed, on the next tick. A trajectory
-    starts on the next tick, is sampled by linear interpolation every tick, and
-    succeeds once its final waypoint is applied. An action chunk applies its latest due
-    step every tick and succeeds once its final step is applied. Stepping past the last
-    tick faults the runtime with ``replay_exhausted``.
+    Instantaneous joint and base commands are applied, and succeed, on the next tick. A
+    gripper command is refused (``no_gripper_completion``): a recording cannot say when
+    its fingers stop. A trajectory starts on the next tick, is sampled by linear
+    interpolation every tick, and succeeds once its final waypoint is applied. An action
+    chunk applies its latest due step every tick and succeeds once its final step is
+    applied. Stepping past the last tick faults the runtime with ``replay_exhausted``.
 
     Its trajectory contract is one waypoint per tick, interpolated linearly, when the
     recording's ticks are evenly spaced; with uneven ticks it declares none.
@@ -213,6 +214,14 @@ class ReplayRuntime:
         elif isinstance(command, GuardedJointTrajectory):
             # A recording cannot respond to contact, so it declares no guards.
             reason = Diagnostic(code="guards_unavailable", message="replay evaluates no guards")
+        elif isinstance(command, GripperCommand):
+            # A recording cannot say when fingers it does not move stop moving; an action
+            # chunk's gripper steps are setpoints and still apply.
+            reason = Diagnostic(
+                code="no_gripper_completion",
+                message="replay decides no gripper motion's end",
+                component=command.gripper,
+            )
         elif isinstance(command, JointTrajectory):
             reason = self._start_mismatch(command)
         if reason is not None:

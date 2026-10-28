@@ -167,6 +167,38 @@ class GripperOpening(Value):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class GripperCompletion(Value):
+    """How the runtime decides that a gripper command's motion has ended, from the
+    measured opening, as a gripper's own controller would. Each value is the package's
+    declaration, with its source recorded beside it: none is a runtime default.
+
+    The opening is evaluated after every step. It has reached its target once it is
+    within ``goal_tolerance`` of it. Otherwise it has stopped short once its openings over
+    a complete window of ``stall_dwell_ns`` vary by no more than ``stall_delta``. Reaching
+    the target takes precedence."""
+
+    goal_tolerance: float = field(
+        metadata=meta("How close to the target counts as reached.", unit="1")
+    )
+    stall_delta: float = field(
+        metadata=meta("How much the opening may vary while it counts as still.", unit="1")
+    )
+    stall_dwell_ns: int = field(
+        metadata=meta("How long it must stay still to count as stopped.", unit="ns")
+    )
+
+    def _validate(self) -> None:
+        for name in ("goal_tolerance", "stall_delta"):
+            value = getattr(self, name)
+            if not (math.isfinite(value) and 0.0 < value < 1.0):
+                raise ValidationError("invalid_profile", f"{name} must be in (0, 1)", path=name)
+        if self.stall_dwell_ns <= 0:
+            raise ValidationError(
+                "invalid_profile", "stall_dwell_ns must be positive", path="stall_dwell_ns"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class GripperProfile(Value):
     """How a gripper's opening maps to its actuators, and how it is measured."""
 
@@ -177,6 +209,14 @@ class GripperProfile(Value):
     opening: GripperOpening | None = field(
         default=None,
         metadata=meta("The joint that measures the opening; the actuators' lengths if none."),
+    )
+    completion: GripperCompletion | None = field(
+        default=None,
+        metadata=meta(
+            "How a gripper command's motion is decided to have ended. Without one, a gripper "
+            "command is refused (no_gripper_completion); an action chunk's gripper steps "
+            "are unaffected."
+        ),
     )
 
     def _validate(self) -> None:

@@ -407,7 +407,8 @@ backends and platforms, so only their geometry, not their bytes, is portable.
 
 A `mujoco` profile is a `[[profiles]]` entry of the package naming a TOML file with an
 `ssrobot.MujocoProfile`. It declares what MuJoCo needs that a model doesn't say: which
-model to compile, where to start, and how open each gripper is.
+model to compile, where to start, how open each gripper is, and when a gripper's motion
+has ended.
 
 ```toml
 schema = "ssrobot.MujocoProfile"
@@ -422,6 +423,7 @@ actuators = [
   { actuator = "right_finger", closed = 0.0, open = 0.04 },
 ]
 opening = { joint = "left_finger_joint", closed = 0.0, open = 0.04 }  # optional
+completion = { goal_tolerance = 0.02, stall_delta = 0.0039, stall_dwell_ns = 100_000_000 }
 ```
 
 Each gripper actuator must be a position servo that moves only joints the gripper
@@ -440,6 +442,17 @@ opening could not tell a held object from a missed one. The joint must be one of
 gripper's own hinge or slide joints (`invalid_profile`), and `closed` and `open` must be
 finite and differ. Commands still drive the actuators by their map.
 
+A gripper's `completion` declares how the runtime decides that a gripper command's
+motion has ended (see *Gripper commands* in contracts.md). A simulated hand has no
+controller to report it, so the runtime infers it from the opening, as a gripper's own
+firmware would: `goal_tolerance` is how close to the target counts as reached,
+`stall_delta` how much a still opening may vary, and `stall_dwell_ns` how long it must
+stay still. These describe the hand being simulated, not the simulator, so each value
+belongs to the package and should say where it came from: a datasheet, the real
+driver's defaults, or a measurement in MuJoCo. The tolerances must be in (0, 1) and the
+dwell positive (`invalid_profile`). A gripper without one cannot take a gripper command
+(`no_gripper_completion`), though an action chunk may still set its opening.
+
 ## Execution
 
 Executions follow `ReplayRuntime` wherever they overlap. On each `step()` at time *t*,
@@ -453,7 +466,8 @@ the runtime:
 
 | Command | Runs |
 | --- | --- |
-| `JointCommand`, `GripperCommand` | Applied on the next step, then `succeeded`. A setpoint stays in force until something replaces it. A gripper opening is clipped once, to the openings every one of its actuators can reach, and that one opening is sent to all of them and reported as applied. |
+| `JointCommand` | Applied on the next step, then `succeeded`. A setpoint stays in force until something replaces it. |
+| `GripperCommand` | Refused with `no_gripper_completion` if the gripper's profile declares no `completion`. Otherwise applied on the next step: the opening is clipped once, to the openings every one of its actuators can reach, and that one opening is sent to all of them and reported as applied. After every step's physics, the opening is read and the profile's detector updated, and the execution succeeds with its `GripperResult` once the motion has ended. The target stays applied afterwards, until something replaces it. |
 | `JointTrajectory` | Rejected with `start_mismatch` if its first waypoint is more than `START_TOLERANCE` (1e-3) from the current positions. Otherwise `active` from the next step, sampled by linear interpolation at runtime time. A setpoint past a joint's limits, which only a start from a joint resting on its stop produces, is clamped to the limit with a `clipped` modification. Waypoint velocities are accepted but not used. See *Trajectories*. |
 | `GuardedJointTrajectory` | Its trajectory runs exactly as a `JointTrajectory`. After each step's physics, the guard's wrench channel is read from the force and torque sensors' `sensordata`, the same reading an observation gives, and the measure is compared with the threshold; with `tare`, against the reading taken before the first step. When it triggers, the group's position servos are set to the joints' current positions, recorded as an `applied` joint command, and the execution succeeds with a `guard_triggered` outcome; the following step already holds. Otherwise it succeeds with `trajectory_completed` once it settles. See *Guarded trajectories* in contracts.md. |
 | `ActionChunk` | Applies its latest due step on every step from its start, and succeeds after the final step. A period shorter than a tick skips steps. The context already refuses stale chunks, chunks on another clock, and steps whose commands overlap. |
@@ -535,6 +549,7 @@ the returned model or data reaches no other materialization and no runtime.
 | `artifacts/test_mujoco_executes_trajectories_chunks_and_grippers/<scenario>/trace.jsonl`, `final-state.json` | Nine scenarios, each from the `home` keyframe. Trajectory: succeeds within `goal_tolerance`. Chunk: an arm and gripper command per step, one application per tick of the latest due step. Gripper: closes to at most 0.05 and opens to at least 0.95. Range-limited gripper (left finger's control range halved): opening 1 is applied as 0.5, `clipped`, and the hand settles within 0.05 of 0.5. Reversed profile: 0.25 applied and reached. Stop and back: the elbow, driven onto its lower stop, rests 0.43 mrad past it, and a trajectory starting there succeeds, with only its first setpoint clamped. The changed packages are under `packages/`. Cancel: nothing applied after it, and the arm holds within 0.02 of its last setpoint. Timeout: `timed_out`. Zero tolerance and settle time: `goal_not_reached`. A second run gives byte-identical files. |
 | `artifacts/test_mujoco_observes_robot_state_sensors_and_cameras/observations.json`, `trace.jsonl`, `assets/` | Every robot channel, at open and after settling, with its binding. They are checked against an independently compiled model: the `tcp` pose in `base` within 1e-9; the centre depth pixel within 2 mm of a ray cast along the camera's optical axis; the wrist force, in world, equal to the hand's weight within 2%; and each joint's effort equal to its gravity torque. The RGB image is not one flat colour. A second run gives byte-identical files and image assets. |
 | `artifacts/test_mujoco_leaves_unbacked_channels_unconfirmed/unconfirmed.json` | A wrench channel whose site has no MuJoCo force and torque sensors: unconfirmed (`no_force_torque_sensors`), and observing it is refused. |
+| `artifacts/test_a_gripper_command_ends_when_its_fingers_stop/gripper_completion.json`, `<scenario>.trace.jsonl` | Gripper commands on the example arm (#219), with the portable opening observed every tick. An empty close and open reach their targets, and an opening already within tolerance ends at once, since reaching takes precedence. The pedestal's box stops a close short, at 0.37, and afterwards the controls stay closed and the fingers never relax open. Two fixed walls stop an open short, at 0.62. Each command ends at the first tick from which the contract's rule holds on the observed openings, with the profile's declared values. The runtime's contacts are never read while it decides. Without a declared detector, MuJoCo and `ReplayRuntime` each refuse the command (`no_gripper_completion`). A second run is byte-identical. |
 | `artifacts/test_mujoco_rejects_unexecutable_commands/rejections.json` | `start_mismatch`, an unconfirmed velocity command, a chunk commanding the arm and the overlapping `wrist_only` group, and each profile failure, with its code and path. That covers a gripper profile naming the arm's actuator (`actuator_alias`) and no reachable opening. A zero-gear wrist opens with the arm's and wrist's position commands unconfirmed and their reasons recorded. |
 | `artifacts/test_mujoco_compiles_the_profiles_model_against_the_canonical_description/multi-artifact.json` | The `urdf_arm` fixture, whose canonical model is URDF and SRDF, opened through the MJCF its profile names, with no `keyframe` argument. It records the compiled entry, format, path, and signature, and the URDF's description fingerprint. It starts at the profile's `home`, equal to the SRDF state of that name, and a trajectory succeeds. |
 | `artifacts/test_mujoco_model_signature_covers_every_file_the_model_brings_in/{original,moved,edited}-mapping.json` | Three copies of the example: unchanged, moved to another directory, and with one gain changed in the included `actuators.xml`. The edited copy has the same root-file hash but a different model signature, and the moved copy's mapping is identical to the original's. |

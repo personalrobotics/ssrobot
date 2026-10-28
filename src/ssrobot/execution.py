@@ -99,12 +99,65 @@ class GuardOutcome(Value):
             raise ValidationError("out_of_limits", "measure is not finite", path="measure")
 
 
+class GripperTermination(enum.StrEnum):
+    """How a gripper command's motion ended. Neither is success or failure in itself: a
+    caller decides, since closing short of the target is how a grasp of an object ends."""
+
+    REACHED_TARGET = "reached_target"
+    """The opening came within the gripper's goal tolerance of the target."""
+    STOPPED_SHORT = "stopped_short"
+    """The opening stopped changing before it reached the target, as on an object."""
+
+
+class GripperDirection(enum.StrEnum):
+    """Which way a gripper command asked the fingers to move, from its target and the
+    opening they had when it was applied. A target equal to that opening asks for
+    neither: an absolute target carries no intent to open or close."""
+
+    OPENING = "opening"
+    """A target larger than the opening when it was applied."""
+    CLOSING = "closing"
+    """A target smaller than the opening when it was applied."""
+    STATIONARY = "stationary"
+    """A target equal to the opening when it was applied."""
+
+
+class GripperEvidence(enum.StrEnum):
+    """Who decided how a gripper's motion ended."""
+
+    NATIVE = "native"
+    """The gripper's own controller reported it."""
+    INFERRED = "inferred"
+    """The runtime inferred it from the measured opening, by the gripper's declared
+    completion detector."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GripperResult(Value):
+    """How a ``GripperCommand`` execution's motion ended. The gripper keeps its target
+    applied afterwards; this reports only that the opening or closing has ended."""
+
+    termination: GripperTermination = field(metadata=meta("How the motion ended."))
+    direction: GripperDirection = field(metadata=meta("Which way the command moved."))
+    requested_opening: float = field(
+        metadata=meta("The target opening in effect, after any clipping.", unit="1")
+    )
+    final_opening: float = field(metadata=meta("The measured opening when it ended.", unit="1"))
+    evidence: GripperEvidence = field(metadata=meta("Who decided it."))
+
+    def _validate(self) -> None:
+        for name in ("requested_opening", "final_opening"):
+            value = getattr(self, name)
+            if not (math.isfinite(value) and 0.0 <= value <= 1.0):
+                raise ValidationError("out_of_limits", f"{name} must be in [0, 1]", path=name)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExecutionStatus(Record):
     """The state of one submitted command at a point in runtime time."""
 
     SCHEMA = "ssrobot.ExecutionStatus"
-    VERSION = 2
+    VERSION = 3
 
     execution: str = field(metadata=meta("Execution identifier, unique within a context."))
     state: ExecutionState = field(metadata=meta("Current state."))
@@ -115,6 +168,10 @@ class ExecutionStatus(Record):
     guard: GuardOutcome | None = field(
         default=None,
         metadata=meta("How a guarded trajectory ended; on its succeeded status only."),
+    )
+    gripper: GripperResult | None = field(
+        default=None,
+        metadata=meta("How a gripper command's motion ended; on its succeeded status only."),
     )
 
     def _validate(self) -> None:
@@ -131,6 +188,16 @@ class ExecutionStatus(Record):
         if self.guard is not None and self.state is not ExecutionState.SUCCEEDED:
             raise ValidationError(
                 "unexpected_field", "only a succeeded status has a guard outcome", path="guard"
+            )
+        if self.gripper is not None and self.state is not ExecutionState.SUCCEEDED:
+            raise ValidationError(
+                "unexpected_field", "only a succeeded status has a gripper result", path="gripper"
+            )
+        if self.gripper is not None and self.guard is not None:
+            raise ValidationError(
+                "unexpected_field",
+                "a status has a guard outcome or a gripper result",
+                path="gripper",
             )
 
 

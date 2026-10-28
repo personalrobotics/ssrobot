@@ -10,3 +10,9 @@ actuators = [
   { actuator = "left_finger", closed = 0.0, open = 0.04 },
   { actuator = "right_finger", closed = 0.0, open = 0.04 },
 ]
+# When a gripper command's motion has ended, from the measured opening. The fingers come
+# to rest 0.01 of their travel inside their joint limits, where MuJoCo's soft limit
+# balances the servo, so the goal tolerance is 0.02. A still opening varies by at most
+# 1/255, the resolution of a Robotiq-style position register, for 100 ms, the dwell
+# measured on Geodude's 2F-140: on this hand no dwell from 20 ms up stalls a free motion.
+completion = { goal_tolerance = 0.02, stall_delta = 0.00392156862745098, stall_dwell_ns = 100_000_000 }
