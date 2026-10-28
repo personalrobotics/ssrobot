@@ -547,10 +547,17 @@ it when the robot arrives. Three pieces make that safe:
      arrival; the continuation is still validated whole in the actual scene;
    - held objects expected to be released after the source and before the plan runs
      (`releases`, from `ctx.predict(execution, releases=...)`), such as a can dropped
-     where the motion ends, each with the pose the caller expects it to rest at. That
-     release is the one scene change a prediction may expect: in the predicted state the
-     objects are detached and at those poses, for planning only, and on arrival each
-     must be detached, with nothing else changed; their poses aren't compared;
+     where the motion ends, each with the pose the caller expects it to rest at. In the
+     predicted state the objects are detached and at those poses, for planning only,
+     and on arrival each must be detached; their poses aren't compared;
+   - held objects whose attachment is expected to be re-declared after the source and
+     before the plan runs, with another allow set and the same transform (`allowances`,
+     from `ctx.predict(execution, allowances=...)`), such as a grasp narrowing what a
+     lifted object may touch to the hand. In the predicted state each attachment has
+     that allow set, checked as `attach` checks it, and on arrival each must have
+     exactly it. Releases and allowance changes are the only scene changes a prediction
+     may expect: with either, the scene is compared by content rather than by revision,
+     with nothing else changed;
    - joints the motion doesn't move, set to the positions the caller expects when the
      plan runs (`expected`, from `ctx.predict(execution, joints=...)`), such as a
      gripper's, opened by a release; for planning only;
@@ -587,7 +594,8 @@ it when the robot arrives. Three pieces make that safe:
         records the reading's stamp;
       - each joint is within `arrival_tolerance` of the plan's start, a continuous joint
         the short way round (`arrival_out_of_tolerance`);
-      - the scene changed only as predicted: the same revision, attachments and fixtures,
+      - the scene changed only as predicted: the same revision, or, with expected releases
+        or allowance changes, a later one; the predicted attachments and the same fixtures;
         and every free object within `object_tolerance_m` of its predicted position and
         `object_tolerance_rad` of its predicted orientation
         (`unpredicted_scene_change`);
