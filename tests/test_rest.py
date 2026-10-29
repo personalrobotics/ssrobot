@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -487,3 +488,84 @@ def test_joints_and_objects_come_to_rest(artifacts: Path, tmp_path: Path) -> Non
         "gap_below_cadence": "invalid_rest_criteria",
         "replay_declares_none": "no_rest_criteria",
     }
+
+
+def test_readings_sit_on_the_declared_resolution(artifacts: Path, tmp_path: Path) -> None:
+    """The example arm, with a MuJoCo profile that declares the resolution its simulated
+    sensors report at: ``arm_q`` at a 17-bit encoder's step per joint, and every object's
+    pose at 0.1 mm per coordinate and 0.001 rad per rotation-vector component. Each tick,
+    while the arm settles under gravity and the ball falls onto the ramp, every ``arm_q``
+    reading must be a whole number of steps, and every ball pose a whole number of steps
+    in position and in rotation vector, with a unit quaternion. The snapshot, the
+    simulation's own state, stays exact: within half a step of the reading, and not on
+    the grid. Writes ``resolution.json``: the steps and each tick's readings
+    and snapshot values, to check by dividing by the step."""
+    root = tmp_path / "package"
+    shutil.copytree(PACKAGE, root)
+    steps = [2 * math.pi / 2**17] * 3  # a 17-bit encoder's step, per joint
+    translation, rotation = 1e-4, 1e-3
+    text = (root / "mujoco.toml").read_text()
+    (root / "mujoco.toml").write_text(
+        text.replace(
+            "[[rest]]",
+            f"object_resolution = {{ translation_m = {translation}, rotation_rad = {rotation} }}"
+            f'\n\n[[resolution]]\nchannel = "arm_q"\nstep = {steps}\n\n[[rest]]',
+            1,
+        )
+    )
+    package = load_package(root)
+    scene = tmp_path / "scene.xml"
+    scene.write_text(SCENE)
+    request = ObservationRequest(channels=("arm_q", "ball.pose"))
+
+    def whole(value: float, step: float) -> bool:
+        return abs(value / step - round(value / step)) < 1e-6
+
+    ticks = []
+    with RobotContext(package.description, MujocoRuntime(package, scene=scene)) as ctx:
+        for _ in range(200):
+            ctx.step()
+            arm, ball = (list(r.value) for r in ctx.observe(request).readings)  # type: ignore[arg-type]
+            snapshot = ctx.snapshot()
+            exact = [snapshot.position(j) for j in ARM]
+            pose = next(o.pose for o in snapshot.objects if o.name == "ball")
+            ticks.append(
+                {
+                    "arm_q": arm,
+                    "arm_exact": exact,
+                    "ball": ball,
+                    "ball_exact": [*pose.position, *pose.quat_wxyz],
+                }
+            )
+    (artifacts / "resolution.json").write_text(
+        json.dumps(
+            {
+                "arm_q_step": steps,
+                "translation_m": translation,
+                "rotation_rad": rotation,
+                "ticks": ticks,
+            },
+            indent=1,
+        )
+        + "\n"
+    )
+    off_grid = 0
+    for t in ticks:
+        assert all(whole(v, s) for v, s in zip(t["arm_q"], steps, strict=True)), t
+        assert all(
+            abs(v - e) <= s / 2 + 1e-12
+            for v, e, s in zip(t["arm_q"], t["arm_exact"], steps, strict=True)
+        )
+        off_grid += sum(not whole(e, s) for e, s in zip(t["arm_exact"], steps, strict=True))
+        x, y, z, w, i, j, k = t["ball"]
+        assert all(whole(v, translation) for v in (x, y, z)), t
+        assert math.isclose(w * w + i * i + j * j + k * k, 1.0) and w >= 0
+        sine = math.sqrt(i * i + j * j + k * k)
+        angle = 2 * math.atan2(sine, w)
+        vector = [0.0, 0.0, 0.0] if sine == 0 else [angle * v / sine for v in (i, j, k)]
+        assert all(whole(v, rotation) for v in vector), t
+        assert all(
+            abs(a - b) <= translation / 2 + 1e-12
+            for a, b in zip((x, y, z), t["ball_exact"][:3], strict=True)
+        )
+    assert off_grid > 0  # the state itself is not rounded
