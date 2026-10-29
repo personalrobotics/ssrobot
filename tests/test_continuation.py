@@ -90,8 +90,9 @@ REST = RestCriteria(
     cadence_ns=5_000_000,
     max_gap_ns=5_000_000,
     dwell_ns=50_000_000,
-    variation=1e-4,
-    source="test: one sample per 5 ms tick of bimanual.xml; 1e-4 rad held for 50 ms, chosen "
+    variation=(1e-4, 1e-4),
+    source="test: one sample per 5 ms tick of bimanual.xml; 1e-4 rad per joint held for 50 ms, "
+    "chosen "
     "for this test, not a robot's",
 )
 """The test's rest criteria for the right arm: the fixture's runtime declares none."""
@@ -448,7 +449,7 @@ def _evidence(tmp_path: Path) -> dict[str, Any]:
             tmp_path / "moving",
             # Straight after the source succeeds, held to a bound no settling arm meets.
             lambda c, p: _refused(
-                c, p, criteria=replace(REST, variation=1e-12), within_ns=100_000_000
+                c, p, criteria=replace(REST, variation=(1e-12, 1e-12)), within_ns=100_000_000
             ),
         ),
         "arrival_out_of_tolerance": _session(

@@ -22,7 +22,7 @@ object_rest = { cadence_ns = 2_000_000, max_gap_ns = 2_000_000, dwell_ns = 100_0
 # constant of the arm's position servos, (kv + damping) / kp = (20 + 1) / 300 s in arm.xml.
 [[rest]]
 channel = "arm_q"
-criteria = { cadence_ns = 2_000_000, max_gap_ns = 2_000_000, dwell_ns = 70_000_000, variation = 4.7936899621426287e-05, source = "example arm, illustrative: a chosen bound of 2*pi/2^17 rad, a 17-bit encoder step; dwell of one position-servo time constant, (kv + damping) / kp = 21/300 s, from arm.xml; one sample per 2 ms control tick" }
+criteria = { cadence_ns = 2_000_000, max_gap_ns = 2_000_000, dwell_ns = 70_000_000, variation = [4.7936899621426287e-05, 4.7936899621426287e-05, 4.7936899621426287e-05], source = "example arm, illustrative: a chosen bound of 2*pi/2^17 rad per joint, a 17-bit encoder step; dwell of one position-servo time constant, (kv + damping) / kp = 21/300 s, from arm.xml; one sample per 2 ms control tick" }
 
 [[grippers]]
 gripper = "gripper"

@@ -113,6 +113,15 @@ class ChannelSpec(Value):
             )
 
 
+def _positive(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int | float)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
 REST_QUANTITIES = frozenset({Quantity.JOINT_POSITION, Quantity.POSE})
 """Quantities a rest watch can judge: joint positions, and a pose's translation and
 rotation."""
@@ -125,7 +134,8 @@ class RestCriteria(Value):
     Rest holds once consecutive samples span ``dwell_ns``, no two more than ``max_gap_ns``
     apart and each stamped later than the one before, and every element's range over them
     is within its bound. A joint-position channel takes ``variation``, one bound for each
-    of its elements in the channel's units. A pose channel takes ``translation_m`` for
+    of its elements, in that element's units: radians for a revolute joint, metres for a
+    prismatic one. A pose channel takes ``translation_m`` for
     each coordinate of its position, and ``rotation_rad`` for the largest angle between
     any sample's orientation and the first one's. See *Rest watches* in docs/contracts.md.
     """
@@ -139,10 +149,11 @@ class RestCriteria(Value):
     dwell_ns: int = field(
         metadata=meta("How long the readings must stay within bounds.", unit="ns")
     )
-    variation: float | None = field(
+    variation: tuple[float, ...] | None = field(
         default=None,
         metadata=meta(
-            "The most each element's range may be over the dwell; joint-position channels only.",
+            "The most each element's range may be over the dwell, one bound per element of "
+            "the channel; joint-position channels only.",
             unit="channel",
         ),
     )
@@ -171,14 +182,23 @@ class RestCriteria(Value):
                 raise ValidationError(
                     "invalid_rest_criteria", f"{name} must be a positive integer", path=name
                 )
-        for name in ("variation", "translation_m", "rotation_rad"):
+        if self.variation is not None:
+            if not isinstance(self.variation, tuple) or not self.variation:
+                raise ValidationError(
+                    "invalid_rest_criteria",
+                    "variation must be one bound per element of the channel",
+                    path="variation",
+                )
+            for i, value in enumerate(self.variation):
+                if not _positive(value):
+                    raise ValidationError(
+                        "invalid_rest_criteria",
+                        "each variation must be finite and positive",
+                        path=f"variation[{i}]",
+                    )
+        for name in ("translation_m", "rotation_rad"):
             value = getattr(self, name)
-            if value is not None and (
-                isinstance(value, bool)
-                or not isinstance(value, int | float)
-                or not math.isfinite(value)
-                or value <= 0
-            ):
+            if value is not None and not _positive(value):
                 raise ValidationError(
                     "invalid_rest_criteria", f"{name} must be finite and positive", path=name
                 )
@@ -204,8 +224,11 @@ class RestCriteria(Value):
                 "invalid_rest_criteria", "say where the values come from", path="source"
             )
 
-    def check_for(self, quantity: Quantity, path: str = "criteria") -> None:
-        """Raise unless these criteria can judge a channel of ``quantity``."""
+    def check_for(
+        self, quantity: Quantity, path: str = "criteria", shape: tuple[int, ...] | None = None
+    ) -> None:
+        """Raise unless these criteria can judge a channel of ``quantity``, and, given the
+        channel's ``shape``, give one variation per element of a joint-position channel."""
         if quantity not in REST_QUANTITIES:
             raise ValidationError(
                 "criteria_mismatch", f"rest is not judged on {quantity} channels", path=path
@@ -214,6 +237,12 @@ class RestCriteria(Value):
             want = "translation_m and rotation_rad" if quantity is Quantity.POSE else "variation"
             raise ValidationError(
                 "criteria_mismatch", f"a {quantity} channel's criteria give {want}", path=path
+            )
+        if self.variation is not None and shape is not None and (len(self.variation),) != shape:
+            raise ValidationError(
+                "criteria_mismatch",
+                f"{len(self.variation)} variations for a channel of shape {list(shape)}",
+                path=path,
             )
 
 

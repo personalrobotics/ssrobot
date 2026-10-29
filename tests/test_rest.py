@@ -192,7 +192,7 @@ def _settled(ctx: RobotContext) -> int:
 def _within(run: list[tuple[int, list[float]]], criteria: RestCriteria, judged: list[int]) -> bool:
     if criteria.variation is not None:
         return all(
-            max(v[i] for _, v in run) - min(v[i] for _, v in run) <= criteria.variation
+            max(v[i] for _, v in run) - min(v[i] for _, v in run) <= criteria.variation[i]
             for i in judged
         )
     assert criteria.translation_m is not None and criteria.rotation_rad is not None
@@ -302,11 +302,12 @@ def _arm_cases(work: Path) -> dict[str, Any]:
                 - len(readings),
             )
     assert criteria is not None and criteria.variation is not None
+    (bound,) = set(criteria.variation)  # the example declares one bound for every joint
     for name, amplitude in (("chatter_within", 0.4), ("chatter_beyond", 0.75)):
-        runtime = _Reading(MujocoRuntime(package), chatter=amplitude * criteria.variation)
+        runtime = _Reading(MujocoRuntime(package), chatter=amplitude * bound)
         with RobotContext(package.description, runtime) as ctx:
             result, readings = _watch(ctx, JointRest("arm"), 3_000_000_000, "arm_q")
-            out[name] = _case(result, readings, chatter=2 * amplitude * criteria.variation)
+            out[name] = _case(result, readings, chatter=2 * amplitude * bound)
     for name in ("stale", "missing"):
         runtime = _Reading(MujocoRuntime(package), after_ns=100_000_000)
         runtime.freeze = name == "stale"
@@ -389,6 +390,11 @@ def _refusals() -> dict[str, str]:
         pose = replace(declared, variation=None, translation_m=0.001, rotation_rad=0.01)
         out["pose_criteria_on_joints"] = code(
             lambda: ctx.watch_rest(JointRest("arm", pose), deadline_ns=later)
+        )
+        assert declared.variation is not None
+        short = replace(declared, variation=declared.variation[:-1])
+        out["variation_per_element"] = code(
+            lambda: ctx.watch_rest(JointRest("arm", short), deadline_ns=later)
         )
         out["deadline_now"] = code(
             lambda: ctx.watch_rest(JointRest("arm"), deadline_ns=ctx.now.time_ns)
@@ -475,6 +481,7 @@ def test_joints_and_objects_come_to_rest(artifacts: Path, tmp_path: Path) -> Non
         "gripper_joints": "rest_unobservable",
         "unknown_object": "rest_unobservable",
         "pose_criteria_on_joints": "criteria_mismatch",
+        "variation_per_element": "criteria_mismatch",
         "deadline_now": "out_of_limits",
         "unsourced_criteria": "invalid_rest_criteria",
         "gap_below_cadence": "invalid_rest_criteria",

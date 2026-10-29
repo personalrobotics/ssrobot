@@ -229,7 +229,7 @@ class _Judge:
         assert c.variation is not None
         for i in self.judged:
             values = [s.value[i] for s in run]
-            if max(values) - min(values) > c.variation:
+            if max(values) - min(values) > c.variation[i]:
                 return False
         return True
 

@@ -876,7 +876,7 @@ class MujocoRuntime:
                     path=f"{where}: rest[{i}].channel",
                 )
             try:
-                rest.criteria.check_for(spec.quantity)
+                rest.criteria.check_for(spec.quantity, shape=spec.shape)
             except ValidationError as e:
                 raise ValidationError(
                     "invalid_profile", e.message, path=f"{where}: rest[{i}].criteria"

@@ -1064,8 +1064,10 @@ declared channel, by criteria declared as data with their source.
 - **The criteria.** A `RestCriteria` gives `cadence_ns`, the spacing of samples it was
   declared for; `max_gap_ns`, the largest spacing still treated as continuous;
   `dwell_ns`, how long the readings must stay within bounds; the bounds; and `source`,
-  where the values come from. A joint-position channel's bound is `variation`, the most
-  each joint's range may be, in its units. A pose channel's bounds are `translation_m`,
+  where the values come from. A joint-position channel's bound is `variation`, one bound per
+  element of the channel: the most that joint's range may be, in its units (rad for a
+  revolute joint, m for a prismatic one). Its length must match the channel's shape
+  (`criteria_mismatch` for a watch, `invalid_profile` in a MuJoCo profile). A pose channel's bounds are `translation_m`,
   the most each position coordinate's range may be, and `rotation_rad`, the largest
   angle any orientation may be from the first one's. Every number is finite and
   positive, both `max_gap_ns` and `dwell_ns` are at least `cadence_ns`, and `source` is

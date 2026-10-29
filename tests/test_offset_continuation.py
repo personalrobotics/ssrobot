@@ -79,9 +79,9 @@ def _rested(ctx: RobotContext) -> RestResult:
         cadence_ns=tick,
         max_gap_ns=tick,
         dwell_ns=25 * tick,
-        variation=1e-4,
-        source="test: one sample per control tick; 1e-4 rad held for 25 ticks, chosen for "
-        "this test, not a robot's",
+        variation=(1e-4,) * 7,  # one per element of the 7-joint channel that covers the arm
+        source="test: one sample per control tick; 1e-4 rad per joint held for 25 ticks, "
+        "chosen for this test, not a robot's",
     )
     watch = ctx.watch_rest(JointRest("arm", criteria), deadline_ns=ctx.now.time_ns + 400 * tick)
     while not watch.done:

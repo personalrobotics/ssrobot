@@ -647,7 +647,7 @@ class RobotContext:
                 "the condition gives none",
                 path="condition.criteria",
             )
-        criteria.check_for(spec.quantity, path="condition.criteria")
+        criteria.check_for(spec.quantity, path="condition.criteria", shape=spec.shape)
         elements: tuple[str, ...]
         if spec.quantity is Quantity.POSE:
             elements = judged = POSE_ELEMENTS
@@ -2071,7 +2071,8 @@ class RobotContext:
             )
         for rest in info.rest:
             try:
-                rest.criteria.check_for((robot.get(rest.channel) or scene[rest.channel]).quantity)
+                spec = robot.get(rest.channel) or scene[rest.channel]
+                rest.criteria.check_for(spec.quantity, shape=spec.shape)
             except ValidationError as e:
                 raise CapabilityError(
                     "undeclared_capability", f"rest criteria for {rest.channel!r}: {e.message}"
