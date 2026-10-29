@@ -1,25 +1,32 @@
-"""Measure the reference robots' rest criteria in MuJoCo (#221).
+"""Derive the reference robots' MuJoCo rest criteria by a fixed rule, and verify them (#221).
 
 For each robot in references/robots.toml, at its pinned commit or at ``--commit
 NAME=SHA``, this script downloads the asset repository as check_reference_robots.py
-does, loads the package from it, and measures, by a rule fixed before measuring, the
-``RestCriteria`` its MuJoCo profile should declare for each arm's joint-position channel
-and, where the robot's reference scene has free objects, for their pose channels.
+does, loads the package from it, and derives the ``RestCriteria`` its MuJoCo profile
+should declare for each arm's joint-position channel and, where the robot's reference
+scene has free objects, for their poses. It then drives the robot through trials and
+checks every watch on those criteria against the recorded readings.
 
-The rule:
-- ``cadence_ns`` and ``max_gap_ns`` are one control tick of the runtime as the reference
-  check opens it (one substep): the context samples a watched channel once per tick.
-- ``variation`` is the settled noise floor. Each trial holds for ``HOLD_S`` after its
-  commanded trajectory ends (or its object is released); the floor is each element's
-  range over the final ``FINAL_S`` of that hold, maximized over trials and elements,
-  separately per element kind (revolute in rad, prismatic in m). A pose's floor is its
-  largest per-coordinate range (m), and the largest angle of an orientation from the
-  final part's first (rad).
-- ``dwell_ns`` is one tick longer than the longest interval during motion in which every
-  element stays within that variation. Motion runs from the trajectory's start (an
-  object's release) until the readings settle: the first sample from which every later
-  one of the trial stays within the variation. An interval is measured as a watch
-  measures it, from the first to the last sample of a run it keeps.
+MuJoCo's state has no sensor noise: a held joint converges exactly, or to a limit cycle
+set by the constraint solver's tolerance. So the simulated sensor is modelled by a
+declared resolution (the profile's ``[[resolution]]`` and ``object_resolution``; see
+docs/mujoco.md), and the rule, fixed before any trial ran, is:
+- ``cadence_ns`` and ``max_gap_ns``: one control tick of the runtime as the reference
+  check opens it (one substep), the rate at which the context samples a channel.
+- resolution, a declared modelling choice: ``REVOLUTE_STEP`` rad per revolute joint,
+  ``PRISMATIC_STEP`` m per prismatic joint, and ``OBJECT_TRANSLATION_STEP`` m and
+  ``OBJECT_ROTATION_STEP`` rad for an object's pose.
+- ``variation``: one resolution step per element (for a pose, one step of each).
+- joint ``dwell_ns``: the slowest servo time constant (kv + damping) / kp among the
+  actuators of the channel's joints, from the compiled model, rounded up to whole ticks.
+  With the remaining error decaying as e^(-t/tau), readings within one step for at least
+  tau mean less than one step of motion remains.
+- object ``dwell_ns``: the contact's time constant, the largest ``solref`` time constant
+  of the object's geoms in the compiled model (MuJoCo's default is 0.02 s), rounded up to
+  whole ticks.
+
+If the package's profile does not yet declare the resolution, the script runs on a
+temporary copy of the package whose profile has it added, and records the text it added.
 
 The trials, per arm channel, from each start configuration (the profile's keyframe, the
 package's named configurations of the channel's group, and for a robot with no other, a
@@ -29,28 +36,23 @@ turnarounds, slow and fast; a slow creep; a reach with a pause; and single-joint
 out-and-backs of the first and last joint. Each starts after ``PRE_S`` of hold. Where the
 robot's scenario can grasp its scene object (a gripper, and a scenario ``grip`` table),
 the arm also carries it. Each object trial drops the scene's free object from above its
-resting pose, upright, tilted, and on its side, and holds for ``HOLD_S``. Only trials that
-end at rest count toward the criteria: a joint trial whose trajectory succeeded and whose
-held object is still raised, and a drop that ends on a flat face, a stable equilibrium. A
-cylinder on its round side is in neutral equilibrium and may roll on; it is recorded and
-watched, but does not count.
+resting pose, upright, tilted, and on its side. Each trial holds for ``HOLD_S`` after its
+trajectory ends or its object is released.
 
-Each trial runs twice. The first records the channel every tick, and the criteria are
-derived from those recordings. The second runs the same trial with a rest watch on the
-derived criteria, records again, and checks that: the recordings are identical; the
-watch does not fire before the readings settle; it fires; it fires exactly where an
-oracle over the recorded readings first finds a kept run spanning the dwell; and the
-longest still interval during motion is shorter than the dwell.
-
-A precondition of the rule can fail, and then the artifact says so under ``blocked``
-and derives no criteria for that channel:
-- ``zero_floor``: an element kind's readings are bit-identical over the final part, so no
-  positive variation is measured;
-- ``below_float_resolution``: a floor is smaller than the spacing of float64 at the
-  readings' magnitude;
-- ``mixed_units``: the channel's element kinds have different floors, so one scalar
-  ``variation`` cannot carry both. For it, ``options`` gives the dwell under per-kind
-  bounds and under the largest floor as one scalar, and the scalar is still verified.
+Each trial runs once, with a rest watch on the derived criteria from the submission (or
+release), recording the watched channel's readings, as ``observe`` returns them at the
+declared resolution, and the exact simulated state, every tick. Per trial it reports:
+- whether the watch fired, and when, after the trajectory's end;
+- whether it fired exactly where an oracle over the recorded readings first finds a run
+  spanning the dwell within the variation, with that run as its window;
+- the longest interval during the commanded motion (submission to the trajectory's end)
+  in which every recorded reading stayed within one step, against the dwell;
+- the residual motion after the fire: how far the exact state moved from where it was at
+  the fire until the end of the hold, in steps.
+A joint trial passes when the watch fired after its trajectory ended, matched the
+oracle, and less than one step of motion remained. An object trial passes when the watch
+fired, matched the oracle, and less than one step of motion remained. A joint trial whose
+trajectory failed, or whose held object fell, is reported but not judged.
 
     uv run python scripts/calibrate_rest.py --out artifacts/calibrate-rest
     uv run python scripts/calibrate_rest.py --out artifacts/calibrate-rest \\
@@ -59,9 +61,9 @@ and derives no criteria for that channel:
 It writes ``<out>/<robot>.json`` and refuses to overwrite one that exists. Each holds the
 provenance (ssrobot's commit and whether its tracked tree was clean, the asset
 repository, commit, and archive hash, and the Python, MuJoCo, and NumPy versions with
-NumPy's BLAS), the rule's constants and the model's servo time constants, every trial's
-summary, the derived criteria or why none could be derived, and the verification. To
-check an artifact, rerun with the same commits into another directory and compare; the
+NumPy's BLAS), the rule's constants and the model values it read, the derived criteria
+with the ``source`` to cite, the profile text to declare, and every trial's verification.
+To check an artifact, rerun with the same commits into another directory and compare; the
 values are deterministic on one machine and build. MuJoCo runs on the CPU without BLAS.
 Needs network access for the archive.
 """
@@ -119,17 +121,23 @@ from ssrobot import (
 from ssrobot.mujoco import MujocoRuntime
 from ssrobot.planning import CBiRRT, SsikKinematics
 
+REVOLUTE_STEP = 2 * math.pi / 2**17
+"""The declared resolution of a simulated revolute joint: a 17-bit encoder's step, rad."""
+
+PRISMATIC_STEP = 1e-6
+"""The declared resolution of a simulated prismatic joint: 1 um."""
+
+OBJECT_TRANSLATION_STEP = 1e-3
+OBJECT_ROTATION_STEP = 0.01
+"""The declared resolution of a simulated object pose: perception grade, 1 mm and
+0.01 rad."""
+
 PRE_S = 2.0
 """Hold before each trajectory, so it starts from a held arm."""
 
 HOLD_S = 10.0
-"""Hold after each trajectory ends, or after an object's release: over a hundred of the
-slowest servo time constants of either robot (``servo_time_constants``), so a transient
-left by the motion has decayed by far more than float64 resolves before the final part;
-``previous_range`` beside each floor is the part before it, to show it was stationary."""
-
-FINAL_S = 2.0
-"""The final part of the hold, over which the floor is measured."""
+"""Hold after each trajectory ends, or after an object's release: long enough for every
+watch to fire and for the residual motion after it to be seen."""
 
 WAYPOINT_NS = 10_000_000
 """The spacing of the trials' trajectory waypoints."""
@@ -313,29 +321,43 @@ class Arm:
 @dataclass
 class Recording:
     stamps: np.ndarray[Any, Any]
-    values: np.ndarray[Any, Any]
+    values: np.ndarray[Any, Any]  # as observe returns them, at the declared resolution
+    exact: np.ndarray[Any, Any]  # the simulated state at the same tick
     contacts: int
 
 
-def record(ctx: RobotContext, runtime: MujocoRuntime, channel: str, n: int) -> Recording:
-    """Step ``n`` ticks, reading ``channel`` after each; and the most contacts at once."""
+def record(
+    ctx: RobotContext,
+    runtime: MujocoRuntime,
+    channel: str,
+    n: int,
+    exact: Callable[[RobotContext], list[float]],
+) -> Recording:
+    """Step ``n`` ticks, reading ``channel`` and the exact state after each; and the most
+    contacts at once."""
     request = ObservationRequest(channels=(channel,))
-    stamps, values, contacts = [], [], 0
+    stamps, values, states, contacts = [], [], [], 0
     for _ in range(n):
         ctx.step()
         reading = ctx.observe(request).readings[0]
         stamps.append(reading.stamp.time_ns)
         values.append([float(v) for v in reading.value])  # type: ignore[union-attr]
+        states.append(exact(ctx))
         contacts = max(contacts, int(runtime._data.ncon))
-    return Recording(np.asarray(stamps, dtype=np.int64), np.asarray(values, dtype=float), contacts)
+    return Recording(
+        np.asarray(stamps, dtype=np.int64),
+        np.asarray(values, dtype=float),
+        np.asarray(states, dtype=float),
+        contacts,
+    )
 
 
 # --- the rule -----------------------------------------------------------------------
 
 
 class Bound:
-    """A watch's test of one run: each judged element's range against its bound, or a
-    pose's coordinate ranges and its orientations' angles from the run's first."""
+    """A watch's test of one run: each element's range against its bound, or a pose's
+    coordinate ranges and its orientations' angles from the run's first."""
 
     def __init__(self, bound: Sequence[float], pose: bool) -> None:
         self.bound = np.asarray(bound, dtype=float)
@@ -351,18 +373,6 @@ class Bound:
         return bool(np.all(run.max(0) - run.min(0) <= self.bound))
 
 
-def floor(values: np.ndarray[Any, Any], pose: bool) -> list[float]:
-    """Each element's range over ``values``; for a pose, the largest coordinate range and
-    the largest angle from the first orientation."""
-    if pose:
-        dots = np.minimum(1.0, np.abs(values[:, 3:] @ values[0, 3:]))
-        return [
-            float((values[:, :3].max(0) - values[:, :3].min(0)).max()),
-            float((2 * np.arccos(dots)).max()),
-        ]
-    return [float(x) for x in values.max(0) - values.min(0)]
-
-
 def kept_runs(stamps: np.ndarray[Any, Any], values: np.ndarray[Any, Any], bound: Bound) -> Any:
     """For each sample, the first of the run a watch keeps when it takes it: the run
     grows by the sample, and samples leave its front until the rest are within the
@@ -372,26 +382,6 @@ def kept_runs(stamps: np.ndarray[Any, Any], values: np.ndarray[Any, Any], bound:
         while not bound.within(values[front : i + 1]):
             front += 1
         yield i, front, int(stamps[i] - stamps[front])
-
-
-def settled_index(values: np.ndarray[Any, Any], bound: Bound) -> int | None:
-    """The first sample from which every later one stays within ``bound``, or None."""
-    lo = len(values) - 1
-    while lo > 0 and bound.within(values[lo - 1 :]):
-        lo -= 1
-    return lo
-
-
-def longest_still(
-    stamps: np.ndarray[Any, Any], values: np.ndarray[Any, Any], bound: Bound, end: int
-) -> dict[str, int]:
-    """The longest run a watch keeps among the samples before ``end``: its span, and the
-    times of its first and last sample."""
-    best = {"span_ns": 0, "from_ns": int(stamps[0]), "to_ns": int(stamps[0])}
-    for i, front, span in kept_runs(stamps[:end], values[:end], bound):
-        if span > best["span_ns"]:
-            best = {"span_ns": span, "from_ns": int(stamps[front]), "to_ns": int(stamps[i])}
-    return best
 
 
 def first_fire(
@@ -405,15 +395,30 @@ def first_fire(
     return None
 
 
-def settling(
-    stamps: np.ndarray[Any, Any], values: np.ndarray[Any, Any], start: int, pose: bool
-) -> list[dict[str, Any]]:
-    """The range over each second from ``start``: how the readings settle."""
-    per = round(1e9 / int(stamps[1] - stamps[0]))
-    return [
-        {"from_ns": int(stamps[a] - stamps[start]), "range": floor(values[a : a + per], pose)}
-        for a in range(start, len(values) - 1, per)
-    ]
+def longest_within(
+    stamps: np.ndarray[Any, Any], values: np.ndarray[Any, Any], bound: Bound, end_ns: int
+) -> dict[str, int]:
+    """The longest run a watch keeps among the samples up to ``end_ns``: its span, and the
+    times of its first and last sample."""
+    end = int(np.searchsorted(stamps, end_ns, side="right"))
+    best = {"span_ns": 0, "from_ns": int(stamps[0]), "to_ns": int(stamps[0])}
+    for i, front, span in kept_runs(stamps[:end], values[:end], bound):
+        if span > best["span_ns"]:
+            best = {"span_ns": span, "from_ns": int(stamps[front]), "to_ns": int(stamps[i])}
+    return best
+
+
+def residual(exact: np.ndarray[Any, Any], k: int, steps: Sequence[float], pose: bool) -> float:
+    """How far the exact state moves after sample ``k``, in steps: the largest, over the
+    later samples and the elements, of the distance from where it was at ``k``. For a
+    pose, the coordinates' distances against the translation step, and the angle from the
+    orientation at ``k`` against the rotation step."""
+    after = exact[k:]
+    if pose:
+        translation = float(np.abs(after[:, :3] - after[0, :3]).max()) / steps[0]
+        dots = np.minimum(1.0, np.abs(after[:, 3:] @ after[0, 3:]))
+        return max(translation, float((2 * np.arccos(dots)).max()) / steps[1])
+    return float((np.abs(after - after[0]) / np.asarray(steps)).max())
 
 
 def time_constants(runtime: MujocoRuntime, joints: Sequence[str]) -> dict[str, float]:
@@ -431,6 +436,23 @@ def time_constants(runtime: MujocoRuntime, joints: Sequence[str]) -> dict[str, f
             kv = -float(model.actuator_biasprm[a, 2])
             out[name] = (kv + float(model.dof_damping[model.jnt_dofadr[j]])) / kp
     return out
+
+
+def contact_time_constants(runtime: MujocoRuntime, body: str) -> dict[str, float]:
+    """The ``solref`` time constant of each of a body's geoms, from the compiled model: how
+    fast a contact it makes recovers its penetration."""
+    model = runtime._model
+    b = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body)
+    out = {}
+    for g in range(model.ngeom):
+        if int(model.geom_bodyid[g]) == b:
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or f"geom {g}"
+            out[name] = float(model.geom_solref[g, 0])
+    return out
+
+
+def whole_ticks(seconds: float, tick: int) -> int:
+    return math.ceil(round(seconds * 1e9) / tick) * tick
 
 
 # --- the robot ----------------------------------------------------------------------
@@ -682,13 +704,21 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
 
 
 def run_joint(
-    robot: Robot, arm: Arm, channel: str, trial: Trial, criteria: RestCriteria | None
+    robot: Robot, arm: Arm, channel: str, trial: Trial, criteria: RestCriteria
 ) -> dict[str, Any]:
     """Run one trial in a fresh runtime: reach its start, hold ``PRE_S``, submit its
-    trajectory, and record ``channel`` every tick until ``HOLD_S`` after it ends. With
-    ``criteria``, a rest watch on the channel's group runs from the submission."""
+    trajectory with a rest watch on the channel's group, and record ``channel`` and the
+    exact joint positions every tick until ``HOLD_S`` after the trajectory ends."""
     runtime = robot.runtime(trial.scene)
     description = robot.package.description
+    joints = description.group(
+        next(c.source for c in description.channels if c.name == channel)
+    ).joints
+
+    def exact(ctx: RobotContext) -> list[float]:
+        snapshot = ctx.snapshot()
+        return [snapshot.position(j) for j in joints]
+
     with RobotContext(description, runtime) as ctx:
         tick = runtime.mapping.timestep_ns * runtime.mapping.substeps
         trial.prepare(ctx, runtime)
@@ -699,27 +729,22 @@ def run_joint(
         trajectory = profile(arm.group, arm.joints, q, legs)
         submitted = ctx.now.time_ns
         execution = ctx.submit(trajectory)
-        duration = trajectory.time_from_start_ns[-1]
-        n = (duration + ticks(HOLD_S, tick) * tick) // tick
-        watch = None
-        if criteria is not None:
-            watch = ctx.watch_rest(
-                JointRest(arm.group, criteria=criteria), deadline_ns=submitted + (n + 1) * tick
-            )
-        rec = record(ctx, runtime, channel, n)
+        watch = ctx.watch_rest(
+            JointRest(arm.group, criteria=criteria),
+            deadline_ns=submitted + trajectory.time_from_start_ns[-1] + ticks(HOLD_S, tick) * tick,
+        )
+        n = (trajectory.time_from_start_ns[-1] + ticks(HOLD_S, tick) * tick) // tick
+        rec = record(ctx, runtime, channel, n, exact)
         status = execution.status
         objects = list(ctx.snapshot().objects)
-        constants = time_constants(runtime, arm.joints)
     return {
         "legs": [[k, d, s] for k, d, s in legs],
         "submitted_ns": submitted,
-        "trajectory_end_ns": submitted + duration,
+        "end_ns": submitted + trajectory.time_from_start_ns[-1],
         "execution": {"state": status.state.value, "ended_ns": status.stamp.time_ns},
         "recording": rec,
-        "result": None if watch is None else watch.result,
+        "result": watch.result,
         "objects": {o.name: list(o.pose.position) for o in objects},
-        "time_constants": constants,
-        "tick_ns": tick,
     }
 
 
@@ -773,215 +798,71 @@ def drop_trials(robot: Robot, out: Path) -> tuple[list[tuple[str, str, Path, str
     return trials, math.atan2(radius, half)
 
 
-def run_drop(robot: Robot, scene: Path, name: str, criteria: RestCriteria | None) -> dict[str, Any]:
-    """Release the object at the scene's pose and record its pose every tick for
-    ``HOLD_S``. With ``criteria``, a rest watch on the object runs from the release."""
+def run_drop(robot: Robot, scene: Path, name: str, criteria: RestCriteria) -> dict[str, Any]:
+    """Release the object at the scene's pose with a rest watch on it, and record its pose
+    as observed and as simulated every tick for ``HOLD_S``."""
     runtime = robot.runtime(scene)
+
+    def exact(ctx: RobotContext) -> list[float]:
+        pose = next(o.pose for o in ctx.snapshot().objects if o.name == name)
+        return [*pose.position, *pose.quat_wxyz]
+
     with RobotContext(robot.package.description, runtime) as ctx:
         tick = runtime.mapping.timestep_ns * runtime.mapping.substeps
         n = ticks(HOLD_S, tick)
-        watch = None
-        if criteria is not None:
-            watch = ctx.watch_rest(
-                ObjectRest(name, criteria=criteria), deadline_ns=ctx.now.time_ns + (n + 1) * tick
-            )
-        rec = record(ctx, runtime, f"{name}.pose", n)
-    return {
-        "submitted_ns": 0,
-        "trajectory_end_ns": 0,
-        "recording": rec,
-        "result": None if watch is None else watch.result,
-        "tick_ns": tick,
-    }
+        start = ctx.now.time_ns
+        watch = ctx.watch_rest(ObjectRest(name, criteria=criteria), deadline_ns=start + n * tick)
+        rec = record(ctx, runtime, f"{name}.pose", n, exact)
+    return {"submitted_ns": start, "end_ns": start, "recording": rec, "result": watch.result}
 
 
-# --- derivation and verification ----------------------------------------------------
-
-
-def summarize(run: dict[str, Any], pose: bool) -> dict[str, Any]:
-    rec: Recording = run["recording"]
-    tick = run["tick_ns"]
-    end = int(np.searchsorted(rec.stamps, run["trajectory_end_ns"]))
-    final = ticks(FINAL_S, tick)
-    return {
-        "samples": len(rec.stamps),
-        "first_ns": int(rec.stamps[0]),
-        "trajectory_end_ns": run["trajectory_end_ns"],
-        "max_contacts": rec.contacts,
-        "final_range": floor(rec.values[-final:], pose),
-        "previous_range": floor(rec.values[-2 * final : -final], pose),
-        "final_value": [float(v) for v in rec.values[-1]],
-        "settling_after_end": settling(rec.stamps, rec.values, end, pose),
-    }
-
-
-def assess(runs: list[dict[str, Any]], bound: Bound, tick: int) -> tuple[int, list[dict[str, Any]]]:
-    """Under ``bound``: each trial's settled sample and longest still interval during
-    motion, and the dwell, one tick longer than the longest of them, in whole ticks."""
-    rows = []
-    for run in runs:
-        rec: Recording = run["recording"]
-        settled = settled_index(rec.values, bound)
-        assert settled is not None
-        still = longest_still(rec.stamps, rec.values, bound, settled)
-        rows.append(
-            {
-                "settled_ns": int(rec.stamps[settled]),
-                "settled_after_end_ns": int(rec.stamps[settled]) - run["trajectory_end_ns"],
-                "longest_still_in_motion": still,
-            }
-        )
-    longest = max(r["longest_still_in_motion"]["span_ns"] for r in rows)
-    dwell = (longest // tick + 1) * tick
-    return dwell, rows
+# --- verification -------------------------------------------------------------------
 
 
 def verify(
-    first: list[dict[str, Any]],
-    second: list[dict[str, Any]],
-    rows: list[dict[str, Any]],
-    bound: Bound,
-    criteria: RestCriteria,
-) -> list[dict[str, Any]]:
-    out = []
-    for a, b, row in zip(first, second, rows, strict=True):
-        ra, rb = a["recording"], b["recording"]
-        result = b["result"]
-        oracle = first_fire(rb.stamps, rb.values, bound, criteria.dwell_ns)
-        fired = result is not None and result.outcome is RestOutcome.AT_REST
-        entry: dict[str, Any] = {
-            "identical_recordings": bool(
-                np.array_equal(ra.stamps, rb.stamps) and np.array_equal(ra.values, rb.values)
-            ),
-            "outcome": None if result is None else result.outcome.value,
-            "fired_ns": None if result is None else result.end.time_ns,
-            "settled_ns": row["settled_ns"],
-            "longest_still_in_motion_ns": row["longest_still_in_motion"]["span_ns"],
-            "dwell_ns": criteria.dwell_ns,
-        }
-        entry["oracle_fire_ns"] = None if oracle is None else int(rb.stamps[oracle[0]])
-        if fired:
-            window = result.window
-            i, front = oracle if oracle is not None else (-1, -1)
-            entry["window_matches_oracle"] = (
-                oracle is not None
-                and [s.time_ns for s in window] == [int(t) for t in rb.stamps[front : i + 1]]
-                and all(
-                    list(s.value) == [float(v) for v in rb.values[k]]
-                    for s, k in zip(window, range(front, i + 1), strict=True)
-                )
-            )
-            entry["fired_after_settling"] = result.end.time_ns >= row["settled_ns"]
-            entry["fired_after_end"] = result.end.time_ns >= a["trajectory_end_ns"]
-        entry["still_shorter_than_dwell"] = (
-            row["longest_still_in_motion"]["span_ns"] < criteria.dwell_ns
-        )
-        entry["passed"] = bool(
-            entry["identical_recordings"]
-            and fired
-            and entry.get("window_matches_oracle")
-            and entry.get("fired_after_settling")
-            and entry["oracle_fire_ns"] == entry["fired_ns"]
-            and entry["still_shorter_than_dwell"]
-        )
-        out.append(entry)
-    return out
-
-
-def calibrate(
-    trials: list[dict[str, Any]],
-    runs: list[dict[str, Any]],
-    rerun: Callable[[RestCriteria], list[dict[str, Any]]],
-    kinds: list[str],
-    tick: int,
-    pose: bool,
-    source: Callable[[dict[str, Any]], str],
-    resting: Callable[[dict[str, Any]], bool] = lambda summary: True,
+    run: dict[str, Any], criteria: RestCriteria, steps: Sequence[float], pose: bool
 ) -> dict[str, Any]:
-    """Apply the rule to one channel's trials, and verify what it derives. Only trials
-    that end resting, by ``resting`` on their summary, measure the floor and the dwell;
-    the others are recorded, and watched, but do not count."""
-    summaries = [summarize(r, pose) for r in runs]
-    for t, s in zip(trials, summaries, strict=True):
-        s["counts"] = resting({**t, **s})
-    out: dict[str, Any] = {"trials": [{**t, **s} for t, s in zip(trials, summaries, strict=True)]}
-    counted = [i for i, s in enumerate(summaries) if s["counts"]]
-    used = [summaries[i] for i in counted]
-    # The floor per element kind: the largest final-part range over trials and elements.
-    floors: dict[str, float] = {}
-    resolution: dict[str, float] = {}
-    for index, kind in enumerate(kinds):
-        floors[kind] = max(floors.get(kind, 0.0), *(s["final_range"][index] for s in used))
-        if pose and index == 1:
-            # The smallest nonzero angle 2 acos(|dot|) resolves between unit quaternions.
-            resolution[kind] = float(2 * np.arccos(np.nextafter(1.0, 0.0)))
-            continue
-        elements = range(3) if pose else (index,)
-        spacing = max(float(np.spacing(abs(s["final_value"][e]))) for s in used for e in elements)
-        resolution[kind] = max(resolution.get(kind, 0.0), spacing)
-    out["floor"] = floors
-    out["float_resolution"] = resolution
-    blocked: list[dict[str, Any]] = []
-    for kind, value in floors.items():
-        if value == 0.0:
-            blocked.append({"reason": "zero_floor", "kind": kind})
-        elif value < resolution[kind]:
-            blocked.append({"reason": "below_float_resolution", "kind": kind, "floor": value})
-    distinct = sorted(set(kinds))
-    if not pose and len(distinct) > 1 and len({floors[k] for k in distinct}) > 1:
-        blocked.append({"reason": "mixed_units", "floors": {k: floors[k] for k in distinct}})
-    out["blocked"] = blocked
-    # The rule under each candidate bound, even a zero one, to show what it implies.
-    if pose:
-        candidates = {"per_kind": [floors["translation_m"], floors["rotation_rad"]]}
+    """One trial's watch against its recorded readings, by the rule's checks."""
+    rec: Recording = run["recording"]
+    bound = Bound(steps, pose)
+    result = run["result"]
+    fired = result is not None and result.outcome is RestOutcome.AT_REST
+    oracle = first_fire(rec.stamps, rec.values, bound, criteria.dwell_ns)
+    still = longest_within(rec.stamps, rec.values, bound, run["end_ns"])
+    out: dict[str, Any] = {
+        "outcome": None if result is None else result.outcome.value,
+        "fired_ns": result.end.time_ns if fired else None,
+        "latency_after_end_ns": result.end.time_ns - run["end_ns"] if fired else None,
+        "oracle_fire_ns": None if oracle is None else int(rec.stamps[oracle[0]]),
+        "longest_within_one_step_in_motion": still,
+        "max_contacts": rec.contacts,
+    }
+    if fired and oracle is not None:
+        i, front = oracle
+        window = result.window
+        out["window_matches_oracle"] = [s.time_ns for s in window] == [
+            int(t) for t in rec.stamps[front : i + 1]
+        ] and all(
+            list(s.value) == [float(v) for v in rec.values[k]]
+            for s, k in zip(window, range(front, i + 1), strict=True)
+        )
+        out["residual_steps_after_fire"] = residual(rec.exact, i, steps, pose)
     else:
-        candidates = {"per_kind": [floors[k] for k in kinds]}
-        if len(distinct) > 1:
-            candidates["one_scalar"] = [max(floors.values())] * len(kinds)
-    options: dict[str, Any] = {}
-    for name, values in candidates.items():
-        dwell, rows = assess([runs[i] for i in counted], Bound(values, pose), tick)
-        options[name] = {"bound": values, "dwell_ns": dwell, "trials": rows}
-    out["options"] = options
-    chosen = "one_scalar" if "one_scalar" in options else "per_kind"
-    values = options[chosen]["bound"]
-    out["derived"] = None
-    out["verification"] = None
-    if any(v <= 0 for v in values):
-        return out  # RestCriteria needs positive bounds: nothing to watch with
-    option = options[chosen]
-    bounds = (
-        {"translation_m": values[0], "rotation_rad": values[1]}
-        if pose
-        else {"variation": values[0]}
+        out["window_matches_oracle"] = False
+        out["residual_steps_after_fire"] = None
+    out["fired_after_end"] = fired and result.end.time_ns >= run["end_ns"]
+    out["passed"] = bool(
+        fired
+        and out["fired_after_end"]
+        and out["oracle_fire_ns"] == out["fired_ns"]
+        and out["window_matches_oracle"]
+        and out["residual_steps_after_fire"] < 1.0
     )
-    derived = {"cadence_ns": tick, "max_gap_ns": tick, "dwell_ns": option["dwell_ns"], **bounds}
-    criteria = RestCriteria(**derived, source="calibrate_rest.py verification")
-    second = rerun(criteria)
-    bound = Bound(values, pose)
-    out["verified_option"] = chosen
-    out["verified_criteria"] = derived
-    out["verification"] = verify(
-        [runs[i] for i in counted], [second[i] for i in counted], option["trials"], bound, criteria
-    )
-    out["verified"] = all(v["passed"] for v in out["verification"])
-    # What the watch did on the trials that never came to rest: reported, not judged.
-    out["uncounted"] = [
-        {
-            "name": trials[i]["name"],
-            "outcome": None if second[i]["result"] is None else second[i]["result"].outcome.value,
-            "fired_ns": None if second[i]["result"] is None else second[i]["result"].end.time_ns,
-        }
-        for i in range(len(runs))
-        if i not in counted
-    ]
-    if not blocked:
-        out["derived"] = {**derived, "source": source(derived)}
     return out
 
 
 def completed(name: str) -> Callable[[dict[str, Any]], bool]:
-    """Whether a joint trial is one the rule can use: its trajectory succeeded, and a
+    """Whether a joint trial is one the rule can judge: its trajectory succeeded, and a
     held object is still raised, by at least half the lift, where the arm carried it."""
 
     def test(trial: dict[str, Any]) -> bool:
@@ -996,33 +877,122 @@ def completed(name: str) -> Callable[[dict[str, Any]], bool]:
     return test
 
 
-def upright(limit: float) -> Callable[[dict[str, Any]], bool]:
-    """Whether a dropped cylinder ended on a flat face, a stable equilibrium: its axis
-    within ``limit``, its tipping angle, of vertical. On its round side it is in neutral
-    equilibrium about its axis, so it can roll on indefinitely, and does not end resting."""
+def summarize(entries: list[dict[str, Any]], dwell: int) -> dict[str, Any]:
+    judged = [e for e in entries if e["judged"]]
+    latencies = [e["latency_after_end_ns"] for e in judged if e["latency_after_end_ns"] is not None]
+    still = max(e["longest_within_one_step_in_motion"]["span_ns"] for e in judged)
+    return {
+        "trials": len(entries),
+        "judged": len(judged),
+        "passed": sum(e["passed"] for e in judged),
+        "all_passed": all(e["passed"] for e in judged),
+        "latency_after_end_ns": [min(latencies), max(latencies)] if latencies else None,
+        "longest_within_one_step_in_motion_ns": still,
+        "dwell_ns": dwell,
+        "findings": [
+            {
+                "trial": e["name"],
+                "longest_within_one_step_in_motion": e["longest_within_one_step_in_motion"],
+                "outcome": e["outcome"],
+                "fired_ns": e["fired_ns"],
+                "end_ns": e["end_ns"],
+                "residual_steps_after_fire": e["residual_steps_after_fire"],
+            }
+            for e in judged
+            if not e["passed"] or e["longest_within_one_step_in_motion"]["span_ns"] >= dwell
+        ],
+    }
 
-    def test(summary: dict[str, Any]) -> bool:
-        _, x, y, _ = summary["final_value"][3:]
-        axis_z = 1 - 2 * (x * x + y * y)  # the body z axis's world z component
-        tilt = math.acos(max(-1.0, min(1.0, abs(axis_z))))
-        summary["final_tilt_rad"] = tilt
-        return tilt < limit
 
-    return test
+# --- derivation ---------------------------------------------------------------------
 
 
-def element_kinds(arm: Arm) -> list[str]:
-    return ["prismatic_m" if k is JointKind.PRISMATIC else "revolute_rad" for k in arm.kinds]
+def joint_criteria(
+    description: Any, runtime: MujocoRuntime, tick: int, channel_joints: Sequence[str]
+) -> dict[str, Any]:
+    """The rule for one joint-position channel: one step per element of the channel, and
+    the slowest servo time constant of its joints, in whole ticks."""
+    kinds = []
+    for j in channel_joints:
+        kinds.append(
+            "prismatic" if description.joint(j).kind is JointKind.PRISMATIC else "revolute"
+        )
+    steps = [PRISMATIC_STEP if k == "prismatic" else REVOLUTE_STEP for k in kinds]
+    constants = time_constants(runtime, channel_joints)
+    slowest = max(constants, key=lambda j: constants[j])
+    return {
+        "joints": list(channel_joints),
+        "kinds": kinds,
+        "resolution": steps,
+        "servo_time_constants_s": constants,
+        "slowest": {"joint": slowest, "time_constant_s": constants[slowest]},
+        "criteria": {
+            "cadence_ns": tick,
+            "max_gap_ns": tick,
+            "dwell_ns": whole_ticks(constants[slowest], tick),
+            "variation": steps,
+        },
+    }
 
 
-def calibrate_robot(robot: Robot, out: Path, prov: dict[str, Any], artifact: str) -> dict[str, Any]:
+def inject(
+    source: Path, joint: dict[str, list[float]], objects: bool, into: Path
+) -> tuple[Path, str]:
+    """A copy of the package at ``source`` whose MuJoCo profile declares the rule's
+    resolution, unless it already does; and the text added."""
+    shutil.copytree(source, into)
+    manifest = tomllib.loads((into / "ssrobot.toml").read_text())
+    (entry,) = [p for p in manifest.get("profiles", []) if p["runtime"] == "mujoco"]
+    path = into / entry["path"]
+    text = path.read_text()
+    declared = tomllib.loads(text)
+    added = ""
+    if objects and "object_resolution" not in declared:
+        line = (
+            f"object_resolution = {{ translation_m = {OBJECT_TRANSLATION_STEP!r}, "
+            f"rotation_rad = {OBJECT_ROTATION_STEP!r} }}\n"
+        )
+        at = text.index("\n[[") + 1 if "\n[[" in text else len(text)
+        text = text[:at] + line + text[at:]
+        added += line
+    listed = {r["channel"] for r in declared.get("resolution", [])}
+    for channel, steps in joint.items():
+        if channel not in listed:
+            table = f'\n[[resolution]]\nchannel = "{channel}"\nstep = {steps!r}\n'
+            text += table
+            added += table
+    path.write_text(text)
+    return into, added
+
+
+def source_text(prov: dict[str, Any], artifact: str, what: str) -> str:
+    return (
+        f"{what}; verified in MuJoCo {prov['mujoco']} by ssrobot scripts/calibrate_rest.py "
+        f"at {prov['ssrobot_commit'][:12]} on {prov['repository']}@{prov['commit'][:12]}, "
+        f"artifact ssrobot {artifact}"
+    )
+
+
+def calibrate_robot(
+    name: str,
+    source: Path,
+    spec: dict[str, Any],
+    scene: Path | None,
+    prov: dict[str, Any],
+    artifact: str,
+    scratch: Path,
+) -> dict[str, Any]:
+    plain = Robot(name, load_package(source), spec, scene)
     report: dict[str, Any] = {
-        "robot": robot.name,
+        "robot": name,
         "provenance": prov,
         "rule": {
+            "revolute_step_rad": REVOLUTE_STEP,
+            "prismatic_step_m": PRISMATIC_STEP,
+            "object_translation_step_m": OBJECT_TRANSLATION_STEP,
+            "object_rotation_step_rad": OBJECT_ROTATION_STEP,
             "pre_hold_s": PRE_S,
             "hold_s": HOLD_S,
-            "final_s": FINAL_S,
             "waypoint_ns": WAYPOINT_NS,
             "speed_fraction": SPEED_FRACTION,
             "limit_margin": LIMIT_MARGIN,
@@ -1031,96 +1001,121 @@ def calibrate_robot(robot: Robot, out: Path, prov: dict[str, Any], artifact: str
         "channels": {},
         "objects": {},
     }
-
-    def source(name: str) -> Callable[[dict[str, Any]], str]:
-        def text(derived: dict[str, Any]) -> str:
-            return (
-                f"MuJoCo {prov['mujoco']} calibration by ssrobot scripts/calibrate_rest.py "
-                f"at {prov['ssrobot_commit'][:12]} on {robot.spec['repository']}@"
-                f"{prov['commit'][:12]}, artifact {artifact} ({name}): cadence and largest "
-                "gap one control tick; bounds the largest settled range over the final "
-                f"{FINAL_S:g} s of a {HOLD_S:g} s hold; dwell one tick over the longest "
-                "still interval during motion"
-            )
-
-        return text
-
-    for channel, group, keyframe in arm_channels(robot):
+    description = plain.package.description
+    channels = arm_channels(plain)
+    derived: dict[str, dict[str, Any]] = {}
+    with RobotContext(description, plain.runtime(scene)) as ctx:
+        runtime: Any = ctx._runtime
+        tick = runtime.mapping.timestep_ns * runtime.mapping.substeps
+        for channel, group, _ in channels:
+            joints = description.group(group).joints
+            derived[channel] = joint_criteria(description, runtime, tick, joints)
+        object_constants = {o: contact_time_constants(runtime, o) for o in ctx.info.objects}
+    package_root, added = inject(
+        source,
+        {c: d["resolution"] for c, d in derived.items()},
+        bool(object_constants),
+        scratch / "package",
+    )
+    report["profile_added_for_trials"] = added
+    robot = Robot(name, load_package(package_root), spec, scene)
+    for channel, group, keyframe in channels:
         arm = Arm(robot.package, group)
+        d = derived[channel]
+        c = d["criteria"]
+        what = (
+            "variation: one step of this profile's declared resolution per element "
+            f"(2*pi/2^17 rad per revolute joint, {PRISMATIC_STEP:g} m per prismatic joint), a "
+            "modelling choice of the simulated sensor, not a measurement; the hardware is "
+            "unmeasured. dwell: the slowest servo time constant (kv + damping) / kp, "
+            f"{d['slowest']['time_constant_s']:.6g} s ({d['slowest']['joint']}), from the "
+            f"compiled model, rounded up to {c['dwell_ns'] // tick} ticks. cadence and largest "
+            f"gap: one {tick / 1e6:g} ms control tick"
+        )
+        criteria = RestCriteria(
+            cadence_ns=c["cadence_ns"],
+            max_gap_ns=c["max_gap_ns"],
+            dwell_ns=c["dwell_ns"],
+            variation=tuple(c["variation"]),
+            source=source_text(prov, artifact, what),
+        )
         trials = joint_trials(robot, arm, keyframe) + payload_trials(robot, arm, channel)
-        print(f"{robot.name} {channel}: {len(trials)} trials", flush=True)
-        runs = [run_joint(robot, arm, channel, t, None) for t in trials]
-        summaries = [
-            {
+        print(f"{name} {channel}: {len(trials)} trials", flush=True)
+        valid = completed(robot.spec.get("object", ""))
+        entries = []
+        for t in trials:
+            run = run_joint(robot, arm, channel, t, criteria)
+            entry: dict[str, Any] = {
                 "name": t.name,
                 "describe": t.describe,
-                "legs": r["legs"],
-                "execution": r["execution"],
-                **({"payload": t.extra} if t.extra else {}),
-                **({"objects": r["objects"]} if t.scene is not None else {}),
+                "legs": run["legs"],
+                "execution": run["execution"],
+                "end_ns": run["end_ns"],
+                **({"payload": t.extra, "objects": run["objects"]} if t.extra else {}),
             }
-            for t, r in zip(trials, runs, strict=True)
-        ]
-        tick = runs[0]["tick_ns"]
-
-        def rerun(
-            criteria: RestCriteria,
-            arm: Arm = arm,
-            channel: str = channel,
-            trials: list[Trial] = trials,
-        ) -> list[dict[str, Any]]:
-            return [run_joint(robot, arm, channel, t, criteria) for t in trials]
-
-        entry = calibrate(
-            summaries,
-            runs,
-            rerun,
-            element_kinds(arm),
-            tick,
-            False,
-            source(channel),
-            resting=completed(robot.spec.get("object", "")),
-        )
-        entry = {
-            "group": group,
-            "joints": list(arm.joints),
-            "kinds": element_kinds(arm),
-            "tick_ns": tick,
-            "servo_time_constants_s": runs[0]["time_constants"],
-            **entry,
+            entry["judged"] = valid(entry)
+            entry.update(verify(run, criteria, c["variation"], False))
+            entries.append(entry)
+        report["channels"][channel] = {
+            **d,
+            "criteria": {**c, "source": criteria.source},
+            "summary": summarize(entries, c["dwell_ns"]),
+            "trials": entries,
         }
-        report["channels"][channel] = entry
-    with tempfile.TemporaryDirectory(prefix=f"calibrate-rest-{robot.name}-") as scratch:
-        drops, tipping = drop_trials(robot, Path(scratch))
-        objects: dict[str, list[tuple[str, str, Path]]] = {}
-        for trial, describe, scene, name in drops:
-            objects.setdefault(name, []).append((trial, describe, scene))
-        for name, items in objects.items():
-            print(f"{robot.name} {name}.pose: {len(items)} drops", flush=True)
-            runs = [run_drop(robot, scene, name, None) for _, _, scene in items]
-            summaries = [{"name": t, "describe": d} for t, d, _ in items]
-            tick = runs[0]["tick_ns"]
-
-            def rerun_drop(
-                criteria: RestCriteria, items: Any = items, name: str = name
-            ) -> list[dict[str, Any]]:
-                return [run_drop(robot, scene, name, criteria) for _, _, scene in items]
-
-            entry = calibrate(
-                summaries,
-                runs,
-                rerun_drop,
-                ["translation_m", "rotation_rad"],
-                tick,
-                True,
-                source(f"{name}.pose"),
-                resting=upright(tipping),
-            )
-            report["objects"][f"{name}.pose"] = {
-                "tick_ns": tick,
-                "tipping_angle_rad": tipping,
-                **entry,
-            }
+    drops, _ = drop_trials(robot, scratch / "scenes")
+    for obj in sorted({d[3] for d in drops}):
+        constants = object_constants[obj]
+        tau = max(constants.values())
+        steps = [OBJECT_TRANSLATION_STEP, OBJECT_ROTATION_STEP]
+        dwell = whole_ticks(tau, tick)
+        what = (
+            f"bounds: one step of this profile's declared object resolution, "
+            f"{OBJECT_TRANSLATION_STEP:g} m and {OBJECT_ROTATION_STEP:g} rad, a perception-grade "
+            "modelling choice of the simulated sensor, not a measurement; the hardware is "
+            f"unmeasured. dwell: the contact time constant, solref {tau:g} s of the object's "
+            f"geoms in the compiled model, rounded up to {dwell // tick} ticks. cadence and "
+            f"largest gap: one {tick / 1e6:g} ms control tick"
+        )
+        criteria = RestCriteria(
+            cadence_ns=tick,
+            max_gap_ns=tick,
+            dwell_ns=dwell,
+            translation_m=OBJECT_TRANSLATION_STEP,
+            rotation_rad=OBJECT_ROTATION_STEP,
+            source=source_text(prov, artifact, what),
+        )
+        print(f"{name} {obj}.pose: drops", flush=True)
+        entries = []
+        for trial, describe, path, o in drops:
+            if o != obj:
+                continue
+            run = run_drop(robot, path, obj, criteria)
+            entry = {"name": trial, "describe": describe, "end_ns": run["end_ns"], "judged": True}
+            entry.update(verify(run, criteria, steps, True))
+            entry["final_exact"] = [float(v) for v in run["recording"].exact[-1]]
+            entries.append(entry)
+        report["objects"][f"{obj}.pose"] = {
+            "resolution": {"translation_m": steps[0], "rotation_rad": steps[1]},
+            "contact_time_constants_s": constants,
+            "criteria": json.loads(
+                json.dumps(
+                    {
+                        "cadence_ns": tick,
+                        "max_gap_ns": tick,
+                        "dwell_ns": dwell,
+                        "translation_m": steps[0],
+                        "rotation_rad": steps[1],
+                        "source": criteria.source,
+                    }
+                )
+            ),
+            "summary": summarize(entries, dwell),
+            "trials": entries,
+        }
+    report["all_passed"] = all(
+        e["summary"]["all_passed"]
+        for e in [*report["channels"].values(), *report["objects"].values()]
+    )
     return report
 
 
@@ -1147,11 +1142,10 @@ def main() -> int:
             raise SystemExit(f"{path} exists; write to another --out")
         commit = commits.get(robot["name"], robot["commit"])
         with tempfile.TemporaryDirectory(prefix=f"calibrate-rest-{robot['name']}-") as scratch:
-            source, archive_sha = fetch(robot["repository"], commit, Path(scratch))
-            package = load_package(source / robot["package_root"])
+            work = Path(scratch)
+            source, archive_sha = fetch(robot["repository"], commit, work / "source")
             spec = dict(robot.get("scenario", {}))
             scene = ROOT / spec["scene"] if "scene" in spec else None
-            spec["repository"] = robot["repository"]
             if "keyframe" in robot:
                 spec["keyframe"] = robot["keyframe"]
             prov = provenance(robot, commit, archive_sha)
@@ -1160,11 +1154,14 @@ def main() -> int:
             except ValueError:
                 artifact = path.name
             report = calibrate_robot(
-                Robot(robot["name"], package, spec, scene), args.out, prov, f"ssrobot {artifact}"
+                robot["name"], source / robot["package_root"], spec, scene, prov, artifact, work
             )
         text = json.dumps(report, indent=2) + "\n"
         path.write_text(text)
-        print(f"wrote {path} (sha256 {hashlib.sha256(text.encode()).hexdigest()})")
+        print(
+            f"wrote {path} (sha256 {hashlib.sha256(text.encode()).hexdigest()}); "
+            f"all passed: {report['all_passed']}"
+        )
     return 0
 
 
