@@ -16,6 +16,7 @@ from ssrobot.errors import ValidationError
 from ssrobot.execution import AppliedCommand, ExecutionStatus, RuntimeHealth, Submission
 from ssrobot.observations import Observation
 from ssrobot.planning_contracts import PreparedTrajectory
+from ssrobot.rest import RestResult
 from ssrobot.runtime import RuntimeInfo
 from ssrobot.scene import AttachmentViolation, SceneSnapshot, SceneState
 
@@ -50,6 +51,9 @@ class TraceKind(enum.StrEnum):
     CONTINUED = "continued"
     """``RobotContext.execute_continuation`` decided whether a plan made on a prediction
     runs; payload is the ``ContinuationReport``, accepted or refused."""
+    RESTED = "rested"
+    """A rest watch ended; payload is its ``RestResult``, at the time it ended. Its
+    samples are recorded there, not as observations."""
     STEPPED = "stepped"
     """A manual control tick ended at ``time_ns``; no payload."""
     CLOSED = "closed"
@@ -69,6 +73,7 @@ TracePayload = (
     | PreparedTrajectory
     | PredictedSnapshot
     | ContinuationReport
+    | RestResult
 )
 
 _PAYLOAD: dict[TraceKind, type[Record] | None] = {
@@ -84,6 +89,7 @@ _PAYLOAD: dict[TraceKind, type[Record] | None] = {
     TraceKind.SNAPSHOT: SceneSnapshot,
     TraceKind.PREDICTED: PredictedSnapshot,
     TraceKind.CONTINUED: ContinuationReport,
+    TraceKind.RESTED: RestResult,
     TraceKind.STEPPED: None,
     TraceKind.CLOSED: None,
 }
@@ -94,7 +100,7 @@ class TraceRecord(Record):
     """One event in a context's life, in causal order."""
 
     SCHEMA = "ssrobot.TraceRecord"
-    VERSION = 5
+    VERSION = 6
 
     sequence: int = field(metadata=meta("Position in the trace, from 0.", unit="count"))
     kind: TraceKind = field(metadata=meta("What happened."))
@@ -137,6 +143,15 @@ class TraceRecord(Record):
                     "trace_time",
                     "payload stamp differs from the record time",
                     path="payload.stamp",
+                )
+        elif isinstance(payload, RestResult):
+            if payload.end.clock != self.clock:
+                raise ValidationError(
+                    "clock_mismatch", "payload end uses another clock", path="payload.end"
+                )
+            if payload.end.time_ns != self.time_ns:
+                raise ValidationError(
+                    "trace_time", "payload end differs from the record time", path="payload.end"
                 )
         elif isinstance(payload, RuntimeInfo) and payload.clock != self.clock:
             raise ValidationError(

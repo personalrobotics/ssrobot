@@ -18,7 +18,7 @@ from ssrobot.conventions import check_name
 from ssrobot.description import JointKind, RobotDescription
 from ssrobot.errors import CapabilityError, SsrobotError, ValidationError
 from ssrobot.execution import Diagnostic
-from ssrobot.observations import Quantity
+from ssrobot.observations import ChannelRest, Quantity, RestCriteria
 from ssrobot.package import ModelEntry, ModelFormat, ProfileEntry, RobotPackage, load_package
 
 MUJOCO_VERSION = "3.14.0"
@@ -248,6 +248,20 @@ class MujocoProfile(Record):
     grippers: tuple[GripperProfile, ...] = field(
         default=(), metadata=meta("How each commandable gripper maps to its actuators.")
     )
+    rest: tuple[ChannelRest, ...] = field(
+        default=(),
+        metadata=meta(
+            "Rest criteria for the description's joint-position or pose channels, as this "
+            "simulation produces them; a channel not listed has none."
+        ),
+    )
+    object_rest: RestCriteria | None = field(
+        default=None,
+        metadata=meta(
+            "Rest criteria for every scene object's pose channel; without them, those "
+            "channels have none."
+        ),
+    )
 
     def _validate(self) -> None:
         for value, path in ((self.model, "model"), (self.keyframe, "keyframe")):
@@ -256,6 +270,14 @@ class MujocoProfile(Record):
         names = [g.gripper for g in self.grippers]
         if len(set(names)) != len(names):
             raise ValidationError("invalid_profile", "a gripper is listed twice", path="grippers")
+        channels = [r.channel for r in self.rest]
+        if len(set(channels)) != len(channels):
+            raise ValidationError("invalid_profile", "a channel is listed twice", path="rest")
+        if self.object_rest is not None:
+            try:
+                self.object_rest.check_for(Quantity.POSE)
+            except ValidationError as e:
+                raise ValidationError("invalid_profile", e.message, path="object_rest") from None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

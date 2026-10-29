@@ -7,7 +7,8 @@ ordinary execution refuses a plan made on one (``predicted_plan``). Such a plan 
 only as a ``Continuation``, through ``RobotContext.execute_continuation``, which:
 
 1. captures the actual state once the source has finished;
-2. checks that the source succeeded, that the commanded joints are at rest and within the
+2. checks that the source succeeded, that the commanded joints are at rest, by a rest
+   watch's ``RestResult`` whose window ends no earlier than the arrival, and within the
    arrival tolerance of the plan's start (a continuous joint the short way round), and
    that the scene changed only as predicted: no change but the release of the objects it
    names in ``releases``, and no free object moved or turned but those and the ones it
@@ -30,17 +31,15 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ssrobot._wire import Record, Value, meta
-from ssrobot.conventions import Timestamp, check_name
+from ssrobot.conventions import check_name
 from ssrobot.errors import ValidationError
 from ssrobot.planning_contracts import Planner, PlanResult
+from ssrobot.rest import RestResult
 from ssrobot.scene import ObjectState, SceneSnapshot
 
 if TYPE_CHECKING:
     from ssrobot.context import Execution
 
-REST_TOLERANCE = 0.05
-"""The most a commanded joint may still be moving, in its units per second, for the
-robot to count as arrived."""
 OBJECT_TOLERANCE_M = 5e-3
 """How far a free object may have moved from its predicted position."""
 OBJECT_TOLERANCE_RAD = 0.05
@@ -221,7 +220,7 @@ class ContinuationReport(Record):
     """Whether a continuation ran, and the evidence for that decision."""
 
     SCHEMA = "ssrobot.ContinuationReport"
-    VERSION = 3
+    VERSION = 4
 
     prediction: str = field(metadata=meta("Fingerprint of the prediction it was planned on."))
     source: str = field(metadata=meta("The source execution's identifier."))
@@ -243,22 +242,17 @@ class ContinuationReport(Record):
         metadata=meta("The largest gap between the predicted and actual start.", unit="joint")
     )
     arrival_tolerance: float = field(metadata=meta("The arrival tolerance.", unit="joint"))
-    rest_tolerance: float = field(
-        metadata=meta("The most a joint may still move, per second.", unit="joint")
-    )
     object_tolerance_m: float = field(
         metadata=meta("How far a free object may have moved.", unit="m")
     )
     object_tolerance_rad: float = field(
         metadata=meta("How far a free object may have turned.", unit="rad")
     )
-    rest: str = field(default="", metadata=meta("How rest was established."))
-    rest_stamp: Timestamp | None = field(
-        default=None,
+    rest: RestResult = field(
         metadata=meta(
-            "When the joint-velocity reading that established rest was valid: never before "
-            "the arrival snapshot."
-        ),
+            "The rest watch's result the caller gave: accepted only at rest, over the plan's "
+            "joints, with a window ending no earlier than the arrival snapshot."
+        )
     )
     rebase: str = field(
         default="", metadata=meta("The planner's account of its rebase: any bridge or change.")
@@ -303,7 +297,6 @@ class ContinuationReport(Record):
         for name in (
             "max_start_gap",
             "arrival_tolerance",
-            "rest_tolerance",
             "object_tolerance_m",
             "object_tolerance_rad",
         ):

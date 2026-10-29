@@ -12,7 +12,8 @@ worker (``ctx.plan_async``), as the context keeps stepping. Then:
 
 Each refusal, from a fresh run, submits nothing and says why:
 - ``source_not_succeeded``: the source motion was canceled;
-- ``not_at_rest``: the arm is still moving more than the rest tolerance;
+- ``not_at_rest``: the arm is still moving: a rest watch held to a bound no settling arm
+  meets ends at its deadline;
 - ``arrival_out_of_tolerance``: the arrival is outside a (deliberately tight) tolerance;
 - ``unpredicted_scene_change``: a block was attached after the prediction; or, under
   gravity, a free block fell during the source motion.
@@ -26,10 +27,13 @@ re-declared exactly so. It is refused, as an unpredicted scene change, when it i
 re-declared to another allow set or another transform, not re-declared, or re-declared
 without the prediction expecting it.
 - ``rebase_unsupported``: the planner cannot rebase.
+Every continuation is given the result of a ``JointRest`` watch on the right arm, started
+once its source has finished, with the test's own criteria (``REST``): the fixture's
+runtime declares none.
 
 The trace records each prediction (``predicted``) and each decision (``continued``).
 The evidence is ``continuation.json``: the prediction and its lineage, the accepted
-report (predicted and actual start, the rest reading, sscbirrt's account of its rebase,
+report (predicted and actual start, the rest watch's result, sscbirrt's account of its rebase,
 the rebased plan and compiled command), and every refusal's report; a second run gives
 the same bytes, which the test checks. ``timeline.json`` holds the wall-clock overlap: how
 many of the source motion's ticks the context stepped while the worker planned.
@@ -59,6 +63,7 @@ from ssrobot import (
     PlanResult,
     PlanStatus,
     Pose,
+    RestCriteria,
     RobotContext,
     SsrobotError,
     Timestamp,
@@ -72,6 +77,7 @@ from ssrobot._wire import fingerprint
 from ssrobot.mujoco import MujocoRuntime
 from ssrobot.planning import CBiRRT
 from ssrobot.planning_contracts import build_request
+from ssrobot.rest import JointRest, RestResult
 from ssrobot.scene import PlanningScene
 from tests.support import colliding_bimanual
 
@@ -80,6 +86,27 @@ B = (1.6, 0.4)
 BLOCK = (0.0, 0.8, 0.5)  # a free block well clear of both arms
 ARM, TOOL = "right_arm", "right_tool"
 MAX_TICKS = 5_000
+REST = RestCriteria(
+    cadence_ns=5_000_000,
+    max_gap_ns=5_000_000,
+    dwell_ns=50_000_000,
+    variation=1e-4,
+    source="test: one sample per 5 ms tick of bimanual.xml; 1e-4 rad held for 50 ms, chosen "
+    "for this test, not a robot's",
+)
+"""The test's rest criteria for the right arm: the fixture's runtime declares none."""
+REST_WITHIN_NS = 2_500_000_000
+
+
+def _rested(
+    ctx: RobotContext, criteria: RestCriteria = REST, within_ns: int = REST_WITHIN_NS
+) -> RestResult:
+    """Watch the right arm come to rest from now, stepping until the watch ends."""
+    watch = ctx.watch_rest(JointRest(ARM, criteria), deadline_ns=ctx.now.time_ns + within_ns)
+    while not watch.done:
+        ctx.step()
+    assert watch.result is not None
+    return watch.result
 
 
 class _NoRebase:
@@ -125,7 +152,7 @@ class _Reported:
     never produces on its own: ``wrap`` reports those joints in [-pi, pi), as an encoder
     does, and maps commands back to the turn the joint is on; set later, ``offsets``
     shifts reported joints, ``rotate`` (object, radians) turns an object about z in
-    place, and ``stale`` stamps velocity readings before the observation."""
+    place, and ``stale`` stamps joint-position readings 2 ms before the observation."""
 
     def __init__(self, *, wrap: tuple[str, ...] = ()) -> None:
         self.wrap = set(wrap)
@@ -172,7 +199,7 @@ class _Reported:
         return replace(
             observation,
             readings=tuple(
-                replace(r, stamp=before) if r.channel.endswith("_qd") else r
+                replace(r, stamp=before) if r.channel.endswith("_q") else r
                 for r in observation.readings
             ),
         )
@@ -270,13 +297,10 @@ def _accepted(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
         refused_by_execute = e.code
     same_plan = ctx.plan(request, snapshot=prediction, planner=CBiRRT(ctx.description))
     continuation = ctx.continuation(plan, planner=ahead, prediction=prediction)
-    waited = 0
-    while True:  # the arm settles after its trajectory succeeds
-        result = ctx.execute_continuation(continuation)
-        if result.report.refusal != "not_at_rest" or waited >= 500:
-            break
-        ctx.step()
-        waited += 1
+    waited = ctx.now.time_ns  # the arm settles after its trajectory succeeds
+    rest = _rested(ctx)
+    waited = (ctx.now.time_ns - waited) // REST.cadence_ns
+    result = ctx.execute_continuation(continuation, rest=rest)
     assert result.execution is not None, result.report
     status = ctx.run_until(result.execution, max_ticks=MAX_TICKS)
     return {
@@ -304,6 +328,8 @@ def _refused(
     before: Any = None,
     plan_with: Any = None,
     unsettled: tuple[str, ...] = (),
+    criteria: RestCriteria = REST,
+    within_ns: int = REST_WITHIN_NS,
     **options: Any,
 ) -> dict[str, Any]:
     source, prediction = _start_source(ctx, planner, unsettled)
@@ -313,9 +339,10 @@ def _refused(
         before(ctx, source)
     if not source.done:
         ctx.run_until(source, max_ticks=MAX_TICKS)
+    rest = _rested(ctx, criteria, within_ns)
     executions = len(ctx.executions)
     result = ctx.execute_continuation(
-        ctx.continuation(plan, planner=ahead, prediction=prediction), **options
+        ctx.continuation(plan, planner=ahead, prediction=prediction), rest=rest, **options
     )
     return {
         "prediction_unsettled": list(prediction.unsettled),
@@ -344,7 +371,7 @@ def _releasing(ctx: RobotContext, planner: CBiRRT, *, release: bool) -> dict[str
     if release:
         ctx.detach("block")
     result = ctx.execute_continuation(
-        ctx.continuation(after, planner=ahead, prediction=prediction), rest_tolerance=1.0
+        ctx.continuation(after, planner=ahead, prediction=prediction), rest=_rested(ctx)
     )
     return {
         "prediction_releases": list(prediction.releases),
@@ -387,7 +414,7 @@ def _allowing(ctx: RobotContext, planner: CBiRRT, *, redeclare: str, expect: boo
         ctx.detach("block")
         ctx.attach("block", TOOL, transform=transform, allow=allow_)
     result = ctx.execute_continuation(
-        ctx.continuation(after, planner=ahead, prediction=prediction), rest_tolerance=1.0
+        ctx.continuation(after, planner=ahead, prediction=prediction), rest=_rested(ctx)
     )
     return {
         "prediction_allowances": list(prediction.allowances),
@@ -418,12 +445,16 @@ def _evidence(tmp_path: Path) -> dict[str, Any]:
             tmp_path / "canceled", lambda c, p: _refused(c, p, before=lambda c, s: c.cancel(s))
         ),
         "not_at_rest": _session(
-            tmp_path / "moving", lambda c, p: _refused(c, p, rest_tolerance=1e-12)
+            tmp_path / "moving",
+            # Straight after the source succeeds, held to a bound no settling arm meets.
+            lambda c, p: _refused(
+                c, p, criteria=replace(REST, variation=1e-12), within_ns=100_000_000
+            ),
         ),
         "arrival_out_of_tolerance": _session(
             tmp_path / "far",
             # Straight after the source succeeds: within its goal tolerance, not 1e-9.
-            lambda c, p: _refused(c, p, arrival_tolerance=1e-9, rest_tolerance=1.0),
+            lambda c, p: _refused(c, p, arrival_tolerance=1e-9),
         ),
         "unpredicted_scene_change": _session(
             tmp_path / "attached",
@@ -431,27 +462,24 @@ def _evidence(tmp_path: Path) -> dict[str, Any]:
                 c,
                 p,
                 before=_settle_and_attach,
-                rest_tolerance=1.0,
             ),
             block=BLOCK,
         ),
         "unpredicted_scene_change_falling": _session(
             tmp_path / "falling",
-            lambda c, p: _refused(c, p, before=_settle, rest_tolerance=1.0),
+            lambda c, p: _refused(c, p, before=_settle),
             block=BLOCK,
             falling=True,
         ),
         "rebase_unsupported": _session(
             tmp_path / "unable",
-            lambda c, p: _refused(
-                c, p, before=_settle, plan_with=_NoRebase(CBiRRT(c.description)), rest_tolerance=1.0
-            ),
+            lambda c, p: _refused(c, p, before=_settle, plan_with=_NoRebase(CBiRRT(c.description))),
         ),
     }
     # The same falling block, named unsettled: not compared, so the continuation runs.
     unsettled = _session(
         tmp_path / "unsettled",
-        lambda c, p: _refused(c, p, before=_settle, unsettled=("block",), rest_tolerance=1.0),
+        lambda c, p: _refused(c, p, before=_settle, unsettled=("block",)),
         block=BLOCK,
         falling=True,
     )
@@ -514,7 +542,9 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
     assert accepted["continued"] == "succeeded"
     assert accepted["reached"] == pytest.approx(list(B), abs=0.02)
     assert report["max_start_gap"] <= report["arrival_tolerance"]
-    assert report["rest"].startswith("right_arm_qd")
+    rest = report["rest"]
+    assert rest["outcome"] == "at_rest" and rest["channel"]["channel"] == "right_arm_q", rest
+    assert rest["window"][-1]["time_ns"] >= report["rest"]["start"]["time_ns"]
     assert "bridge" in report["rebase"] and report["rebased_plan"] and report["prepared"]
     prediction = accepted["prediction"]
     assert prediction["lineage"] == [prediction["base"]]
@@ -573,19 +603,26 @@ def _bad_tolerances(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
     continuation = _planned_on(ctx, prediction, B)
     _settle(ctx, source)
     executions, out = len(ctx.executions), dict[str, Any]()
+    rest = _rested(ctx)
     for name in (
         "arrival_tolerance",
-        "rest_tolerance",
         "object_tolerance_m",
         "object_tolerance_rad",
     ):
         for bad in (math.nan, -1.0, math.inf):
             try:
                 options: dict[str, Any] = {name: bad}
-                ctx.execute_continuation(continuation, **options)
+                ctx.execute_continuation(continuation, rest=rest, **options)
                 out[f"{name}={bad}"] = "accepted"
             except ValidationError as e:
                 out[f"{name}={bad}"] = e.code
+    # Rest is evidence only as this context decided it.
+    for name, given in (("forged_rest", replace(rest, detail="forged")), ("no_rest", None)):
+        try:
+            ctx.execute_continuation(continuation, rest=given)  # type: ignore[arg-type]
+            out[name] = "accepted"
+        except ValidationError as e:
+            out[name] = e.code
     out["submitted_nothing"] = len(ctx.executions) == executions
     return out
 
@@ -605,7 +642,7 @@ def _seam(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
     continuation = _planned_on(ctx, prediction, (3.6, 0.3))
     _settle(ctx, source)
     arrived = ctx.snapshot().position("right_j1")
-    result = ctx.execute_continuation(continuation, rest_tolerance=1.0)
+    result = ctx.execute_continuation(continuation, rest=_rested(ctx))
     out: dict[str, Any] = {
         "predicted_start": round(prediction.state.position("right_j1"), 4),
         "reported_arrival": round(arrived, 4),
@@ -681,7 +718,7 @@ def test_continuations_check_what_they_reconcile(artifacts: Path, tmp_path: Path
         ),
         "rotated_in_place": _session(
             tmp_path / "rotated",
-            lambda c, p: _refused(c, p, before=rotate_after, rest_tolerance=1.0),
+            lambda c, p: _refused(c, p, before=rotate_after),
             reported=rotated,
             block=BLOCK,
         ),
@@ -689,14 +726,12 @@ def test_continuations_check_what_they_reconcile(artifacts: Path, tmp_path: Path
         "late_start": _session(tmp_path / "late", _late_start),
         "contract_tolerance": _session(
             tmp_path / "contract",
-            lambda c, p: _refused(c, p, before=_settle, rest_tolerance=1.0),
+            lambda c, p: _refused(c, p, before=_settle),
             runtime_options={"goal_tolerance": 0.02},
         ),
         "blocked_bridge": _session(
             tmp_path / "blocked",
-            lambda c, p: _refused(
-                c, p, before=offset_after, arrival_tolerance=0.5, rest_tolerance=1.0
-            ),
+            lambda c, p: _refused(c, p, before=offset_after, arrival_tolerance=0.5),
             reported=blocked,
             blocked=OBSTACLE,
         ),
@@ -712,6 +747,7 @@ def test_continuations_check_what_they_reconcile(artifacts: Path, tmp_path: Path
 
     bad = report["bad_tolerances"]
     assert bad.pop("submitted_nothing")
+    assert (bad.pop("forged_rest"), bad.pop("no_rest")) == ("unknown_rest", "wrong_type")
     assert set(bad.values()) <= {"out_of_limits", "non_finite"}, bad
 
     seam = report["seam"]
@@ -746,8 +782,12 @@ def test_continuations_check_what_they_reconcile(artifacts: Path, tmp_path: Path
     assert bridge["report"]["refusal"] == "rebase_failed", bridge["report"]
     assert "bridge" in bridge["report"]["detail"] and bridge["submitted_nothing"]
 
+    # Each joint-position reading is 2 ms older than its observation: the watch comes to
+    # rest, but on a window that ends before the arrival snapshot. Before #221 the gate read
+    # one velocity reading and refused rest_unobservable; a stale window is now not rest.
     stale_rest = report["stale_rest"]
-    assert stale_rest["report"]["refusal"] == "rest_unobservable", stale_rest["report"]
+    assert stale_rest["report"]["refusal"] == "not_at_rest", stale_rest["report"]
+    assert stale_rest["report"]["rest"]["outcome"] == "at_rest"
     assert "before the arrival" in stale_rest["report"]["detail"]
     assert stale_rest["submitted_nothing"]
 
@@ -844,7 +884,7 @@ def _projected(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
         continuation.prediction.source == execution.id
     )
     _settle(ctx, execution)
-    result = ctx.execute_continuation(continuation, rest_tolerance=1.0)
+    result = ctx.execute_continuation(continuation, rest=_rested(ctx))
     assert result.execution is not None, result.report
     out["continued"] = ctx.run_until(result.execution, max_ticks=MAX_TICKS).state.value
     out["reached"] = _arm(ctx)
@@ -971,7 +1011,7 @@ def _continued_projection(
     _settle(ctx, source)
     arrived = ctx.snapshot().position("right_j1")
     b = ctx.execute_continuation(
-        ctx.continuation(plan_b, planner=b_planner, prediction=prediction), rest_tolerance=1.0
+        ctx.continuation(plan_b, planner=b_planner, prediction=prediction), rest=_rested(ctx)
     )
     assert b.execution is not None, b.report
     occurrence = b.execution
@@ -1006,7 +1046,7 @@ def _continued_projection(
     # about, such as one just dropped.
     out["bound_unsettled"] = list(bound.prediction.unsettled)
     _settle(ctx, occurrence)
-    c = ctx.execute_continuation(bound, rest_tolerance=1.0)
+    c = ctx.execute_continuation(bound, rest=_rested(ctx))
     out["c_accepted"] = c.report.accepted
     if c.execution is not None:
         out["continued"] = ctx.run_until(c.execution, max_ticks=MAX_TICKS).state.value

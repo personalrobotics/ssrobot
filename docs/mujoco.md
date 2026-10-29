@@ -407,14 +407,19 @@ backends and platforms, so only their geometry, not their bytes, is portable.
 
 A `mujoco` profile is a `[[profiles]]` entry of the package naming a TOML file with an
 `ssrobot.MujocoProfile`. It declares what MuJoCo needs that a model doesn't say: which
-model to compile, where to start, how open each gripper is, and when a gripper's motion
-has ended.
+model to compile, where to start, how open each gripper is, when a gripper's motion
+has ended, and when the readings this simulation produces count as at rest.
 
 ```toml
 schema = "ssrobot.MujocoProfile"
 version = 1
 model = "mujoco"      # optional: the package model MuJoCo compiles (see Model)
 keyframe = "home"     # optional: the start keyframe (see Start keyframe)
+object_rest = { cadence_ns = 2_000_000, max_gap_ns = 2_000_000, dwell_ns = 100_000_000, translation_m = 0.001, rotation_rad = 0.05, source = "..." }  # optional
+
+[[rest]]              # optional, one per channel
+channel = "arm_q"
+criteria = { cadence_ns = 2_000_000, max_gap_ns = 2_000_000, dwell_ns = 70_000_000, variation = 4.79e-05, source = "..." }
 
 [[grippers]]
 gripper = "gripper"
@@ -452,6 +457,22 @@ belongs to the package and should say where it came from: a datasheet, the real
 driver's defaults, or a measurement in MuJoCo. The tolerances must be in (0, 1) and the
 dwell positive (`invalid_profile`). A gripper without one cannot take a gripper command
 (`no_gripper_completion`), though an action chunk may still set its opening.
+
+The `[[rest]]` tables and `object_rest` declare when this simulation's readings count as
+at rest (see *Rest watches* in contracts.md). Rest depends on the signal a source
+produces, its sampling, quantization, noise, and settling, so these values belong to the
+simulated source, not to the robot: the physical robot's drivers declare their own, and
+until they are measured a watch on hardware is refused (`no_rest_criteria`). Each
+`[[rest]]` table names one of the description's `joint_position` or `pose` channels and
+gives its `RestCriteria`; `object_rest` applies to every scene object's `<object>.pose`
+channel. The runtime reports them in `RuntimeInfo.rest` for the channels it confirms. A
+channel the description does not declare, criteria of the wrong kind for the channel, or
+a channel listed twice is refused (`invalid_profile`). A channel not listed, and every
+object's pose without `object_rest`, has no criteria from this source. Every value needs
+its `source`: a sample spacing follows from the control tick, a joint's variation from
+the encoder resolution the simulated arm is modelled with, and a dwell from a
+declared time constant. The privileged object poses carry no sensor noise, so their
+bounds come from the contact model rather than from a sensor.
 
 ## Execution
 
@@ -550,6 +571,7 @@ the returned model or data reaches no other materialization and no runtime.
 | `artifacts/test_mujoco_observes_robot_state_sensors_and_cameras/observations.json`, `trace.jsonl`, `assets/` | Every robot channel, at open and after settling, with its binding. They are checked against an independently compiled model: the `tcp` pose in `base` within 1e-9; the centre depth pixel within 2 mm of a ray cast along the camera's optical axis; the wrist force, in world, equal to the hand's weight within 2%; and each joint's effort equal to its gravity torque. The RGB image is not one flat colour. A second run gives byte-identical files and image assets. |
 | `artifacts/test_mujoco_leaves_unbacked_channels_unconfirmed/unconfirmed.json` | A wrench channel whose site has no MuJoCo force and torque sensors: unconfirmed (`no_force_torque_sensors`), and observing it is refused. |
 | `artifacts/test_a_gripper_command_ends_when_its_fingers_stop/gripper_completion.json`, `<scenario>.trace.jsonl` | Gripper commands on the example arm (#219), with the portable opening observed every tick. An empty close and open reach their targets, and an opening already within tolerance ends at once, since reaching takes precedence. The pedestal's box stops a close short, at 0.37, and afterwards the controls stay closed and the fingers never relax open. Two fixed walls stop an open short, at 0.62. Each command ends at the first tick from which the contract's rule holds on the observed openings, with the profile's declared values. The runtime's contacts are never read while it decides. Without a declared detector, MuJoCo and `ReplayRuntime` each refuse the command (`no_gripper_completion`). A second run is byte-identical. |
+| `artifacts/test_joints_and_objects_come_to_rest/rest.json` | Rest watches on the example arm (#221), judged by its profile's `[[rest]]` and `object_rest`, with the watched channel recorded by the test every tick. After a trajectory, and after an out-and-back move through zero velocity, the arm comes to rest only once the commanded motion has ended, never at the turnaround. Chatter of 0.8 of the declared variation still comes to rest; chatter of 1.5 times it ends at the deadline. A reading that stops advancing, and a channel that stops answering, end `unavailable`. A ball dropped on a ramp lands, rolls into a wall, and only then comes to rest on its privileged pose, and stays at rest by the same rule for the 200 ticks after. Each result is checked against the recorded readings: it fires at the first tick from which a run of them spans the dwell within the bounds, its window is those readings, and the sample before it breaks the bound. Watches without a confirmed channel, without criteria (`ReplayRuntime`), or with the wrong kind of criteria are refused. A second run is byte-identical. |
 | `artifacts/test_mujoco_rejects_unexecutable_commands/rejections.json` | `start_mismatch`, an unconfirmed velocity command, a chunk commanding the arm and the overlapping `wrist_only` group, and each profile failure, with its code and path. That covers a gripper profile naming the arm's actuator (`actuator_alias`) and no reachable opening. A zero-gear wrist opens with the arm's and wrist's position commands unconfirmed and their reasons recorded. |
 | `artifacts/test_mujoco_compiles_the_profiles_model_against_the_canonical_description/multi-artifact.json` | The `urdf_arm` fixture, whose canonical model is URDF and SRDF, opened through the MJCF its profile names, with no `keyframe` argument. It records the compiled entry, format, path, and signature, and the URDF's description fingerprint. It starts at the profile's `home`, equal to the SRDF state of that name, and a trajectory succeeds. |
 | `artifacts/test_mujoco_model_signature_covers_every_file_the_model_brings_in/{original,moved,edited}-mapping.json` | Three copies of the example: unchanged, moved to another directory, and with one gain changed in the included `actuators.xml`. The edited copy has the same root-file hash but a different model signature, and the moved copy's mapping is identical to the original's. |

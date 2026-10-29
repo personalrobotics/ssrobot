@@ -459,8 +459,9 @@ def runnable_panda(root: Path, *, slide: bool = False) -> tuple[Path, Path]:
     placeholder meshes and the geoms using them removed, so it has its inertials and
     position servos but no geometry (nothing can collide), and no gravity, so the servos
     hold it where it is commanded; a velocity and acceleration
-    limit on every arm joint, so plans can be timed; a joint trajectory command and a
-    joint-velocity channel (``arm_qd``) for the arm. It has ssik kinematics (seven
+    limit on every arm joint, so plans can be timed; a joint trajectory command, a
+    joint-velocity channel (``arm_qd``), and a joint-position channel (``arm_q``, what a
+    rest watch judges) for the arm. It has ssik kinematics (seven
     revolute joints), so it plans offset goals and path constraints. Start it in its
     ``home`` keyframe. With ``slide``, the arm stands on a carriage that slides along the
     world's x axis (joint ``slide``, its own group, commanded by position): a joint
@@ -521,6 +522,8 @@ def runnable_panda(root: Path, *, slide: bool = False) -> tuple[Path, Path]:
         + limits
         + '\n[[semantics.commands]]\ncomponent = "arm"\nkind = "joint_trajectory"\n'
         + '\n[[semantics.channels]]\nname = "arm_qd"\nquantity = "joint_velocity"\n'
+        + 'source = "arm"\nshape = [7]\ndtype = "float64"\n'
+        + '\n[[semantics.channels]]\nname = "arm_q"\nquantity = "joint_position"\n'
         + 'source = "arm"\nshape = [7]\ndtype = "float64"\n'
     )
     scene = root / "scene.xml"

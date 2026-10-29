@@ -17,7 +17,7 @@ from ssrobot.conventions import ClockMode, Timestamp, check_name
 from ssrobot.description import CommandCapability, RobotDescription
 from ssrobot.errors import ValidationError
 from ssrobot.execution import AppliedCommand, ExecutionStatus, RuntimeHealth
-from ssrobot.observations import ChannelSpec, Observation, ObservationRequest
+from ssrobot.observations import ChannelRest, ChannelSpec, Observation, ObservationRequest
 from ssrobot.scene import (
     Attachment,
     AttachmentViolation,
@@ -35,7 +35,7 @@ class RuntimeInfo(Record):
     """What an opened runtime reports about itself."""
 
     SCHEMA = "ssrobot.RuntimeInfo"
-    VERSION = 5
+    VERSION = 6
 
     runtime: str = field(metadata=meta("Runtime implementation name."))
     runtime_version: str = field(metadata=meta("Runtime implementation and backend versions."))
@@ -83,8 +83,23 @@ class RuntimeInfo(Record):
         ),
     )
 
+    rest: tuple[ChannelRest, ...] = field(
+        default=(),
+        metadata=meta(
+            "Rest criteria for the confirmed channels this runtime sources, sorted by "
+            "channel. A channel without any has no criteria from this source."
+        ),
+    )
+
     def _validate(self) -> None:
         check_name(self.runtime, path="runtime")
+        rested = [r.channel for r in self.rest]
+        if rested != sorted(set(rested)) or not set(rested) <= set(self.channels):
+            raise ValidationError(
+                "noncanonical_order",
+                "rest must be sorted by unique channel, each confirmed in channels",
+                path="rest",
+            )
         check_name(self.clock, path="clock")
         for path, names in (("objects", self.objects), ("fixtures", self.fixtures)):
             for i, name in enumerate(names):

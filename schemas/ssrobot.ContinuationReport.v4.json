@@ -1,0 +1,527 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.ContinuationReport v4",
+  "$ref": "#/$defs/ContinuationReport",
+  "$defs": {
+    "ContinuationReport": {
+      "type": "object",
+      "description": "Whether a continuation ran, and the evidence for that decision.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.ContinuationReport"
+        },
+        "version": {
+          "const": 4
+        },
+        "prediction": {
+          "type": "string",
+          "description": "Fingerprint of the prediction it was planned on."
+        },
+        "source": {
+          "type": "string",
+          "description": "The source execution's identifier."
+        },
+        "plan": {
+          "type": "string",
+          "description": "Fingerprint of the plan made on the prediction."
+        },
+        "actual": {
+          "type": "string",
+          "description": "Fingerprint of the captured arrival state."
+        },
+        "accepted": {
+          "type": "boolean",
+          "description": "Whether the continuation was submitted."
+        },
+        "refusal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The refusal's code, if refused."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Why, in words."
+        },
+        "predicted_start": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The plan's start, from the prediction.",
+          "x-unit": "joint"
+        },
+        "actual_start": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The commanded joints at arrival.",
+          "x-unit": "joint"
+        },
+        "discrepancies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Discrepancy"
+          },
+          "description": "Every checked quantity outside its tolerance."
+        },
+        "max_start_gap": {
+          "type": "number",
+          "description": "The largest gap between the predicted and actual start.",
+          "x-unit": "joint"
+        },
+        "arrival_tolerance": {
+          "type": "number",
+          "description": "The arrival tolerance.",
+          "x-unit": "joint"
+        },
+        "object_tolerance_m": {
+          "type": "number",
+          "description": "How far a free object may have moved.",
+          "x-unit": "m"
+        },
+        "object_tolerance_rad": {
+          "type": "number",
+          "description": "How far a free object may have turned.",
+          "x-unit": "rad"
+        },
+        "rest": {
+          "$ref": "#/$defs/RestResult",
+          "description": "The rest watch's result the caller gave: accepted only at rest, over the plan's joints, with a window ending no earlier than the arrival snapshot."
+        },
+        "rebase": {
+          "type": "string",
+          "description": "The planner's account of its rebase: any bridge or change."
+        },
+        "rebased_plan": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the rebased plan, if there is one."
+        },
+        "prepared": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fingerprint of the compiled PreparedTrajectory, if any."
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The continuation's execution identifier, if submitted."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "prediction",
+        "source",
+        "plan",
+        "actual",
+        "accepted",
+        "predicted_start",
+        "actual_start",
+        "max_start_gap",
+        "arrival_tolerance",
+        "object_tolerance_m",
+        "object_tolerance_rad",
+        "rest"
+      ],
+      "additionalProperties": false
+    },
+    "Discrepancy": {
+      "type": "object",
+      "description": "One way the actual state differs from the prediction.",
+      "properties": {
+        "what": {
+          "type": "string",
+          "description": "A joint, an object or its rotation, or 'revision'."
+        },
+        "predicted": {
+          "type": "number",
+          "description": "The predicted value.",
+          "x-unit": "1"
+        },
+        "actual": {
+          "type": "number",
+          "description": "The actual value.",
+          "x-unit": "1"
+        },
+        "tolerance": {
+          "type": "number",
+          "description": "The tolerance it was held to.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "what",
+        "predicted",
+        "actual",
+        "tolerance"
+      ],
+      "additionalProperties": false
+    },
+    "JointRest": {
+      "type": "object",
+      "description": "A joint group, or another component's joints, comes to rest: judged on the",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.JointRest"
+        },
+        "version": {
+          "const": 1
+        },
+        "component": {
+          "type": "string",
+          "description": "The component whose joints are judged."
+        },
+        "criteria": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RestCriteria"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The criteria to judge by; None for those the channel's runtime declares."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "component"
+      ],
+      "additionalProperties": false
+    },
+    "ObjectRest": {
+      "type": "object",
+      "description": "A scene object comes to rest: judged on the declared pose channel whose source is",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.ObjectRest"
+        },
+        "version": {
+          "const": 1
+        },
+        "object": {
+          "type": "string",
+          "description": "The scene object whose pose is judged."
+        },
+        "criteria": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RestCriteria"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The criteria to judge by; None for those the channel's runtime declares."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "object"
+      ],
+      "additionalProperties": false
+    },
+    "RestChannel": {
+      "type": "object",
+      "description": "The channel a watch judged, and who produced it.",
+      "properties": {
+        "channel": {
+          "type": "string",
+          "description": "Channel name."
+        },
+        "quantity": {
+          "type": "string",
+          "enum": [
+            "joint_position",
+            "joint_velocity",
+            "joint_effort",
+            "gripper_opening",
+            "pose",
+            "wrench",
+            "rgb_image",
+            "depth_image",
+            "contact"
+          ],
+          "description": "What it measures."
+        },
+        "observed": {
+          "type": "string",
+          "description": "The entity it observes: a component or an object."
+        },
+        "runtime": {
+          "type": "string",
+          "description": "The runtime that sourced its readings."
+        },
+        "privileged": {
+          "type": "boolean",
+          "description": "Whether its readings are privileged simulator truth."
+        }
+      },
+      "required": [
+        "channel",
+        "quantity",
+        "observed",
+        "runtime",
+        "privileged"
+      ],
+      "additionalProperties": false
+    },
+    "RestCriteria": {
+      "type": "object",
+      "description": "When a channel's readings count as at rest, as declared by whoever produces them.",
+      "properties": {
+        "cadence_ns": {
+          "type": "integer",
+          "description": "The spacing of samples the criteria were declared for.",
+          "x-unit": "ns"
+        },
+        "max_gap_ns": {
+          "type": "integer",
+          "description": "The largest spacing between samples still treated as continuous.",
+          "x-unit": "ns"
+        },
+        "dwell_ns": {
+          "type": "integer",
+          "description": "How long the readings must stay within bounds.",
+          "x-unit": "ns"
+        },
+        "variation": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The most each element's range may be over the dwell; joint-position channels only.",
+          "x-unit": "channel"
+        },
+        "translation_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The most each position coordinate's range may be over the dwell; pose only.",
+          "x-unit": "m"
+        },
+        "rotation_rad": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The largest angle any orientation may be from the dwell's first; pose only.",
+          "x-unit": "rad"
+        },
+        "source": {
+          "type": "string",
+          "description": "Where the values come from: a datasheet, a driver, or a measurement."
+        }
+      },
+      "required": [
+        "cadence_ns",
+        "max_gap_ns",
+        "dwell_ns",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "RestResult": {
+      "type": "object",
+      "description": "How a rest watch ended, and the readings that justify it.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.RestResult"
+        },
+        "version": {
+          "const": 1
+        },
+        "condition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JointRest"
+            },
+            {
+              "$ref": "#/$defs/ObjectRest"
+            }
+          ],
+          "description": "What was watched, as asked."
+        },
+        "channel": {
+          "$ref": "#/$defs/RestChannel",
+          "description": "The channel it was judged on."
+        },
+        "elements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The name of each value of a sample: the channel's joints, or x..qz."
+        },
+        "judged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The elements held to the criteria: the component's joints, or all."
+        },
+        "criteria": {
+          "$ref": "#/$defs/RestCriteria",
+          "description": "The criteria it was judged by."
+        },
+        "start": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the watch started."
+        },
+        "end": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When it ended."
+        },
+        "deadline": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "The caller's deadline."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "at_rest",
+            "deadline",
+            "unavailable",
+            "malformed",
+            "canceled"
+          ],
+          "description": "How it ended."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Why, in words."
+        },
+        "samples": {
+          "type": "integer",
+          "description": "How many readings it judged.",
+          "x-unit": "count"
+        },
+        "window": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RestSample"
+          },
+          "description": "At rest: the samples, spanning the dwell, that justify it; else empty."
+        },
+        "preceding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RestSample"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "At rest: the sample just before the window, continuous with it, that breaks the bound with it; None when the window starts the watch or follows a gap."
+        },
+        "longest": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RestSample"
+          },
+          "description": "Otherwise: the longest continuous run within the bound it saw."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "condition",
+        "channel",
+        "elements",
+        "judged",
+        "criteria",
+        "start",
+        "end",
+        "deadline",
+        "outcome",
+        "samples"
+      ],
+      "additionalProperties": false
+    },
+    "RestSample": {
+      "type": "object",
+      "description": "One reading a watch judged.",
+      "properties": {
+        "time_ns": {
+          "type": "integer",
+          "description": "When the reading was valid, on the clock.",
+          "x-unit": "ns"
+        },
+        "value": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The reading's values.",
+          "x-unit": "channel"
+        }
+      },
+      "required": [
+        "time_ns",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "Timestamp": {
+      "type": "object",
+      "description": "A point in time on a named clock.",
+      "properties": {
+        "clock": {
+          "type": "string",
+          "description": "Clock identity, e.g. 'sim:geodude-1' or 'ros:/clock'."
+        },
+        "time_ns": {
+          "type": "integer",
+          "description": "Nanoseconds since the clock's epoch.",
+          "x-unit": "ns"
+        }
+      },
+      "required": [
+        "clock",
+        "time_ns"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

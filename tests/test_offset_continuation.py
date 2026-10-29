@@ -51,6 +51,7 @@ from ssrobot import (
     PlanningRequest,
     PlanResult,
     PreparedTrajectory,
+    RestCriteria,
     RobotContext,
     SsrobotError,
     TraceKind,
@@ -62,11 +63,31 @@ from ssrobot import (
 from ssrobot.mujoco import MujocoRuntime
 from ssrobot.planning import CBiRRT, SsikKinematics
 from ssrobot.planning._frames import matrix
+from ssrobot.rest import JointRest, RestResult
 from tests.support import PANDA_JOINTS, runnable_panda
 
 DOWN = (0.0, 0.0, -1.0)
 LINE = OffsetGoal(direction=DOWN, distance=0.05, position_tolerance=5e-3, rotation_tolerance=2e-2)
 MAX_TICKS = 20_000
+
+
+def _rested(ctx: RobotContext) -> RestResult:
+    """Watch the arm come to rest from now, one sample per control tick, by the test's own
+    criteria (the fixture's runtime declares none), stepping until the watch ends."""
+    tick = ctx.trajectory_contract.period_ns
+    criteria = RestCriteria(
+        cadence_ns=tick,
+        max_gap_ns=tick,
+        dwell_ns=25 * tick,
+        variation=1e-4,
+        source="test: one sample per control tick; 1e-4 rad held for 25 ticks, chosen for "
+        "this test, not a robot's",
+    )
+    watch = ctx.watch_rest(JointRest("arm", criteria), deadline_ns=ctx.now.time_ns + 400 * tick)
+    while not watch.done:
+        ctx.step()
+    assert watch.result is not None
+    return watch.result
 
 
 def _settle(ctx: RobotContext, execution: Any) -> str:
@@ -215,13 +236,14 @@ def _scenario(tmp: Path, arrival: str) -> dict[str, Any]:
                 "path_constraint": any("path_constraint" in d.message for d in old.diagnostics),
             }
 
+        rest = _rested(ctx)
         submitted_before = sum(r.kind is TraceKind.SUBMITTED for r in records)
         continuing: Any = _Misreporting(planner, start_q) if arrival == "misreported" else planner
         try:
             result = ctx.execute_continuation(
                 ctx.continuation(b, planner=continuing, prediction=prediction),
+                rest=rest,
                 arrival_tolerance=4.0,
-                rest_tolerance=0.05,
             )
         except SsrobotError as e:
             out["raised"] = e.code

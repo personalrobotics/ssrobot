@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import math
 from dataclasses import dataclass, field
 
 from ssrobot._wire import ArrayValue, DType, Record, Value, meta
@@ -110,6 +111,121 @@ class ChannelSpec(Value):
             raise ValidationError(
                 "shape_mismatch", f"shape {shape} is invalid for {q}", path="shape"
             )
+
+
+REST_QUANTITIES = frozenset({Quantity.JOINT_POSITION, Quantity.POSE})
+"""Quantities a rest watch can judge: joint positions, and a pose's translation and
+rotation."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RestCriteria(Value):
+    """When a channel's readings count as at rest, as declared by whoever produces them.
+
+    Rest holds once consecutive samples span ``dwell_ns``, no two more than ``max_gap_ns``
+    apart and each stamped later than the one before, and every element's range over them
+    is within its bound. A joint-position channel takes ``variation``, one bound for each
+    of its elements in the channel's units. A pose channel takes ``translation_m`` for
+    each coordinate of its position, and ``rotation_rad`` for the largest angle between
+    any sample's orientation and the first one's. See *Rest watches* in docs/contracts.md.
+    """
+
+    cadence_ns: int = field(
+        metadata=meta("The spacing of samples the criteria were declared for.", unit="ns")
+    )
+    max_gap_ns: int = field(
+        metadata=meta("The largest spacing between samples still treated as continuous.", unit="ns")
+    )
+    dwell_ns: int = field(
+        metadata=meta("How long the readings must stay within bounds.", unit="ns")
+    )
+    variation: float | None = field(
+        default=None,
+        metadata=meta(
+            "The most each element's range may be over the dwell; joint-position channels only.",
+            unit="channel",
+        ),
+    )
+    translation_m: float | None = field(
+        default=None,
+        metadata=meta(
+            "The most each position coordinate's range may be over the dwell; pose only.",
+            unit="m",
+        ),
+    )
+    rotation_rad: float | None = field(
+        default=None,
+        metadata=meta(
+            "The largest angle any orientation may be from the dwell's first; pose only.",
+            unit="rad",
+        ),
+    )
+    source: str = field(
+        metadata=meta("Where the values come from: a datasheet, a driver, or a measurement.")
+    )
+
+    def _validate(self) -> None:
+        for name in ("cadence_ns", "max_gap_ns", "dwell_ns"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValidationError(
+                    "invalid_rest_criteria", f"{name} must be a positive integer", path=name
+                )
+        for name in ("variation", "translation_m", "rotation_rad"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise ValidationError(
+                    "invalid_rest_criteria", f"{name} must be finite and positive", path=name
+                )
+        if self.max_gap_ns < self.cadence_ns:
+            raise ValidationError(
+                "invalid_rest_criteria", "max_gap_ns must be at least cadence_ns", path="max_gap_ns"
+            )
+        if self.dwell_ns < self.cadence_ns:
+            raise ValidationError(
+                "invalid_rest_criteria", "dwell_ns must be at least cadence_ns", path="dwell_ns"
+            )
+        joint = self.variation is not None
+        pose = (self.translation_m is not None, self.rotation_rad is not None)
+        if joint == any(pose) or (any(pose) and not all(pose)):
+            raise ValidationError(
+                "invalid_rest_criteria",
+                "give variation, for joint positions, or both translation_m and rotation_rad, "
+                "for a pose",
+                path="variation",
+            )
+        if not self.source.strip():
+            raise ValidationError(
+                "invalid_rest_criteria", "say where the values come from", path="source"
+            )
+
+    def check_for(self, quantity: Quantity, path: str = "criteria") -> None:
+        """Raise unless these criteria can judge a channel of ``quantity``."""
+        if quantity not in REST_QUANTITIES:
+            raise ValidationError(
+                "criteria_mismatch", f"rest is not judged on {quantity} channels", path=path
+            )
+        if (quantity is Quantity.POSE) != (self.variation is None):
+            want = "translation_m and rotation_rad" if quantity is Quantity.POSE else "variation"
+            raise ValidationError(
+                "criteria_mismatch", f"a {quantity} channel's criteria give {want}", path=path
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ChannelRest(Value):
+    """The rest criteria a runtime declares for one channel it sources."""
+
+    channel: str = field(metadata=meta("Channel name."))
+    criteria: RestCriteria = field(metadata=meta("When its readings count as at rest."))
+
+    def _validate(self) -> None:
+        check_name(self.channel, path="channel")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

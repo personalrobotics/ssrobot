@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.JointRest v1",
+  "$ref": "#/$defs/JointRest",
+  "$defs": {
+    "JointRest": {
+      "type": "object",
+      "description": "A joint group, or another component's joints, comes to rest: judged on the",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.JointRest"
+        },
+        "version": {
+          "const": 1
+        },
+        "component": {
+          "type": "string",
+          "description": "The component whose joints are judged."
+        },
+        "criteria": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RestCriteria"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The criteria to judge by; None for those the channel's runtime declares."
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "component"
+      ],
+      "additionalProperties": false
+    },
+    "RestCriteria": {
+      "type": "object",
+      "description": "When a channel's readings count as at rest, as declared by whoever produces them.",
+      "properties": {
+        "cadence_ns": {
+          "type": "integer",
+          "description": "The spacing of samples the criteria were declared for.",
+          "x-unit": "ns"
+        },
+        "max_gap_ns": {
+          "type": "integer",
+          "description": "The largest spacing between samples still treated as continuous.",
+          "x-unit": "ns"
+        },
+        "dwell_ns": {
+          "type": "integer",
+          "description": "How long the readings must stay within bounds.",
+          "x-unit": "ns"
+        },
+        "variation": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The most each element's range may be over the dwell; joint-position channels only.",
+          "x-unit": "channel"
+        },
+        "translation_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The most each position coordinate's range may be over the dwell; pose only.",
+          "x-unit": "m"
+        },
+        "rotation_rad": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The largest angle any orientation may be from the dwell's first; pose only.",
+          "x-unit": "rad"
+        },
+        "source": {
+          "type": "string",
+          "description": "Where the values come from: a datasheet, a driver, or a measurement."
+        }
+      },
+      "required": [
+        "cadence_ns",
+        "max_gap_ns",
+        "dwell_ns",
+        "source"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

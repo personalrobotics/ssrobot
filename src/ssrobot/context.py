@@ -31,7 +31,6 @@ from ssrobot.commands import (
 from ssrobot.continuation import (
     OBJECT_TOLERANCE_M,
     OBJECT_TOLERANCE_RAD,
-    REST_TOLERANCE,
     Continuation,
     ContinuationReport,
     ContinuationResult,
@@ -90,6 +89,16 @@ from ssrobot.planning_contracts import (
     state_subject,
 )
 from ssrobot.preparation import prepare
+from ssrobot.rest import (
+    POSE_ELEMENTS,
+    JointRest,
+    ObjectRest,
+    RestChannel,
+    RestOutcome,
+    RestResult,
+    RestSample,
+    RestWatch,
+)
 from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime, SnapshotRuntime
 from ssrobot.scene import (
     Attachment,
@@ -128,6 +137,7 @@ class ContextState(enum.StrEnum):
 _S = ContextState
 ALLOWED_STATES: dict[str, frozenset[ContextState]] = {
     "observe": frozenset({_S.OPEN, _S.FAULTED}),
+    "watch_rest": frozenset({_S.OPEN, _S.FAULTED}),
     "submit": frozenset({_S.OPEN}),
     "execute": frozenset({_S.OPEN}),
     "prepare": frozenset({_S.OPEN}),
@@ -397,6 +407,10 @@ class RobotContext:
         # revisions' plans cannot execute, so a scene change drops them.
         self._prepared: dict[str, PreparedTrajectory] = {}
         self._planning_pool: ThreadPoolExecutor | None = None
+        self._watches: list[RestWatch] = []  # live rest watches, in start order
+        # Every rest result this context decided, by fingerprint: the only ones a
+        # continuation accepts as evidence.
+        self._rested: dict[str, RestResult] = {}
 
     # -- Properties ------------------------------------------------------------------
 
@@ -528,6 +542,8 @@ class RobotContext:
             closing = Diagnostic(code="context_closed", message="the context closed")
             for execution in self._active():
                 self._finish(execution, ExecutionState.CANCELED, closing)
+            for watch in list(self._watches):
+                self._end_rest(watch, RestOutcome.CANCELED, "the context closed")
             self._emit(TraceKind.CLOSED, "context", None)
         finally:
             self._state = ContextState.CLOSED
@@ -557,6 +573,153 @@ class RobotContext:
         self._accept_direct(observation.stamp)
         self._emit(TraceKind.OBSERVED, self._runtime_source, observation, observation.stamp)
         return observation
+
+    def watch_rest(self, condition: JointRest | ObjectRest, *, deadline_ns: int) -> RestWatch:
+        """Start watching for ``condition``: a component's joints, or a scene object,
+        coming to rest. It ends at rest, or at ``deadline_ns``, a time on the runtime
+        clock after now, whichever is first; a channel that stops answering, or answers
+        malformed, ends it too. Never at rest otherwise.
+
+        The condition is judged on one declared channel the runtime confirms: for
+        ``JointRest``, a joint-position channel whose source covers the component's
+        joints, preferring, without explicit criteria, the first with declared ones; for
+        ``ObjectRest``, a pose channel whose source is the object. Without explicit
+        criteria, the criteria are the ones the channel's runtime declares
+        (``RuntimeInfo.rest``); with neither, the watch is refused (``no_rest_criteria``).
+        The watch samples its channel once each time the context's time advances, and
+        records one ``rested`` trace record when it ends."""
+        info = self._require("watch_rest")
+        if not isinstance(condition, JointRest | ObjectRest):
+            raise ValidationError(
+                "wrong_type", "condition must be a JointRest or an ObjectRest", path="condition"
+            )
+        now = self.now
+        if (
+            isinstance(deadline_ns, bool)
+            or not isinstance(deadline_ns, int)
+            or deadline_ns <= now.time_ns
+        ):
+            raise ValidationError(
+                "out_of_limits",
+                f"deadline_ns must be a time after now ({now.time_ns} ns)",
+                path="deadline_ns",
+            )
+        declared = {r.channel: r.criteria for r in info.rest}
+        judged: tuple[str, ...]
+        if isinstance(condition, JointRest):
+            judged = self._description.component_joints(condition.component)
+            if not judged:
+                raise ValidationError(
+                    "invalid_argument",
+                    f"{condition.component!r} moves no joints",
+                    path="component",
+                )
+            candidates = [
+                spec
+                for spec in self._description.channels
+                if spec.quantity is Quantity.JOINT_POSITION
+                and spec.name in info.channels
+                and set(judged) <= set(self._description.component_joints(spec.source))
+            ]
+            what = f"the joints of {condition.component!r}"
+        else:
+            candidates = [
+                spec
+                for spec in (*info.scene_channels, *self._description.channels)
+                if spec.quantity is Quantity.POSE
+                and spec.source == condition.object
+                and spec.name in info.channels
+            ]
+            what = f"the pose of {condition.object!r}"
+        if not candidates:
+            raise CapabilityError(
+                "rest_unobservable", f"no confirmed channel observes {what}", path="condition"
+            )
+        if condition.criteria is None:
+            spec = next((c for c in candidates if c.name in declared), candidates[0])
+        else:
+            spec = candidates[0]
+        criteria = condition.criteria or declared.get(spec.name)
+        if criteria is None:
+            raise CapabilityError(
+                "no_rest_criteria",
+                f"runtime {info.runtime!r} declares no rest criteria for {spec.name!r}, and "
+                "the condition gives none",
+                path="condition.criteria",
+            )
+        criteria.check_for(spec.quantity, path="condition.criteria")
+        elements: tuple[str, ...]
+        if spec.quantity is Quantity.POSE:
+            elements = judged = POSE_ELEMENTS
+        else:
+            elements = self._description.component_joints(spec.source)
+        watch = RestWatch(
+            self,
+            condition=condition,
+            channel=RestChannel(
+                channel=spec.name,
+                quantity=spec.quantity,
+                observed=spec.source,
+                runtime=info.runtime,
+                privileged=spec.name in info.privileged,
+            ),
+            elements=elements,
+            judged=judged,
+            criteria=criteria,
+            start=now,
+            deadline=Timestamp(clock=now.clock, time_ns=deadline_ns),
+        )
+        self._watches.append(watch)
+        return watch
+
+    def _sample_rest(self, watch: RestWatch) -> None:
+        """Take one sample for a live watch, without tracing it, and end the watch if it
+        decides."""
+        info = self.info
+        spec = watch.channel
+        request = ObservationRequest(channels=(spec.channel,))
+        try:
+            check_request(self._description, request, info)
+            observation = self._runtime.observe(request)
+        except SsrobotError as e:
+            self._end_rest(watch, RestOutcome.UNAVAILABLE, f"{spec.channel}: {e.code}: {e.message}")
+            return
+        try:
+            check_observation(self._description, request, observation, info)
+        except ValidationError as e:
+            self._end_rest(watch, RestOutcome.MALFORMED, f"{spec.channel}: {e.code}: {e.message}")
+            return
+        self._accept_direct(observation.stamp)
+        reading = observation.readings[0]
+        value = reading.value
+        assert isinstance(value, tuple)
+        if not all(math.isfinite(v) for v in value):
+            self._end_rest(watch, RestOutcome.MALFORMED, f"{spec.channel}: a value is not finite")
+            return
+        age = observation.stamp.time_ns - reading.stamp.time_ns
+        if age > watch.criteria.max_gap_ns:
+            self._end_rest(
+                watch,
+                RestOutcome.UNAVAILABLE,
+                f"{spec.channel}: its reading is {age} ns old, more than the largest gap "
+                f"{watch.criteria.max_gap_ns} ns",
+            )
+            return
+        sample = RestSample(time_ns=reading.stamp.time_ns, value=value)
+        if watch._judge.add(sample) and sample.time_ns <= watch.deadline.time_ns:
+            self._end_rest(
+                watch,
+                RestOutcome.AT_REST,
+                f"{spec.channel}: within the criteria for {watch.criteria.dwell_ns} ns",
+            )
+
+    def _end_rest(self, watch: RestWatch, outcome: RestOutcome, detail: str) -> None:
+        if watch.done:
+            return
+        result = watch._finish(self.now, outcome, detail)
+        self._watches.remove(watch)
+        self._rested[fingerprint(result)] = result
+        self._emit(TraceKind.RESTED, "context", result)
 
     # -- Scene -----------------------------------------------------------------------
 
@@ -1166,8 +1329,8 @@ class RobotContext:
         self,
         continuation: Continuation,
         *,
+        rest: RestResult,
         arrival_tolerance: float | None = None,
-        rest_tolerance: float = REST_TOLERANCE,
         object_tolerance_m: float = OBJECT_TOLERANCE_M,
         object_tolerance_rad: float = OBJECT_TOLERANCE_RAD,
         source: str = "planner",
@@ -1178,12 +1341,15 @@ class RobotContext:
         Every tolerance must be finite and >= 0. ``arrival_tolerance`` defaults to the
         runtime's declared goal tolerance (``TrajectoryContract.goal_tolerance``), what
         a source's success already guarantees; a runtime that declares none needs one
-        passed. It captures the actual state and checks, in order: the source execution
-        succeeded; the plan's joints are observed at rest, by a reading no older than
-        the arrival; each is within ``arrival_tolerance`` of the plan's start, a
-        continuous joint the short way round; the scene changed only as predicted (same
-        revision, attachments and fixtures, free objects within ``object_tolerance_m``
-        and ``object_tolerance_rad``); and, for a constrained motion, the actual start
+        passed. ``rest`` is the result of a ``JointRest`` watch this context ran. It
+        captures the actual state and checks, in order: the source execution succeeded;
+        a confirmed joint-position channel covers the plan's joints
+        (``rest_unobservable``); ``rest`` is ``at_rest``, judged those joints, and its
+        window ends no earlier than the arrival (``not_at_rest``); each joint is within
+        ``arrival_tolerance`` of the plan's start, a continuous joint the short way
+        round; the scene changed only as predicted (same revision, attachments and
+        fixtures, free objects within ``object_tolerance_m`` and
+        ``object_tolerance_rad``); and, for a constrained motion, the actual start
         satisfies its path constraint, by the planner's validator. An ``OffsetGoal`` keeps
         the line the plan was made on: one with no ``reference_pose`` gets the frame's
         pose at the plan's start; an explicit one is kept. Then the plan's planner rebases
@@ -1193,7 +1359,12 @@ class RobotContext:
         snapshot. A refusal submits nothing; its code says which check failed. The report
         is the evidence either way."""
         self._require("execute_continuation")
-        rest_tolerance = check_tolerance(rest_tolerance, "rest_tolerance")
+        if not isinstance(rest, RestResult):
+            raise ValidationError("wrong_type", "rest must be a RestResult", path="rest")
+        if self._rested.get(fingerprint(rest)) != rest:
+            raise ValidationError(
+                "unknown_rest", "this context did not decide that rest", path="rest"
+            )
         object_tolerance_m = check_tolerance(object_tolerance_m, "object_tolerance_m")
         object_tolerance_rad = check_tolerance(object_tolerance_rad, "object_tolerance_rad")
         if arrival_tolerance is None:
@@ -1229,7 +1400,7 @@ class RobotContext:
             "actual_start": actual_start,
             "max_start_gap": gap,
             "arrival_tolerance": arrival_tolerance,
-            "rest_tolerance": rest_tolerance,
+            "rest": rest,
             "object_tolerance_m": object_tolerance_m,
             "object_tolerance_rad": object_tolerance_rad,
         }
@@ -1252,13 +1423,29 @@ class RobotContext:
             state = "unknown" if source_execution is None else source_execution.status.state.value
             return refuse("source_not_succeeded", f"{prediction.source} is {state}")
 
-        rest, moving, rest_stamp = self._rest(request.joints, rest_tolerance, actual.stamp)
-        evidence["rest"] = rest
-        evidence["rest_stamp"] = rest_stamp
-        if moving is None:
-            return refuse("rest_unobservable", rest)
-        if moving:
-            return refuse("not_at_rest", rest, discrepancies=tuple(moving))
+        info = self.info
+        if not any(
+            spec.quantity is Quantity.JOINT_POSITION
+            and spec.name in info.channels
+            and set(request.joints) <= set(self._description.component_joints(spec.source))
+            for spec in self._description.channels
+        ):
+            return refuse(
+                "rest_unobservable", "no confirmed joint-position channel covers the plan's joints"
+            )
+        if rest.outcome is not RestOutcome.AT_REST:
+            return refuse("not_at_rest", f"the rest watch ended {rest.outcome}: {rest.detail}")
+        if not isinstance(rest.condition, JointRest) or not set(request.joints) <= set(rest.judged):
+            return refuse(
+                "not_at_rest", f"the rest watch judged {list(rest.judged)}, not the plan's joints"
+            )
+        ended = rest.window[-1].time_ns
+        if ended < actual.stamp.time_ns:
+            return refuse(
+                "not_at_rest",
+                f"the rest window ended at {ended} ns, before the arrival snapshot at "
+                f"{actual.stamp.time_ns} ns",
+            )
 
         off = tuple(
             Discrepancy(what=j, predicted=p, actual=a, tolerance=arrival_tolerance)
@@ -1395,46 +1582,6 @@ class RobotContext:
                 d = math.remainder(d, 2 * math.pi)
             gaps.append(abs(d))
         return tuple(gaps)
-
-    def _rest(
-        self, joints: Sequence[str], tolerance: float, arrival: Timestamp
-    ) -> tuple[str, list[Discrepancy] | None, Timestamp | None]:
-        """Whether ``joints`` are observed at rest: by a declared joint-velocity channel
-        whose source covers them all, read no earlier than ``arrival``, and when that
-        reading was valid. None when no such reading is available."""
-        info = self.info
-        for spec in self._description.channels:
-            if spec.quantity is not Quantity.JOINT_VELOCITY or spec.name not in info.channels:
-                continue
-            try:
-                covered = self._description.component_joints(spec.source)
-            except SsrobotError:
-                continue
-            if not set(joints) <= set(covered):
-                continue
-            reading = self.observe(ObservationRequest(channels=(spec.name,))).readings[0]
-            if reading.stamp.time_ns < arrival.time_ns:
-                return (
-                    f"{spec.name}: its reading is from {reading.stamp.time_ns} ns, before the "
-                    f"arrival snapshot at {arrival.time_ns} ns",
-                    None,
-                    reading.stamp,
-                )
-            value = reading.value
-            assert isinstance(value, tuple)
-            speeds = dict(zip(covered, (float(v) for v in value), strict=True))
-            moving = [
-                Discrepancy(what=j, predicted=0.0, actual=speeds[j], tolerance=tolerance)
-                for j in joints
-                if abs(speeds[j]) > tolerance
-            ]
-            peak = max(abs(speeds[j]) for j in joints)
-            return (
-                f"{spec.name}: at most {peak:.3g}/s, tolerance {tolerance}",
-                moving,
-                reading.stamp,
-            )
-        return "no declared joint-velocity channel covers the plan's joints", None, None
 
     # -- Commands --------------------------------------------------------------------
 
@@ -1922,6 +2069,13 @@ class RobotContext:
                 f"runtime marks {sorted(info.privileged)} privileged; the declarations mark "
                 f"{sorted(marked)}",
             )
+        for rest in info.rest:
+            try:
+                rest.criteria.check_for((robot.get(rest.channel) or scene[rest.channel]).quantity)
+            except ValidationError as e:
+                raise CapabilityError(
+                    "undeclared_capability", f"rest criteria for {rest.channel!r}: {e.message}"
+                ) from None
         wrenches = {c.name for c in self._description.channels if c.quantity is Quantity.WRENCH}
         trajectories = {
             c.component for c in info.commands if c.kind is CommandKind.JOINT_TRAJECTORY
@@ -2070,6 +2224,12 @@ class RobotContext:
             if deadline is not None and deadline.time_ns <= self._now.time_ns:
                 overdue = Diagnostic(code="deadline_exceeded", message="the deadline passed")
                 self._finish(execution, ExecutionState.TIMED_OUT, overdue)
+        for watch in list(self._watches):
+            if self._now.time_ns > watch._last_ns:  # a new tick: a new sample is due
+                watch._last_ns = self._now.time_ns
+                self._sample_rest(watch)
+            if not watch.done and watch.deadline.time_ns <= self._now.time_ns:
+                self._end_rest(watch, RestOutcome.DEADLINE, "the deadline passed")
 
     def _apply_health(self, health: RuntimeHealth) -> None:
         known = self._description.component_names()

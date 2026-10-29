@@ -68,6 +68,15 @@ Decoding is as strict as every other ssrobot record: unknown keys, missing requi
 keys, wrong types, and duplicate names fail. The semantic layer is validated against
 the canonical model when the description is composed.
 
+A package declares a robot's observation channels, but not when their readings count as
+at rest. That depends on the source of the readings, its sampling, quantization, noise,
+and the controller's settling, and a simulated arm and the physical one are different
+sources. Each runtime declares rest criteria for the channels it sources: a MuJoCo
+profile in its `[[rest]]` tables and `object_rest` (see *Profile* in
+[mujoco.md](mujoco.md)), and a hardware driver from its own measurements. A channel no
+source has criteria for cannot be watched without explicit criteria (*Rest watches* in
+[contracts.md](contracts.md)).
+
 ### Joint limits
 
 A model format may not express every limit:

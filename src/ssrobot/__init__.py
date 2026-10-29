@@ -123,7 +123,15 @@ from ssrobot.inference import (
     InferenceReport,
     InferenceSettings,
 )
-from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
+from ssrobot.observations import (
+    ChannelRest,
+    ChannelSpec,
+    Observation,
+    ObservationRequest,
+    Quantity,
+    Reading,
+    RestCriteria,
+)
 from ssrobot.package import (
     FileEntry,
     ModelEntry,
@@ -171,6 +179,15 @@ from ssrobot.portfolio import (
 from ssrobot.preparation import prepare
 from ssrobot.replay import ReplayRuntime, ReplayScript, ReplayTick
 from ssrobot.resources import ResolvedFile, SourceItem
+from ssrobot.rest import (
+    JointRest,
+    ObjectRest,
+    RestChannel,
+    RestOutcome,
+    RestResult,
+    RestSample,
+    RestWatch,
+)
 from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime, SnapshotRuntime
 from ssrobot.scene import (
     Attachment,
@@ -217,6 +234,7 @@ __all__ = [
     "Chains",
     "ChainsReport",
     "ChainsRun",
+    "ChannelRest",
     "ChannelSpec",
     "ClockMode",
     "CollisionAllowance",
@@ -265,6 +283,7 @@ __all__ = [
     "JointLimitDeclaration",
     "JointLimits",
     "JointMode",
+    "JointRest",
     "JointTrajectory",
     "JsonlTrace",
     "KinematicModel",
@@ -279,6 +298,7 @@ __all__ = [
     "MotionValidation",
     "MotionValidator",
     "NamedConfiguration",
+    "ObjectRest",
     "ObjectState",
     "Observation",
     "ObservationRequest",
@@ -309,6 +329,12 @@ __all__ = [
     "ReplayScript",
     "ReplayTick",
     "ResolvedFile",
+    "RestChannel",
+    "RestCriteria",
+    "RestOutcome",
+    "RestResult",
+    "RestSample",
+    "RestWatch",
     "ResultForm",
     "RobotContext",
     "RobotDescription",
