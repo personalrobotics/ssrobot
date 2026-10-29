@@ -29,7 +29,11 @@ turnarounds, slow and fast; a slow creep; a reach with a pause; and single-joint
 out-and-backs of the first and last joint. Each starts after ``PRE_S`` of hold. Where the
 robot's scenario can grasp its scene object (a gripper, and a scenario ``grip`` table),
 the arm also carries it. Each object trial drops the scene's free object from above its
-resting pose, upright, tilted, and on its side, and holds for ``HOLD_S``.
+resting pose, upright, tilted, and on its side, and holds for ``HOLD_S``. Only trials that
+end at rest count toward the criteria: a joint trial whose trajectory succeeded and whose
+held object is still raised, and a drop that ends on a flat face, a stable equilibrium. A
+cylinder on its round side is in neutral equilibrium and may roll on; it is recorded and
+watched, but does not count.
 
 Each trial runs twice. The first records the channel every tick, and the criteria are
 derived from those recordings. The second runs the same trial with a rest watch on the
@@ -634,40 +638,47 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
         ctx.run_until(ctx.submit(move), max_ticks=20_000)
         after = next(o.pose for o in ctx.snapshot().objects if o.name == spec["object"])
         held["object_raised_m"] = after.position[2] - before.position[2]
+        held["object_raised_to_m"] = after.position[2]
         return tuple(move.positions[-1])
 
-    motions = {name: (describe, legs) for name, describe, legs in arm.motions()}
-
-    def small(q: tuple[float, ...]) -> list[Leg]:
-        delta = [
+    def revolute(revolute: float, q: tuple[float, ...]) -> list[float]:
+        # The prismatic joint stays where it raised the object: lowering it would drive
+        # the held object back into the table.
+        return [
             0.0 if k is JointKind.PRISMATIC else d
-            for d, k in zip(arm.delta(q, 0.2), arm.kinds, strict=True)
+            for d, k in zip(arm.delta(q, revolute), arm.kinds, strict=True)
         ]
-        return [arm.leg("back", delta, 2.0)]
 
-    out = [
+    def back(q: tuple[float, ...]) -> list[Leg]:
+        return [arm.leg("back", revolute(0.2, q), 2.0)]
+
+    def slow(q: tuple[float, ...]) -> list[Leg]:
+        return [arm.leg("move", revolute(0.01, q), 5.0)]
+
+    def pause(q: tuple[float, ...]) -> list[Leg]:
+        half = revolute(0.1, q)
+        return [
+            arm.leg("move", half, 1.0),
+            ("pause", [0.0] * len(q), 0.5),
+            arm.leg("move", half, 1.0),
+        ]
+
+    motions = [
+        ("out_and_back", "every revolute joint 0.2 rad out and back", back),
+        ("slow_creep", "every revolute joint 0.01 rad over 5 s", slow),
+        ("pause", "every revolute joint 0.1 rad, a 0.5 s pause, then 0.1 rad more", pause),
+    ]
+    return [
         Trial(
-            name="payload/out_and_back",
-            describe="holding the object: every revolute joint 0.2 rad out and back",
+            name=f"payload/{name}",
+            describe=f"holding the object: {describe}",
             prepare=grasp,
-            legs=small,
+            legs=legs,
             scene=robot.scene,
             extra=held,
         )
+        for name, describe, legs in motions
     ]
-    for name in ("slow_creep", "pause"):
-        describe, legs = motions[name]
-        out.append(
-            Trial(
-                name=f"payload/{name}",
-                describe=f"holding the object: {describe}",
-                prepare=grasp,
-                legs=legs,
-                scene=robot.scene,
-                extra=held,
-            )
-        )
-    return out
 
 
 def run_joint(
@@ -891,8 +902,8 @@ def calibrate(
     that end resting, by ``resting`` on their summary, measure the floor and the dwell;
     the others are recorded, and watched, but do not count."""
     summaries = [summarize(r, pose) for r in runs]
-    for s in summaries:
-        s["counts"] = resting(s)
+    for t, s in zip(trials, summaries, strict=True):
+        s["counts"] = resting({**t, **s})
     out: dict[str, Any] = {"trials": [{**t, **s} for t, s in zip(trials, summaries, strict=True)]}
     counted = [i for i, s in enumerate(summaries) if s["counts"]]
     used = [summaries[i] for i in counted]
@@ -967,6 +978,22 @@ def calibrate(
     if not blocked:
         out["derived"] = {**derived, "source": source(derived)}
     return out
+
+
+def completed(name: str) -> Callable[[dict[str, Any]], bool]:
+    """Whether a joint trial is one the rule can use: its trajectory succeeded, and a
+    held object is still raised, by at least half the lift, where the arm carried it."""
+
+    def test(trial: dict[str, Any]) -> bool:
+        if trial["execution"]["state"] != "succeeded":
+            return False
+        held = trial.get("payload")
+        if held is None:
+            return True
+        floor_z = held["object_raised_to_m"] - held["object_raised_m"] / 2
+        return bool(trial["objects"][name][2] > floor_z)
+
+    return test
 
 
 def upright(limit: float) -> Callable[[dict[str, Any]], bool]:
@@ -1044,7 +1071,16 @@ def calibrate_robot(robot: Robot, out: Path, prov: dict[str, Any], artifact: str
         ) -> list[dict[str, Any]]:
             return [run_joint(robot, arm, channel, t, criteria) for t in trials]
 
-        entry = calibrate(summaries, runs, rerun, element_kinds(arm), tick, False, source(channel))
+        entry = calibrate(
+            summaries,
+            runs,
+            rerun,
+            element_kinds(arm),
+            tick,
+            False,
+            source(channel),
+            resting=completed(robot.spec.get("object", "")),
+        )
         entry = {
             "group": group,
             "joints": list(arm.joints),
