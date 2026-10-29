@@ -16,12 +16,13 @@ object_rest = { cadence_ns = 2_000_000, max_gap_ns = 2_000_000, dwell_ns = 100_0
 
 # When the arm's joint positions count as at rest, as this simulation produces them: one
 # sample per control tick (arm.xml's 2 ms timestep, one substep), and a dropped tick
-# breaks continuity. A still joint varies by at most 2*pi/2^17 rad, the resolution of the
-# 17-bit single-turn absolute encoder the example arm is modelled with, for 70 ms, the
-# time constant of its position servos, (kv + damping) / kp = (20 + 1) / 300 s in arm.xml.
+# breaks continuity. The example arm is illustrative and has no physical counterpart, so
+# its bound is a chosen one, 2*pi/2^17 rad, the step of a 17-bit encoder, standing in for
+# the calibration a real robot's simulated signal gets. It must hold for 70 ms, the time
+# constant of the arm's position servos, (kv + damping) / kp = (20 + 1) / 300 s in arm.xml.
 [[rest]]
 channel = "arm_q"
-criteria = { cadence_ns = 2_000_000, max_gap_ns = 2_000_000, dwell_ns = 70_000_000, variation = 4.7936899621426287e-05, source = "example arm: 17-bit absolute encoder resolution, 2*pi/2^17 rad; dwell of one position-servo time constant, (kv + damping) / kp = 21/300 s, from arm.xml; one sample per 2 ms control tick" }
+criteria = { cadence_ns = 2_000_000, max_gap_ns = 2_000_000, dwell_ns = 70_000_000, variation = 4.7936899621426287e-05, source = "example arm, illustrative: a chosen bound of 2*pi/2^17 rad, a 17-bit encoder step; dwell of one position-servo time constant, (kv + damping) / kp = 21/300 s, from arm.xml; one sample per 2 ms control tick" }
 
 [[grippers]]
 gripper = "gripper"

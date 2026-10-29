@@ -469,10 +469,12 @@ channel. The runtime reports them in `RuntimeInfo.rest` for the channels it conf
 channel the description does not declare, criteria of the wrong kind for the channel, or
 a channel listed twice is refused (`invalid_profile`). A channel not listed, and every
 object's pose without `object_rest`, has no criteria from this source. Every value needs
-its `source`: a sample spacing follows from the control tick, a joint's variation from
-the encoder resolution the simulated arm is modelled with, and a dwell from a
-declared time constant. The privileged object poses carry no sensor noise, so their
-bounds come from the contact model rather than from a sensor.
+its `source`: a sample spacing follows from the control tick, and a variation and a
+dwell from a calibration of the simulated signal itself, which exercises the arm through
+representative motions, including zero-velocity crossings and chatter, and is cited from
+the profile. A simulated value never stands in for the physical robot's. The privileged
+object poses carry no sensor noise, so their bounds come from the contact model rather
+than from a sensor.
 
 ## Execution
 
