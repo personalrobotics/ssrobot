@@ -31,8 +31,8 @@ reference scenario's cylinder, so the object criteria are this cylinder's.
 The choice, one variation and one dwell per channel:
 - variation, per element: just above the largest stationary chatter in the quantized
   readings after genuine settling, the point from which the exact simulated state moves
-  less than one step for the rest of the trace: the largest stationary range, in whole
-  steps, plus one step. For a pose, one translation bound over the coordinates and one
+  less than one step for the rest of the trace: the largest stationary range, rounded to
+  whole steps, plus one step. For a pose, one translation bound over the coordinates and one
   rotation bound.
 - dwell: longer than the longest interval that could falsely appear stable: a run of
   readings, as a watch keeps them, within the variation, after which a reading breaks
@@ -847,8 +847,9 @@ def choose(
             s = max(settled(rec.exact, steps, pose), run["watched_from"])
             ranges.append(chatter(rec.values[s:], pose))
     largest = [max(r[e] for r in ranges) for e in range(len(steps))]
-    # The smallest whole number of steps strictly above the largest stationary range.
-    variation = [(math.floor(x / s + 1e-6) + 1) * s for x, s in zip(largest, steps, strict=True)]
+    # Chatter counted in whole steps (each range rounded to the nearest step), and the
+    # variation one step above it.
+    variation = [(round(x / s) + 1) * s for x, s in zip(largest, steps, strict=True)]
     bound = Bound(variation, pose)
     longest = {"span_ns": 0}
     for run, counts in zip(runs, counted, strict=True):
@@ -993,9 +994,9 @@ def summarize(entries: list[dict[str, Any]]) -> dict[str, Any]:
 def criteria_source(prov: dict[str, Any], artifact: str, what: str) -> str:
     return (
         f"MuJoCo source's values, calibrated from recorded traces by ssrobot "
-        f"scripts/calibrate_rest.py at {prov['ssrobot_commit'][:12]} on "
-        f"{prov['repository']}@{prov['commit'][:12]}, artifact ssrobot {artifact}: {what}; "
-        "one sample per control tick; the hardware is unmeasured"
+        f"scripts/calibrate_rest.py at ssrobot {prov['ssrobot_commit'][:12]} on "
+        f"{prov['repository']}@{prov['commit'][:12]}: {what}; one sample per control tick; "
+        "the hardware is unmeasured; reproduced by rerunning the script at those commits"
     )
 
 
