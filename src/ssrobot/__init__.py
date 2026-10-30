@@ -182,8 +182,10 @@ from ssrobot.resources import ResolvedFile, SourceItem
 from ssrobot.rest import (
     JointRest,
     ObjectRest,
+    RestChannel,
     RestOutcome,
     RestResult,
+    RestSample,
     RestWatch,
 )
 from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime, SnapshotRuntime
@@ -327,9 +329,11 @@ __all__ = [
     "ReplayScript",
     "ReplayTick",
     "ResolvedFile",
+    "RestChannel",
     "RestCriteria",
     "RestOutcome",
     "RestResult",
+    "RestSample",
     "RestWatch",
     "ResultForm",
     "RobotContext",

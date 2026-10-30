@@ -1062,27 +1062,27 @@ when its observed position remains within a declared variation for a declared dw
   the description's, whoever produces it. A condition no confirmed channel can judge is
   refused (`rest_unobservable`), as are criteria of the wrong kind for the channel
   (`criteria_mismatch`).
-- **The criteria.** A `RestCriteria` gives `cadence_ns`, the spacing of samples it was
-  declared for; `max_gap_ns`, the largest spacing still treated as continuous;
-  `dwell_ns`, how long the readings must stay within bounds; the bounds; and `source`,
-  where the values come from. A joint-position channel's bound is `variation`, one bound per
-  element of the channel: the most that joint's range may be, in its units (rad for a
-  revolute joint, m for a prismatic one). Its length must match the channel's shape
-  (`criteria_mismatch` for a watch, `invalid_profile` in a MuJoCo profile). A pose channel's bounds are `translation_m`,
+- **The criteria.** A `RestCriteria` gives `max_gap_ns`, the largest spacing between
+  readings still treated as continuous; `dwell_ns`, how long the readings must stay
+  within bounds; the bounds; and `source`, where the values come from. A joint-position
+  channel's bound is `variation`, one bound per element of the channel: the most that
+  joint's range may be, in its units (rad for a revolute joint, m for a prismatic one).
+  Its length must match the channel's shape (`criteria_mismatch` for a watch,
+  `invalid_profile` in a MuJoCo profile). A pose channel's bounds are `translation_m`,
   the most each position coordinate's range may be, and `rotation_rad`, the largest
   angle any orientation may be from the first one's. Every number is finite and
-  positive, both `max_gap_ns` and `dwell_ns` are at least `cadence_ns`, and `source` is
-  not blank (`invalid_rest_criteria`).
-- **Who declares them.** Rest depends on the whole observed signal: its sampling,
-  quantization, estimator noise, the controller's settling, and how long stillness must
-  last. It is therefore a property of whoever produces the readings, not of the robot.
-  A simulated arm and the physical one are different sources, so a criterion measured
-  in one never silently becomes the other's. The runtime that sources a channel declares
-  its criteria in `RuntimeInfo.rest`. A robot package declares none. A condition may
-  instead carry explicit criteria, with their own source. A channel with neither is
-  refused when the watch starts (`no_rest_criteria`). There is no default.
-  `ReplayRuntime` declares none; `MujocoRuntime` declares those of its profile (see
-  [mujoco.md](mujoco.md)).
+  positive, and `source` is not blank (`invalid_rest_criteria`). The decision uses the
+  readings' own stamps, so the criteria name no sampling rate.
+- **Who declares them.** A source knows the readings it produces; a caller knows how
+  much stillness its action needs, and two decisions may judge the same readings by
+  different criteria. So a condition may carry explicit criteria, with their own source,
+  and the runtime that sources a channel may offer criteria in `RuntimeInfo.rest`, but
+  only for the channels its evidence covers. A simulated arm and the physical one are
+  different sources, so a criterion measured in one never silently becomes the other's.
+  A robot package declares none. A channel with neither is refused when the watch
+  starts (`no_rest_criteria`). There is no core default. `ReplayRuntime` offers none;
+  `MujocoRuntime` offers those its profile declares for the robot's joint-position
+  channels, and none for scene objects' poses (see [mujoco.md](mujoco.md)).
 - **The watch.** `RobotContext.watch_rest(condition, *, deadline_ns)` returns a
   `RestWatch` with `done`, `result`, and `cancel()`. `deadline_ns` is a time on the
   runtime clock after now (`out_of_limits`). Each time the context's time advances on a
@@ -1109,7 +1109,9 @@ when its observed position remains within a declared variation for a declared dw
 
 `execute_continuation` takes the result of a `JointRest` watch as its evidence that the
 arm arrived (see *Interleaving planning and execution* in [planning.md](planning.md)).
-It accepts only a result this context decided (`unknown_rest`).
+It accepts only a result this context decided (`unknown_rest`). The context keeps only
+each decided result's fingerprint for that check; the result itself, with the samples
+that justify it, is in the trace.
 
 ## Traces
 
