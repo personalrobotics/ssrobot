@@ -648,18 +648,6 @@ class RobotContext:
                 path="condition.criteria",
             )
         criteria.check_for(spec.quantity, path="condition.criteria", shape=spec.shape)
-        if isinstance(condition, ObjectRest) and condition.criteria is None:
-            # The source declares the signal; the object supplies how long it must last.
-            assert condition.dwell_ns is not None and condition.dwell_source is not None
-            criteria = replace(
-                criteria,
-                dwell_ns=condition.dwell_ns,
-                source=f"signal: {criteria.source}; dwell: {condition.dwell_source}",
-            )
-        if criteria.dwell_ns is None:
-            raise ValidationError(
-                "invalid_rest_criteria", "the criteria give no dwell", path="condition.criteria"
-            )
         elements: tuple[str, ...]
         if spec.quantity is Quantity.POSE:
             elements = judged = POSE_ELEMENTS
@@ -2085,11 +2073,6 @@ class RobotContext:
             try:
                 spec = robot.get(rest.channel) or scene[rest.channel]
                 rest.criteria.check_for(spec.quantity, shape=spec.shape)
-                if spec.quantity is Quantity.POSE and rest.criteria.dwell_ns is not None:
-                    raise ValidationError(
-                        "criteria_mismatch",
-                        "a pose source declares no dwell: the object supplies it",
-                    )
             except ValidationError as e:
                 raise CapabilityError(
                     "undeclared_capability", f"rest criteria for {rest.channel!r}: {e.message}"

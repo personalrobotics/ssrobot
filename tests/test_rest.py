@@ -17,15 +17,13 @@ judged by the criteria the example's MuJoCo profile declares: ``arm_q`` by its
   ``unavailable``, never at rest.
 - ``missing``: ``arm_q`` stops answering. The watch ends ``unavailable``.
 - ``ball``: the dropped ball of test_scene_observations, onto a ramp that rolls it into a
-  wall. ``ObjectRest`` judges its privileged pose by the profile's signal and the ball's
-  own dwell (``BALL_DWELL_NS``), and fires after it lands and rolls to the wall, not
-  while it falls or rolls, and every dwell of the 200 ticks after still meets the
+  wall. ``ObjectRest`` fires on its privileged pose after it lands and rolls to the wall,
+  not while it falls or rolls, and every dwell of the 200 ticks after still meets the
   criteria.
 - ``refused``: a watch on joints no confirmed channel observes (``rest_unobservable``),
   one whose runtime declares no criteria for the channel, ``ReplayRuntime`` here
-  (``no_rest_criteria``), criteria of the wrong kind or count (``criteria_mismatch``), an
-  object rest without the object's dwell (``invalid_rest_criteria``), and a deadline that
-  is not after now (``out_of_limits``).
+  (``no_rest_criteria``), criteria of the wrong kind (``criteria_mismatch``), and a
+  deadline that is not after now (``out_of_limits``).
 
 The oracle uses only the readings the test recorded. It finds the first tick at which
 some run of consecutive readings ending there spans the dwell, has no gap over the
@@ -93,19 +91,6 @@ SCENE = f"""<mujoco>
   </worldbody>
 </mujoco>
 """
-
-
-RAMP_RAD = 0.15
-BALL_DWELL_NS = TICK_NS * math.ceil(
-    math.sqrt(2 * 0.001 / (5 / 7 * 9.81 * math.sin(RAMP_RAD))) * 1e9 / TICK_NS
-)
-BALL_DWELL_SOURCE = (
-    "the ball's own dynamics: a solid ball momentarily still on the 0.15 rad ramp rolls "
-    "out of the 1 mm bound in sqrt(2 x 0.001 / (5/7 g sin 0.15)) = 43.7 ms, rounded up to "
-    "whole 2 ms ticks; staying within it longer means it is held, here by the wall"
-)
-"""The ball's dwell, which the ball supplies: a stop on the slope shorter than this is a
-turnaround, not rest."""
 
 
 class _Reading:
@@ -229,7 +214,6 @@ def _oracle(result: RestResult, readings: list[list[Any]]) -> dict[str, Any]:
     """The first tick at which the recorded readings justify rest, and whether the
     result agrees with it."""
     c = result.criteria
-    assert c.dwell_ns is not None  # a watch always judges with a dwell
     judged = [result.elements.index(e) for e in result.judged]
     samples: list[tuple[int, list[float]]] = []
     for t, v in readings:
@@ -349,10 +333,7 @@ def _ball(work: Path) -> dict[str, Any]:
     touches = ObservationRequest(channels=("contact.ball.ramp", "contact.ball.wall"))
     landed: dict[str, int] = {}
     with RobotContext(package.description, runtime) as ctx:
-        watch = ctx.watch_rest(
-            ObjectRest("ball", dwell_ns=BALL_DWELL_NS, dwell_source=BALL_DWELL_SOURCE),
-            deadline_ns=ctx.now.time_ns + 5_000_000_000,
-        )
+        watch = ctx.watch_rest(ObjectRest("ball"), deadline_ns=ctx.now.time_ns + 5_000_000_000)
         pose = ObservationRequest(channels=("ball.pose",))
         readings: list[list[Any]] = []
         after, fired = 0, False
@@ -405,13 +386,7 @@ def _refusals() -> dict[str, str]:
         out["gripper_joints"] = code(
             lambda: ctx.watch_rest(JointRest("gripper"), deadline_ns=later)
         )
-        out["unknown_object"] = code(
-            lambda: ctx.watch_rest(
-                ObjectRest("ball", dwell_ns=BALL_DWELL_NS, dwell_source=BALL_DWELL_SOURCE),
-                deadline_ns=later,
-            )
-        )
-        out["object_without_dwell"] = code(lambda: ObjectRest("ball"))
+        out["unknown_object"] = code(lambda: ctx.watch_rest(ObjectRest("ball"), deadline_ns=later))
         declared = ctx.info.rest[0].criteria
         pose = replace(declared, variation=None, translation_m=0.001, rotation_rad=0.01)
         out["pose_criteria_on_joints"] = code(
@@ -506,7 +481,6 @@ def test_joints_and_objects_come_to_rest(artifacts: Path, tmp_path: Path) -> Non
     assert out["refused"] == {
         "gripper_joints": "rest_unobservable",
         "unknown_object": "rest_unobservable",
-        "object_without_dwell": "invalid_rest_criteria",
         "pose_criteria_on_joints": "criteria_mismatch",
         "variation_per_element": "criteria_mismatch",
         "deadline_now": "out_of_limits",

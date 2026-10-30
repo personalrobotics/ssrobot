@@ -44,12 +44,7 @@ class JointRest(Record):
 @dataclass(frozen=True, slots=True)
 class ObjectRest(Record):
     """A scene object comes to rest: judged on the declared pose channel whose source is
-    the object, whoever produces it.
-
-    The channel's source declares its signal: cadence, largest gap, and bounds. How long
-    the object must stay within them is the object's, from its own dynamics, so the
-    condition supplies it: ``dwell_ns`` and ``dwell_source``. Or ``criteria`` gives every
-    value at once, its dwell still the object's."""
+    the object, whoever produces it."""
 
     SCHEMA = "ssrobot.ObjectRest"
     VERSION = 1
@@ -57,48 +52,11 @@ class ObjectRest(Record):
     object: str = field(metadata=meta("The scene object whose pose is judged."))
     criteria: RestCriteria | None = field(
         default=None,
-        metadata=meta(
-            "Every criterion to judge by, its dwell the object's; None for the signal the "
-            "channel's runtime declares, with this condition's dwell."
-        ),
-    )
-    dwell_ns: int | None = field(
-        default=None,
-        metadata=meta(
-            "How long the object must stay within the signal's bounds, from its own "
-            "dynamics; None only with criteria.",
-            unit="ns",
-        ),
-    )
-    dwell_source: str | None = field(
-        default=None, metadata=meta("Where the dwell comes from; None only with criteria.")
+        metadata=meta("The criteria to judge by; None for those the channel's runtime declares."),
     )
 
     def _validate(self) -> None:
         check_name(self.object, path="object")
-        if self.criteria is not None:
-            if self.dwell_ns is not None or self.dwell_source is not None:
-                raise ValidationError(
-                    "invalid_rest_criteria",
-                    "give the object's dwell in criteria or beside it, not both",
-                    path="dwell_ns",
-                )
-            if self.criteria.dwell_ns is None:
-                raise ValidationError(
-                    "invalid_rest_criteria", "the criteria give no dwell", path="criteria"
-                )
-            return
-        dwell = self.dwell_ns
-        if isinstance(dwell, bool) or not isinstance(dwell, int) or dwell <= 0:
-            raise ValidationError(
-                "invalid_rest_criteria",
-                "an object supplies its dwell_ns, a positive integer",
-                path="dwell_ns",
-            )
-        if not isinstance(self.dwell_source, str) or not self.dwell_source.strip():
-            raise ValidationError(
-                "invalid_rest_criteria", "say where the dwell comes from", path="dwell_source"
-            )
 
 
 RestCondition = JointRest | ObjectRest
@@ -215,8 +173,7 @@ class RestResult(Record):
                 "inconsistent_outcome", "only a window has a preceding sample", path="preceding"
             )
         if self.window and (
-            self.criteria.dwell_ns is None
-            or self.window[-1].time_ns - self.window[0].time_ns < self.criteria.dwell_ns
+            self.window[-1].time_ns - self.window[0].time_ns < self.criteria.dwell_ns
             or self.window[-1].time_ns > self.end.time_ns
         ):
             raise ValidationError(
@@ -253,7 +210,6 @@ class _Judge:
         span = run[-1].time_ns - run[0].time_ns
         if not self.longest or span > self.longest[-1].time_ns - self.longest[0].time_ns:
             self.longest = tuple(run)
-        assert c.dwell_ns is not None
         return span >= c.dwell_ns
 
     def _within(self, run: list[RestSample]) -> bool:
