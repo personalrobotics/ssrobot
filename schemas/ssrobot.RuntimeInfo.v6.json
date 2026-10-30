@@ -1,8 +1,27 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.RuntimeInfo v5",
+  "title": "ssrobot.RuntimeInfo v6",
   "$ref": "#/$defs/RuntimeInfo",
   "$defs": {
+    "ChannelRest": {
+      "type": "object",
+      "description": "The rest criteria a runtime declares for one channel it sources.",
+      "properties": {
+        "channel": {
+          "type": "string",
+          "description": "Channel name."
+        },
+        "criteria": {
+          "$ref": "#/$defs/RestCriteria",
+          "description": "When its readings count as at rest."
+        }
+      },
+      "required": [
+        "channel",
+        "criteria"
+      ],
+      "additionalProperties": false
+    },
     "ChannelSpec": {
       "type": "object",
       "description": "A declared observation channel.",
@@ -165,6 +184,77 @@
       ],
       "additionalProperties": false
     },
+    "RestCriteria": {
+      "type": "object",
+      "description": "When a channel's readings count as at rest, as declared by whoever produces them.",
+      "properties": {
+        "cadence_ns": {
+          "type": "integer",
+          "description": "The spacing of samples the criteria were declared for.",
+          "x-unit": "ns"
+        },
+        "max_gap_ns": {
+          "type": "integer",
+          "description": "The largest spacing between samples still treated as continuous.",
+          "x-unit": "ns"
+        },
+        "dwell_ns": {
+          "type": "integer",
+          "description": "How long the readings must stay within bounds.",
+          "x-unit": "ns"
+        },
+        "variation": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The most each element's range may be over the dwell, one bound per element of the channel; joint-position channels only.",
+          "x-unit": "channel"
+        },
+        "translation_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The most each position coordinate's range may be over the dwell; pose only.",
+          "x-unit": "m"
+        },
+        "rotation_rad": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The largest angle any orientation may be from the dwell's first; pose only.",
+          "x-unit": "rad"
+        },
+        "source": {
+          "type": "string",
+          "description": "Where the values come from: a datasheet, a driver, or a measurement."
+        }
+      },
+      "required": [
+        "cadence_ns",
+        "max_gap_ns",
+        "dwell_ns",
+        "source"
+      ],
+      "additionalProperties": false
+    },
     "RuntimeInfo": {
       "type": "object",
       "description": "What an opened runtime reports about itself.",
@@ -173,7 +263,7 @@
           "const": "ssrobot.RuntimeInfo"
         },
         "version": {
-          "const": 5
+          "const": 6
         },
         "runtime": {
           "type": "string",
@@ -258,6 +348,13 @@
             "type": "string"
           },
           "description": "Every confirmed channel, the robot's or the scene's, that is privileged simulator truth, sorted."
+        },
+        "rest": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChannelRest"
+          },
+          "description": "Rest criteria for the confirmed channels this runtime sources, sorted by channel. A channel without any has no criteria from this source."
         }
       },
       "required": [

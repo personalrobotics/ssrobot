@@ -21,7 +21,11 @@ For each robot in references/robots.toml, this script:
    runtime had it;
 8. runs the guarded-contact proof on it (#124), ``guarded``: one function, given the
    robot's ``scenario.guard`` data, moves a frame straight into the object under a
-   force-torque guard, and the same command where there is nothing to touch, twice.
+   force-torque guard, and the same command where there is nothing to touch, twice;
+9. runs the joint-rest proof on it (#221), ``rested``: for every joint-position channel
+   whose rest criteria the robot's MuJoCo profile declares, a small move, then a
+   ``JointRest`` watch from the end of its execution, checked against the readings
+   recorded every tick, twice.
 
 Steps 1 and 2 need network access: the archive comes from GitHub and the build
 backends from the package index. It writes, under --out, each robot's ``inspect.json``,
@@ -1106,6 +1110,112 @@ def gripped(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
     return record
 
 
+REST_DEADLINE_NS = 10_000_000_000
+"""A bound for failing, not a wait: a rest watch ends when its dwell is met."""
+
+
+def _within(run: list[list[float]], variation: tuple[float, ...]) -> bool:
+    return all(
+        max(r[i] for r in run) - min(r[i] for r in run) <= bound
+        for i, bound in enumerate(variation)
+    )
+
+
+def _first_rest(samples: list[tuple[int, list[float]]], criteria: Any) -> tuple[int, int] | None:
+    """The oracle, from the recorded readings alone: the first sample at which a run of
+    consecutive samples ending there, no two more than the largest gap apart, spans the
+    dwell with every element's range within its variation; and the first sample of the
+    longest such run, the window a watch keeps."""
+    for k in range(len(samples)):
+        first = k
+        while (
+            first > 0
+            and 0 < samples[first][0] - samples[first - 1][0] <= criteria.max_gap_ns
+            and _within([v for _, v in samples[first - 1 : k + 1]], criteria.variation)
+        ):
+            first -= 1
+        if samples[k][0] - samples[first][0] >= criteria.dwell_ns:
+            return k, first
+    return None
+
+
+def rested(package: Any, keyframe: str | None, out: Path) -> dict[str, Any]:
+    """The joint-rest proof (#221): for every joint-position channel whose rest criteria
+    the robot's MuJoCo profile declares, move the channel's group a small step toward the
+    middle of each joint's range over one second, and when its execution ends, as a client
+    does after a transfer, watch ``JointRest`` on the group by the declared criteria. The
+    channel is recorded every tick as ``observe`` returns it, at the profile's declared
+    resolution. The watch must come to rest at the first tick where the readings recorded
+    since it started justify it, with a window of exactly those readings. Writes
+    ``rested.json``."""
+    from ssrobot import JointRest, JointTrajectory, ObservationRequest, Quantity, RobotContext
+    from ssrobot.mujoco import MujocoRuntime
+
+    out.mkdir(parents=True, exist_ok=True)
+    description = package.description
+    record: dict[str, Any] = {}
+    with RobotContext(description, MujocoRuntime(package, keyframe=keyframe)) as ctx:
+        declared = {r.channel: r.criteria for r in ctx.info.rest}
+    channels = [
+        c
+        for c in description.channels
+        if c.quantity is Quantity.JOINT_POSITION and c.name in declared
+    ]
+    for spec in channels:
+        criteria = declared[spec.name]
+        with RobotContext(description, MujocoRuntime(package, keyframe=keyframe)) as ctx:
+            joints = description.group(spec.source).joints
+            request = ObservationRequest(channels=(spec.name,))
+            snapshot = ctx.snapshot()
+            start = [snapshot.position(j) for j in joints]
+            goal = []
+            for name, q in zip(joints, start, strict=True):
+                joint = description.joint(name)
+                step = 0.02 if joint.kind.value == "prismatic" else 0.1
+                low, high = joint.limits.lower, joint.limits.upper
+                middle = q + 1.0 if low is None or high is None else (low + high) / 2
+                goal.append(q + (step if middle >= q else -step))
+            move = JointTrajectory(
+                group=spec.source,
+                joints=joints,
+                time_from_start_ns=(0, 1_000_000_000),
+                positions=(tuple(start), tuple(goal)),
+            )
+            end_ns = ctx.now.time_ns + move.time_from_start_ns[-1]
+            status = ctx.run_until(ctx.submit(move), max_ticks=5_000)
+            watch = ctx.watch_rest(
+                JointRest(spec.source), deadline_ns=ctx.now.time_ns + REST_DEADLINE_NS
+            )
+            samples: list[tuple[int, list[float]]] = []
+            while not watch.done:
+                ctx.step()
+                value = ctx.observe(request).readings[0]
+                assert isinstance(value.value, tuple)
+                samples.append((value.stamp.time_ns, [float(v) for v in value.value]))
+            result = watch.result
+            assert result is not None
+        oracle = _first_rest(samples, criteria)
+        window = [(s.time_ns, list(s.value)) for s in result.window]
+        record[spec.name] = {
+            "group": spec.source,
+            "execution": status.state.value,
+            "trajectory_end_ns": end_ns,
+            "watched_from_ns": result.start.time_ns,
+            "outcome": result.outcome.value,
+            "fired_ns": result.end.time_ns,
+            "latency_after_end_ns": result.end.time_ns - end_ns,
+            "dwell_ns": criteria.dwell_ns,
+            "variation": list(criteria.variation or ()),
+            "source": criteria.source,
+            "oracle_fire_ns": None if oracle is None else samples[oracle[0]][0],
+            "window_is_oracle_run": oracle is not None
+            and window == samples[oracle[1] : oracle[0] + 1],
+            "samples": len(samples),
+        }
+    (out / "rested.json").write_text(json.dumps(record, indent=2) + "\n")
+    return record
+
+
 def render(ctx: Any, runtime: Any) -> dict[str, Any]:
     """What a viewer gets through ``ssrobot.mujoco.render_handle`` (#125): a capture that
     names the context's time and world, into data MuJoCo can draw offscreen."""
@@ -1209,6 +1319,12 @@ def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] |
                 f.name: f.read_bytes() == (second / f.name).read_bytes()
                 for f in sorted(first.iterdir())
             }
+    # Twice, to show the rest proof's artifact is deterministic.
+    runs = [rested(package, keyframe, out.parent / "rested" / f"run-{i}") for i in (1, 2)]
+    record["rested"] = runs[0]
+    record["rested_identical"] = (out.parent / "rested" / "run-1" / "rested.json").read_bytes() == (
+        out.parent / "rested" / "run-2" / "rested.json"
+    ).read_bytes()
     out.write_text(json.dumps(record, indent=2) + "\n")
     return 0
 
@@ -1451,6 +1567,27 @@ def check(
             bool(identical) and all(identical.values()),
             f"two runs, byte for byte: {identical}",
         )
+    rest = startup_record.get("rested", {})
+    add(
+        "rested",
+        bool(rest)
+        and all(
+            r["execution"] == "succeeded"
+            and r["outcome"] == "at_rest"
+            and r["fired_ns"] == r["oracle_fire_ns"]
+            and r["window_is_oracle_run"]
+            and r["fired_ns"] >= r["trajectory_end_ns"]
+            for r in rest.values()
+        )
+        and startup_record.get("rested_identical") is True,
+        json.dumps(
+            {
+                name: {k: v for k, v in r.items() if k not in ("source", "variation")}
+                for name, r in rest.items()
+            }
+        )
+        + f"; two runs byte-identical: {startup_record.get('rested_identical')}",
+    )
     if spec is not None:
         concise = startup_record.get("concise", {})
         journey = concise.get("journey", {})

@@ -445,6 +445,19 @@ path = "mujoco.toml"
             _copy(tmp_path, "missing", _write("mujoco.toml", '"left_finger"', '"left_thumb"')),
             {},
         ),
+        "resolution without a step for every element": (
+            "invalid_profile",
+            _copy(
+                tmp_path,
+                "resolution",
+                _write(
+                    "mujoco.toml",
+                    "[[grippers]]",
+                    '[[resolution]]\nchannel = "arm_q"\nstep = [0.001, 0.001]\n\n[[grippers]]',
+                ),
+            ),
+            {},
+        ),
         "profile names a missing gripper": (
             "invalid_profile",
             _copy(

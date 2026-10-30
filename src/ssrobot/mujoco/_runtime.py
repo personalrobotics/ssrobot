@@ -67,6 +67,7 @@ from ssrobot.mujoco._model import (
     MujocoMapping,
     MujocoObject,
     MujocoProfile,
+    PoseResolution,
     actuator,
     driven_joints,
     force_torque_sensors,
@@ -76,8 +77,15 @@ from ssrobot.mujoco._model import (
     versions,
 )
 from ssrobot.mujoco._scene import SceneSource, load_scene
-from ssrobot.observations import ChannelSpec, Observation, ObservationRequest, Quantity, Reading
-from ssrobot.package import RobotPackage
+from ssrobot.observations import (
+    ChannelRest,
+    ChannelSpec,
+    Observation,
+    ObservationRequest,
+    Quantity,
+    Reading,
+)
+from ssrobot.package import ProfileEntry, RobotPackage
 from ssrobot.runtime import RuntimeEvent, RuntimeInfo, RuntimeUpdate
 from ssrobot.scene import (
     Attachment,
@@ -283,6 +291,8 @@ class MujocoRuntime:
         self._joints: dict[str, JointBinding] = {}
         self._drives: dict[tuple[str, JointMode], Actuator] = {}
         self._grippers: dict[str, _Gripper] = {}
+        self._resolution: dict[str, tuple[float, ...]] = {}  # channel: step per element
+        self._object_resolution: PoseResolution | None = None
         self._frames: dict[str, FrameBinding] = {}
         self._wrenches: dict[str, tuple[int, int]] = {}  # channel: force, torque sensordata
         self._cameras: dict[str, int] = {}  # image channel: MuJoCo camera id
@@ -362,9 +372,13 @@ class MujocoRuntime:
                 value = contacts.get((min(first, second), max(first, second)), (0.0, 0.0))
             elif channel in self._scene_specs:  # an object's pose, from its free joint
                 value = self._object_pose(self._objects[spec.source])
+                if self._object_resolution is not None:
+                    value = _quantize_pose(value, self._object_resolution)
             elif spec.quantity is Quantity.JOINT_POSITION:
                 joints = d.group(spec.source).joints
                 value = tuple(float(data.qpos[self._joints[j].qpos_address]) for j in joints)
+                if channel in self._resolution:
+                    value = _quantize(value, self._resolution[channel])
             elif spec.quantity is Quantity.JOINT_VELOCITY:
                 joints = d.group(spec.source).joints
                 value = tuple(float(data.qvel[self._joints[j].dof_address]) for j in joints)
@@ -695,6 +709,8 @@ class MujocoRuntime:
             if len(ids := by_joint.get((joint, kind), [])) == 1
         }
         self._grippers = self._bind_grippers(model, description, profile, profile_entry)
+        self._resolution = self._bind_resolution(description, profile, profile_entry)
+        self._object_resolution = profile.object_resolution
         commands = tuple(self._bind_command(c, by_joint, actuators) for c in description.commands)
         _check_aliases(description, commands)
         self._frames = {f.name: f for f in frames}
@@ -806,6 +822,7 @@ class MujocoRuntime:
         guarded = sorted({c.component for c in confirmed if c.kind is CommandKind.JOINT_TRAJECTORY})
         scene = self._scene_channels(description)
         robot = tuple(b.name for b in channels if b.unavailable is None)
+        rest = self._rest(description, profile, robot, scene, profile_entry)
         privileged = sorted(
             {c.name for c in description.channels if c.privileged and c.name in robot}
             | {c.name for c in scene}
@@ -820,6 +837,7 @@ class MujocoRuntime:
             channels=(*robot, *(c.name for c in scene)),
             scene_channels=scene,
             privileged=tuple(privileged),
+            rest=rest,
             objects=tuple(sorted(self._objects)),
             fixtures=fixtures,
             # One waypoint per control tick, interpolated linearly (see _interpolate).
@@ -844,6 +862,68 @@ class MujocoRuntime:
                 if self._wrenches
             ),
         )
+
+    @staticmethod
+    def _rest(
+        description: RobotDescription,
+        profile: MujocoProfile,
+        robot: tuple[str, ...],
+        scene: tuple[ChannelSpec, ...],
+        entry: ProfileEntry | None,
+    ) -> tuple[ChannelRest, ...]:
+        """The rest criteria this simulation declares: the profile's, for each confirmed
+        description channel it lists, and its ``object_rest`` for each object's pose."""
+        declared = {c.name: c for c in description.channels}
+        where = "profile" if entry is None else entry.path
+        out = []
+        for i, rest in enumerate(profile.rest):
+            spec = declared.get(rest.channel)
+            if spec is None:
+                raise ValidationError(
+                    "invalid_profile",
+                    f"the description declares no channel {rest.channel!r}",
+                    path=f"{where}: rest[{i}].channel",
+                )
+            try:
+                rest.criteria.check_for(spec.quantity, shape=spec.shape)
+            except ValidationError as e:
+                raise ValidationError(
+                    "invalid_profile", e.message, path=f"{where}: rest[{i}].criteria"
+                ) from None
+            if rest.channel in robot:
+                out.append(rest)
+        if profile.object_rest is not None:
+            out.extend(
+                ChannelRest(channel=c.name, criteria=profile.object_rest)
+                for c in scene
+                if c.quantity is Quantity.POSE
+            )
+        return tuple(sorted(out, key=lambda r: r.channel))
+
+    @staticmethod
+    def _bind_resolution(
+        description: RobotDescription, profile: MujocoProfile, entry: ProfileEntry | None
+    ) -> dict[str, tuple[float, ...]]:
+        """The profile's resolution for each joint-position channel it lists."""
+        declared = {c.name: c for c in description.channels}
+        where = "profile" if entry is None else entry.path
+        out = {}
+        for i, resolution in enumerate(profile.resolution):
+            spec = declared.get(resolution.channel)
+            if spec is None or spec.quantity is not Quantity.JOINT_POSITION:
+                raise ValidationError(
+                    "invalid_profile",
+                    f"the description declares no joint-position channel {resolution.channel!r}",
+                    path=f"{where}: resolution[{i}].channel",
+                )
+            if (len(resolution.step),) != spec.shape:
+                raise ValidationError(
+                    "invalid_profile",
+                    f"{len(resolution.step)} steps for a channel of shape {list(spec.shape)}",
+                    path=f"{where}: resolution[{i}].step",
+                )
+            out[resolution.channel] = resolution.step
+        return out
 
     def _bind_grippers(
         self,
@@ -1498,3 +1578,30 @@ def _sample(trajectory: JointTrajectory, t_ns: int) -> JointCommand:
         mode=JointMode.POSITION,
         values=tuple(x + a * (y - x) for x, y in zip(p0, p1, strict=True)),
     )
+
+
+def _quantize(values: Sequence[float], steps: Sequence[float]) -> tuple[float, ...]:
+    """Each value rounded to the nearest multiple of its step."""
+    return tuple(step * round(v / step) for v, step in zip(values, steps, strict=True))
+
+
+def _quantize_pose(pose: Sequence[float], resolution: PoseResolution) -> tuple[float, ...]:
+    """A pose with each position coordinate rounded to ``translation_m``, and its rotation,
+    as a rotation vector, rounded per component to ``rotation_rad`` and turned back into a
+    unit wxyz quaternion with w >= 0."""
+    w, x, y, z = pose[3:]
+    if w < 0:
+        w, x, y, z = -w, -x, -y, -z
+    sine = math.sqrt(x * x + y * y + z * z)
+    angle = 2 * math.atan2(sine, w)
+    axis = (x / sine, y / sine, z / sine) if sine > 0 else (0.0, 0.0, 0.0)
+    vector = _quantize(tuple(angle * a for a in axis), (resolution.rotation_rad,) * 3)
+    turned = math.sqrt(sum(v * v for v in vector))
+    quat: tuple[float, ...]
+    if turned == 0:
+        quat = (1.0, 0.0, 0.0, 0.0)
+    else:
+        half = math.sin(turned / 2) / turned
+        quat = (math.cos(turned / 2), *(v * half for v in vector))
+    position = _quantize(pose[:3], (resolution.translation_m,) * 3)
+    return (*position, *quat)

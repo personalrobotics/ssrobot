@@ -51,8 +51,8 @@ uses them:
 | --- | --- |
 | Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `ResolvedFile`, `SourceItem`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointLimitDeclaration`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
-| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `GuardedJointTrajectory`, `WrenchGuard`, `WrenchPart`, `GuardOutcome`, `GuardCause`, `ActionChunk`, `GripperCommand`, `GripperResult`, `GripperTermination`, `GripperDirection`, `GripperEvidence`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
-| Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `GuardCapability`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
+| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `GuardedJointTrajectory`, `WrenchGuard`, `WrenchPart`, `GuardOutcome`, `GuardCause`, `ActionChunk`, `GripperCommand`, `GripperResult`, `GripperTermination`, `GripperDirection`, `GripperEvidence`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `JointRest`, `ObjectRest`, `RestCriteria`, `RestWatch`, `RestResult`, `RestOutcome`, `RestSample`, `RestChannel`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
+| Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `ChannelRest`, `GuardCapability`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
 | Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `TimedTrajectory`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `PreparedTrajectory`, `prepare`, `MotionValidator`, `MotionValidation`, `plan_portfolio`, `PlanAttempt`, `Portfolio`, `PortfolioReport`, `AttemptRecord`, `AttemptOutcome`, `plan_alternatives`, `start_alternatives`, `AlternativesRun`, `Alternative`, `Alternatives`, `AlternativesReport`, `AlternativeRecord`, `AlternativeAttempt`, `AlternativeOutcome`, `plan_chains`, `start_chains`, `ChainsRun`, `Chain`, `Stage`, `StageRequest`, `StageResult`, `Chains`, `ChainsReport`, `ChainRecord`, `ChainAttempt`, `StageAttempt`, `StageOutcome`, `PredictedSnapshot`, `PlanProjection`, `Continuation`, `ContinuationReport`, `ContinuationResult`, `Discrepancy` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
 | Error handling | `SsrobotError`, `ValidationError`, `CapabilityError`, `OwnershipError`, `StaleRevisionError`, `LifecycleError` |
@@ -131,6 +131,7 @@ trace. It validates everything going into the runtime and everything coming out.
 | `state`, `info`, `now`, `fault` | Lifecycle state, the opened runtime's `RuntimeInfo`, the latest runtime time, and the fault that put the context in `faulted`, if any. |
 | `trajectory_contract` | The `TrajectoryContract` the runtime declared in `RuntimeInfo.trajectory`. Fails with `trajectory_contract_undeclared` (a `CapabilityError`) when it declared none. |
 | `observe(request)` | Checks the request against declared and available channels, then checks that the observation answers it on the runtime clock. |
+| `watch_rest(condition, *, deadline_ns)` | Open or faulted. Starts watching a `JointRest` or `ObjectRest` condition until `deadline_ns` on the runtime clock, and returns a passive `RestWatch`. See *Rest watches*. |
 | `submit(command, *, source="client", timeout_ns=None, snapshot=None)` | Validates, takes ownership, and returns a passive `Execution`. Does not advance time. With `snapshot`, the snapshot the command was planned on, it is refused (`stale_snapshot`) if the scene has moved past it. |
 | `execute(plan, *, planner, processor=None, source="planner", timeout_ns=None)` | Compiles a successful plan for `trajectory_contract` with `ssrobot.prepare` and `planner`'s validator, then submits it with its snapshot; returns the `Execution`. The plan's snapshot must have been captured by this context at the current scene revision (`stale_snapshot`), and its request must be one built from this description and that snapshot (`check_planned_in`, `request_mismatch`). Every refusal precedes submission. The trace's `compiled` record holds the `PreparedTrajectory`, and the `Submission` names its fingerprint (`prepared`). See planning.md. |
 | `prepare(plan, *, planner, processor=None)` | Performs the preparation step of `execute` without submitting. It compiles a successful plan for `trajectory_contract` with `ssrobot.prepare`, validates the command with `planner`'s validator, and returns the `PreparedTrajectory`. It does not submit, advance time, or write to the trace. Its refusals are those `execute` makes before submission: `wrong_type`, `predicted_plan`, `projected_plan`, `trajectory_contract_undeclared`, `stale_snapshot`, `request_mismatch`, and `execution_unready`, which names each failed check. The context keeps the result, keyed by the plan's content, until the scene changes. A later `prepare` or `execute` of the same plan reuses its command validation only after verifying that the request, trajectory, contract, command, and validator all match, and otherwise validates the command again. See planning.md. |
@@ -155,7 +156,7 @@ trace. It validates everything going into the runtime and everything coming out.
 
 An `Execution` exposes `id`, `command`, `source`, `components`, `deadline`, `status`,
 and `done`. It owns no thread, event loop, or clock. Its status changes only when the
-context steps or updates.
+context steps or updates. A `RestWatch` is passive in the same way.
 
 ### Runtime
 
@@ -176,7 +177,10 @@ or task logic.
   from a triggering reading to the hold (`stop_latency_ns`). It is empty when the
   runtime cannot execute a `GuardedJointTrajectory` (see *Guarded trajectories*). Each
   component must be one the runtime confirms for joint trajectories, and each channel
-  a confirmed wrench channel (`undeclared_capability`).
+  a confirmed wrench channel (`undeclared_capability`). In version 6, `rest` lists the
+  rest criteria the runtime declares for channels it sources, sorted by channel. Each
+  must be a confirmed joint-position or pose channel, with criteria of the matching
+  kind (`undeclared_capability`). See *Rest watches*.
 - `submit(execution, command)` returns `pending` or `rejected` for that execution. The
   context assigns the execution identifier.
 - `cancel(execution)` means stop applying it at once and report nothing further about
@@ -829,7 +833,9 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`KinematicModel`](../schemas/ssrobot.KinematicModel.v1.json) | A robot's frames and joints, as a model loader produces them. |
 | [`ssrobot.package`](../schemas/ssrobot.package.v1.json) | A package manifest, `ssrobot.toml`. See [packages.md](packages.md). |
 | [`PackageReport`](../schemas/ssrobot.PackageReport.v1.json) | What loading a package resolved. |
-| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v5.json) | What an opened runtime binds and confirms, including its scene channels and which channels are privileged. |
+| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v6.json) | What an opened runtime binds and confirms, including its scene channels, which channels are privileged, and the rest criteria it declares. |
+| [`JointRest`](../schemas/ssrobot.JointRest.v1.json), [`ObjectRest`](../schemas/ssrobot.ObjectRest.v1.json) | What a rest watch waits for: a component's joints, or a scene object, at rest. |
+| [`RestResult`](../schemas/ssrobot.RestResult.v1.json) | How a rest watch ended, with the readings that justify it. |
 | [`JointCommand`](../schemas/ssrobot.JointCommand.v1.json) | Instantaneous position, velocity, or effort targets for a group. |
 | [`GripperCommand`](../schemas/ssrobot.GripperCommand.v1.json) | Target opening. |
 | [`BaseTwistCommand`](../schemas/ssrobot.BaseTwistCommand.v1.json) | Planar base velocity. |
@@ -842,7 +848,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
 | [`Submission`](../schemas/ssrobot.Submission.v2.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
-| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v4.json) | One event in a trace. |
+| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v6.json) | One event in a trace. |
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`PortfolioReport`](../schemas/ssrobot.PortfolioReport.v1.json) | Every attempt of a planner portfolio and which was selected. See planning.md. |
@@ -1037,6 +1043,74 @@ ends when the fingers' motion ends.
   may carry a result, and it always does; anything else is a contract breach
   (`runtime_contract`).
 
+### Rest watches
+
+A client often needs to know that something has stopped moving before it acts: a wrist
+should be tared on an arm that is still, and a dropped object judged once it has landed.
+A fixed wait stands in for that event badly, since it is either longer than needed or
+too short, and neither failure shows in the evidence. One reading cannot decide it
+either, since an arm passing through zero velocity at a turnaround reads as still. Rest
+is a claim about a signal over time, so the context decides it, from the readings of a
+declared channel, by criteria declared as data with their source: a signal is at rest
+when its observed position remains within a declared variation for a declared dwell.
+
+- **The conditions.** `JointRest(component, criteria=None)` judges a component's joints
+  on a confirmed `joint_position` channel whose source covers them. Without explicit
+  criteria, the first such channel with declared criteria is used, and otherwise the
+  first in description order. `ObjectRest(object, criteria=None)` judges a scene object
+  on a confirmed `pose` channel whose source is the object, a runtime's scene channel or
+  the description's, whoever produces it. A condition no confirmed channel can judge is
+  refused (`rest_unobservable`), as are criteria of the wrong kind for the channel
+  (`criteria_mismatch`).
+- **The criteria.** A `RestCriteria` gives `cadence_ns`, the spacing of samples it was
+  declared for; `max_gap_ns`, the largest spacing still treated as continuous;
+  `dwell_ns`, how long the readings must stay within bounds; the bounds; and `source`,
+  where the values come from. A joint-position channel's bound is `variation`, one bound per
+  element of the channel: the most that joint's range may be, in its units (rad for a
+  revolute joint, m for a prismatic one). Its length must match the channel's shape
+  (`criteria_mismatch` for a watch, `invalid_profile` in a MuJoCo profile). A pose channel's bounds are `translation_m`,
+  the most each position coordinate's range may be, and `rotation_rad`, the largest
+  angle any orientation may be from the first one's. Every number is finite and
+  positive, both `max_gap_ns` and `dwell_ns` are at least `cadence_ns`, and `source` is
+  not blank (`invalid_rest_criteria`).
+- **Who declares them.** Rest depends on the whole observed signal: its sampling,
+  quantization, estimator noise, the controller's settling, and how long stillness must
+  last. It is therefore a property of whoever produces the readings, not of the robot.
+  A simulated arm and the physical one are different sources, so a criterion measured
+  in one never silently becomes the other's. The runtime that sources a channel declares
+  its criteria in `RuntimeInfo.rest`. A robot package declares none. A condition may
+  instead carry explicit criteria, with their own source. A channel with neither is
+  refused when the watch starts (`no_rest_criteria`). There is no default.
+  `ReplayRuntime` declares none; `MujocoRuntime` declares those of its profile (see
+  [mujoco.md](mujoco.md)).
+- **The watch.** `RobotContext.watch_rest(condition, *, deadline_ns)` returns a
+  `RestWatch` with `done`, `result`, and `cancel()`. `deadline_ns` is a time on the
+  runtime clock after now (`out_of_limits`). Each time the context's time advances on a
+  step or update, every live watch reads its channel through the context's observation
+  checks, without tracing the reading. A watch keeps only the samples that can still
+  justify rest: the latest continuous run, with samples dropped from its front until the
+  rest are within the bounds, so at most a dwell's worth of samples and one more.
+- **The decision.** Rest holds once the kept samples span at least `dwell_ns`. A gap
+  longer than `max_gap_ns`, or a reading whose stamp does not advance, starts the run
+  again. A reading older than `max_gap_ns` when it is read, or a channel that does not
+  answer, ends the watch `unavailable`. A reading with the wrong shape or a value that
+  is not finite ends it `malformed`. A passed deadline ends it `deadline`, and
+  `cancel()` or closing the context ends it `canceled`. Only the first is `at_rest`.
+- **The result.** A watch ends exactly once, with a `RestResult` traced as `rested` from
+  `context`: the condition as given; the channel judged, its quantity, the entity it
+  observes, the runtime that sourced it, and whether it is privileged; the name of each
+  value of a sample and those judged; the criteria applied; the start, end, and
+  deadline; the `outcome` and a `detail`; and the number of samples judged. At rest, it
+  holds the `window` of samples that justify it, and the `preceding` sample that broke
+  the bound with them, when one continuous with the window exists. Otherwise it holds
+  the `longest` continuous run within the bounds that it saw.
+- **Scope.** A watch decides only whether readings came to rest. Whether an object was
+  placed, where it landed, or whether a grasp holds are its caller's questions.
+
+`execute_continuation` takes the result of a `JointRest` watch as its evidence that the
+arm arrived (see *Interleaving planning and execution* in [planning.md](planning.md)).
+It accepts only a result this context decided (`unknown_rest`).
+
 ## Traces
 
 For the operational distinctions among traces, run bundles, state reconstruction, and
@@ -1051,10 +1125,10 @@ Every event becomes one `TraceRecord`, passed synchronously to each sink in orde
 | --- | --- |
 | `schema`, `version` | `ssrobot.TraceRecord`, 1 |
 | `sequence` | 0, 1, 2, … with no gaps |
-| `kind` | `opened`, `observed`, `compiled`, `submitted`, `status`, `applied`, `health`, `scene`, `violation`, `snapshot`, `predicted`, `continued`, `stepped`, `closed` |
+| `kind` | `opened`, `observed`, `compiled`, `submitted`, `status`, `applied`, `health`, `scene`, `violation`, `snapshot`, `predicted`, `continued`, `rested`, `stepped`, `closed` |
 | `clock`, `time_ns` | Runtime time of the event. Runtime events use their own stamps, and everything else uses the context's `now`. Never decreases along a trace. |
 | `source` | The submitter for `compiled`, `submitted`, `applied`, and `continued` and for a client's `scene` change, `runtime:<name>` for what the runtime reported, and `context` for the context's own decisions |
-| `payload` | `RuntimeInfo`, `Observation`, `PreparedTrajectory`, `Submission`, `ExecutionStatus`, `AppliedCommand`, `RuntimeHealth`, `SceneState`, `AttachmentViolation`, `SceneSnapshot`, `PredictedSnapshot`, or `ContinuationReport` by kind; none for `stepped` and `closed` |
+| `payload` | `RuntimeInfo`, `Observation`, `PreparedTrajectory`, `Submission`, `ExecutionStatus`, `AppliedCommand`, `RuntimeHealth`, `SceneState`, `AttachmentViolation`, `SceneSnapshot`, `PredictedSnapshot`, `ContinuationReport`, or `RestResult` by kind; none for `stepped` and `closed` |
 
 `ctx.execute` traces `compiled` immediately before its `submitted` record; that
 `Submission.prepared` is the compiled record's fingerprint.
@@ -1071,7 +1145,7 @@ A context whose runtime has a scene traces its initial `SceneState` right after
 `opened`. A runtime without one adds no `scene` records.
 
 Within one record, a payload's own stamp equals the record's `clock` and `time_ns`,
-`RuntimeInfo.clock` equals `clock`, and a submission's deadline is on the same clock
+as does a `RestResult`'s `end`, `RuntimeInfo.clock` equals `clock`, and a submission's deadline is on the same clock
 and later than the record.
 
 `read_trace` also checks the trace as a whole: sequence numbers count up from 0 by
@@ -1080,7 +1154,7 @@ line, one clock throughout, and time never decreasing. Each failure carries the 
 short by an interrupted run is still readable; it need not end with `closed`.
 
 On a step, the runtime's events come first, then `stepped` at the new time, then any
-timeouts. Because `applied` records carry the submitter, every applied command can be
+timeouts, then each rest watch that ended. Because `applied` records carry the submitter, every applied command can be
 attributed to a planner, policy, or person.
 
 ## Run bundles
