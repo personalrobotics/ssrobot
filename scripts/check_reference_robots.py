@@ -22,10 +22,10 @@ For each robot in references/robots.toml, this script:
 8. runs the guarded-contact proof on it (#124), ``guarded``: one function, given the
    robot's ``scenario.guard`` data, moves a frame straight into the object under a
    force-torque guard, and the same command where there is nothing to touch, twice;
-9. runs the joint-rest proof on it (#221), ``rested``: for every joint-position channel
-   whose rest criteria the robot's MuJoCo profile declares, a small move, then a
+9. runs the joint-rest proof on it (#221, #224), ``rested``: for every joint-position
+   channel whose rest criteria the robot's MuJoCo profile declares, a small move, then a
    ``JointRest`` watch from the end of its execution, checked against the readings
-   recorded every tick, twice.
+   recorded every tick, which must equal the simulated state, twice.
 
 Steps 1 and 2 need network access: the archive comes from GitHub and the build
 backends from the package index. It writes, under --out, each robot's ``inspect.json``,
@@ -1114,48 +1114,41 @@ REST_DEADLINE_NS = 10_000_000_000
 """A bound for failing, not a wait: a rest watch ends when its dwell is met."""
 
 
-def _within(run: list[list[float]], variation: tuple[float, ...]) -> bool:
+REST_AFTER_NS = 1_000_000_000
+"""How long the readings are recorded after a watch fires, to see the group stay still."""
+
+
+def _range_within(run: list[list[float]], variation: tuple[float, ...]) -> bool:
     return all(
         max(r[i] for r in run) - min(r[i] for r in run) <= bound
         for i, bound in enumerate(variation)
     )
 
 
-def _first_rest(samples: list[tuple[int, list[float]]], criteria: Any) -> tuple[int, int] | None:
-    """The oracle, from the recorded readings alone: the first sample at which a run of
-    consecutive samples ending there, no two more than the largest gap apart, spans the
-    dwell with every element's range within its variation; and the first sample of the
-    longest such run, the window a watch keeps."""
-    for k in range(len(samples)):
-        first = k
-        while (
-            first > 0
-            and 0 < samples[first][0] - samples[first - 1][0] <= criteria.max_gap_ns
-            and _within([v for _, v in samples[first - 1 : k + 1]], criteria.variation)
-        ):
-            first -= 1
-        if samples[k][0] - samples[first][0] >= criteria.dwell_ns:
-            return k, first
-    return None
-
-
-def rested(package: Any, keyframe: str | None, out: Path) -> dict[str, Any]:
-    """The joint-rest proof (#221): for every joint-position channel whose rest criteria
-    the robot's MuJoCo profile declares, move the channel's group a small step toward the
-    middle of each joint's range over one second, and when its execution ends, as a client
-    does after a transfer, watch ``JointRest`` on the group by the declared criteria. The
-    channel is recorded every tick as ``observe`` returns it, at the profile's declared
-    resolution. The watch must come to rest at the first tick where the readings recorded
-    since it started justify it, with a window of exactly those readings. Writes
-    ``rested.json``."""
+def rested(package: Any, keyframe: str | None, scene: Path | None, out: Path) -> dict[str, Any]:
+    """The joint-rest proof (#221, #224): for every joint-position channel whose rest
+    criteria the robot's MuJoCo profile declares, move the channel's group a small step
+    toward the middle of each joint's range over one second, and when its execution ends,
+    as a client does after a transfer, watch ``JointRest`` on the group by the declared
+    criteria. With the scenario's scene, so its object is observed too. Every tick, until
+    ``REST_AFTER_NS`` after the watch ends, the channel and the object's pose are recorded
+    as ``observe`` returns them, beside the simulation's own state: rest support must not
+    change them. The watch's window must be recorded readings spanning the dwell within the
+    variation, and the readings from the window's start to the end must stay within it: the
+    group came to rest and stayed there. Writes ``rested.json``."""
     from ssrobot import JointRest, JointTrajectory, ObservationRequest, Quantity, RobotContext
     from ssrobot.mujoco import MujocoRuntime
 
     out.mkdir(parents=True, exist_ok=True)
     description = package.description
     record: dict[str, Any] = {}
-    with RobotContext(description, MujocoRuntime(package, keyframe=keyframe)) as ctx:
+
+    def runtime() -> Any:
+        return MujocoRuntime(package, keyframe=keyframe, scene=scene)
+
+    with RobotContext(description, runtime()) as ctx:
         declared = {r.channel: r.criteria for r in ctx.info.rest}
+        objects = [c.name for c in ctx.info.scene_channels if c.quantity is Quantity.POSE]
     channels = [
         c
         for c in description.channels
@@ -1163,9 +1156,10 @@ def rested(package: Any, keyframe: str | None, out: Path) -> dict[str, Any]:
     ]
     for spec in channels:
         criteria = declared[spec.name]
-        with RobotContext(description, MujocoRuntime(package, keyframe=keyframe)) as ctx:
+        assert criteria.variation is not None
+        with RobotContext(description, runtime()) as ctx:
             joints = description.group(spec.source).joints
-            request = ObservationRequest(channels=(spec.name,))
+            request = ObservationRequest(channels=(spec.name, *objects))
             snapshot = ctx.snapshot()
             start = [snapshot.position(j) for j in joints]
             goal = []
@@ -1187,15 +1181,26 @@ def rested(package: Any, keyframe: str | None, out: Path) -> dict[str, Any]:
                 JointRest(spec.source), deadline_ns=ctx.now.time_ns + REST_DEADLINE_NS
             )
             samples: list[tuple[int, list[float]]] = []
-            while not watch.done:
+            exact = True
+            ended_ns: int | None = None
+            while ended_ns is None or ctx.now.time_ns < ended_ns + REST_AFTER_NS:
                 ctx.step()
-                value = ctx.observe(request).readings[0]
-                assert isinstance(value.value, tuple)
-                samples.append((value.stamp.time_ns, [float(v) for v in value.value]))
+                arm, *poses = ctx.observe(request).readings
+                assert isinstance(arm.value, tuple)
+                samples.append((arm.stamp.time_ns, [float(v) for v in arm.value]))
+                state = ctx.snapshot()
+                exact = exact and list(arm.value) == [state.position(j) for j in joints]
+                for reading in poses:
+                    pose = next(
+                        o.pose for o in state.objects if f"{o.name}.pose" == reading.channel
+                    )
+                    exact = exact and list(reading.value) == [*pose.position, *pose.quat_wxyz]  # type: ignore[arg-type]
+                if ended_ns is None and watch.done:
+                    ended_ns = ctx.now.time_ns
             result = watch.result
             assert result is not None
-        oracle = _first_rest(samples, criteria)
         window = [(s.time_ns, list(s.value)) for s in result.window]
+        first = samples.index(window[0]) if window and window[0] in samples else None
         record[spec.name] = {
             "group": spec.source,
             "execution": status.state.value,
@@ -1205,11 +1210,18 @@ def rested(package: Any, keyframe: str | None, out: Path) -> dict[str, Any]:
             "fired_ns": result.end.time_ns,
             "latency_after_end_ns": result.end.time_ns - end_ns,
             "dwell_ns": criteria.dwell_ns,
-            "variation": list(criteria.variation or ()),
+            "variation": list(criteria.variation),
             "source": criteria.source,
-            "oracle_fire_ns": None if oracle is None else samples[oracle[0]][0],
-            "window_is_oracle_run": oracle is not None
-            and window == samples[oracle[1] : oracle[0] + 1],
+            "observed_exactly": exact,
+            "objects_observed": objects,
+            "window_is_recorded": first is not None
+            and samples[first : first + len(window)] == window,
+            "window_spans_dwell": bool(window)
+            and window[-1][0] - window[0][0] >= criteria.dwell_ns,
+            "window_within_variation": _range_within([v for _, v in window], criteria.variation),
+            "stays_within_variation_after": first is not None
+            and _range_within([v for _, v in samples[first:]], criteria.variation),
+            "recorded_after_fire_ns": REST_AFTER_NS,
             "samples": len(samples),
         }
     (out / "rested.json").write_text(json.dumps(record, indent=2) + "\n")
@@ -1320,7 +1332,10 @@ def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] |
                 for f in sorted(first.iterdir())
             }
     # Twice, to show the rest proof's artifact is deterministic.
-    runs = [rested(package, keyframe, out.parent / "rested" / f"run-{i}") for i in (1, 2)]
+    rest_scene = ROOT / spec["scene"] if spec is not None and "scene" in spec else None
+    runs = [
+        rested(package, keyframe, rest_scene, out.parent / "rested" / f"run-{i}") for i in (1, 2)
+    ]
     record["rested"] = runs[0]
     record["rested_identical"] = (out.parent / "rested" / "run-1" / "rested.json").read_bytes() == (
         out.parent / "rested" / "run-2" / "rested.json"
@@ -1574,8 +1589,11 @@ def check(
         and all(
             r["execution"] == "succeeded"
             and r["outcome"] == "at_rest"
-            and r["fired_ns"] == r["oracle_fire_ns"]
-            and r["window_is_oracle_run"]
+            and r["observed_exactly"]
+            and r["window_is_recorded"]
+            and r["window_spans_dwell"]
+            and r["window_within_variation"]
+            and r["stays_within_variation_after"]
             and r["fired_ns"] >= r["trajectory_end_ns"]
             for r in rest.values()
         )

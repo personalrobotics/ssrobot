@@ -86,8 +86,8 @@ B = (1.6, 0.4)
 BLOCK = (0.0, 0.8, 0.5)  # a free block well clear of both arms
 ARM, TOOL = "right_arm", "right_tool"
 MAX_TICKS = 5_000
+TICK_NS = 5_000_000  # bimanual.xml's control tick
 REST = RestCriteria(
-    cadence_ns=5_000_000,
     max_gap_ns=5_000_000,
     dwell_ns=50_000_000,
     variation=(1e-4, 1e-4),
@@ -300,7 +300,7 @@ def _accepted(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
     continuation = ctx.continuation(plan, planner=ahead, prediction=prediction)
     waited = ctx.now.time_ns  # the arm settles after its trajectory succeeds
     rest = _rested(ctx)
-    waited = (ctx.now.time_ns - waited) // REST.cadence_ns
+    waited = (ctx.now.time_ns - waited) // TICK_NS
     result = ctx.execute_continuation(continuation, rest=rest)
     assert result.execution is not None, result.report
     status = ctx.run_until(result.execution, max_ticks=MAX_TICKS)

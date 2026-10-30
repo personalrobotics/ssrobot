@@ -116,13 +116,8 @@
     },
     "RestCriteria": {
       "type": "object",
-      "description": "When a channel's readings count as at rest, as declared by whoever produces them.",
+      "description": "When a channel's readings count as at rest: declared by the runtime that sources the",
       "properties": {
-        "cadence_ns": {
-          "type": "integer",
-          "description": "The spacing of samples the criteria were declared for.",
-          "x-unit": "ns"
-        },
         "max_gap_ns": {
           "type": "integer",
           "description": "The largest spacing between samples still treated as continuous.",
@@ -178,7 +173,6 @@
         }
       },
       "required": [
-        "cadence_ns",
         "max_gap_ns",
         "dwell_ns",
         "source"

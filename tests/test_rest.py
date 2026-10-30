@@ -1,9 +1,9 @@
-"""Joints and objects come to rest, as observed events (#221).
+"""Joints and objects come to rest, as observed events (#221, #224).
 
 On the example arm, in MuJoCo, each case starts a rest watch and steps until it ends,
-recording the watched channel itself every tick through ``ctx.observe``. The watch is
-judged by the criteria the example's MuJoCo profile declares: ``arm_q`` by its
-``[[rest]]`` table, and each object's pose by ``object_rest``.
+recording the watched channel itself every tick through ``ctx.observe``. ``arm_q`` is
+judged by the criteria the example's MuJoCo profile declares in ``[[rest]]``; an object,
+for which the runtime declares none, by criteria the case gives.
 - ``settle``: a joint trajectory from rest. The watch, started with it, fires only after
   the arm has settled: after the commanded motion ends and the execution succeeds.
 - ``out_and_back``: the shoulder goes out and comes back, passing through zero velocity at
@@ -16,24 +16,23 @@ judged by the criteria the example's MuJoCo profile declares: ``arm_q`` by its
   continuity, and once a reading is older than the largest gap the watch ends
   ``unavailable``, never at rest.
 - ``missing``: ``arm_q`` stops answering. The watch ends ``unavailable``.
-- ``ball``: the dropped ball of test_scene_observations, onto a ramp that rolls it into a
-  wall. ``ObjectRest`` fires on its privileged pose after it lands and rolls to the wall,
-  not while it falls or rolls, and every dwell of the 200 ticks after still meets the
-  criteria.
-- ``refused``: a watch on joints no confirmed channel observes (``rest_unobservable``),
-  one whose runtime declares no criteria for the channel, ``ReplayRuntime`` here
-  (``no_rest_criteria``), criteria of the wrong kind (``criteria_mismatch``), and a
-  deadline that is not after now (``out_of_limits``).
+- ``ball``: a ball dropped onto a ramp that rolls it into a wall. ``ObjectRest`` fires on
+  its privileged pose after it lands and rolls to the wall, not while it falls or rolls,
+  and every dwell of the 200 ticks after still meets the criteria.
+- ``unretained``: many watches end in one long context, and none of their results is
+  kept alive by it.
+- ``refused``: a watch on joints no confirmed channel observes, or on an object not in
+  the scene (``rest_unobservable``); on an object without criteria, or on a runtime that
+  declares none, ``ReplayRuntime`` here (``no_rest_criteria``); criteria of the wrong kind
+  (``criteria_mismatch``); and a deadline that is not after now (``out_of_limits``).
 
-The oracle uses only the readings the test recorded. It finds the first tick at which
-some run of consecutive readings ending there spans the dwell, has no gap over the
-largest gap and no stamp that fails to advance, and keeps every judged element's range,
-and for a pose the angle from the run's first orientation, within the bound. A watch must
-fire exactly there, with a window of exactly those recorded readings, and the sample before
-the window, if any, must break the bound with it. A watch that does not fire must have no
-such run before it ended. The evidence is ``rest.json``: each case's ``RestResult``, its
-recorded readings, and the oracle's verdict. The cases run twice, and the two files must
-be byte-identical.
+Each rest is checked against the readings the test recorded, not against a second
+implementation of the watch: its window is a run of consecutive recorded readings, with
+no gap over the largest gap, spanning the dwell, every judged element's range (for a
+pose, each coordinate's range and each orientation's angle from the first) within the
+bound, and the recorded reading just before it, when continuous, breaking the bound. The
+evidence is ``rest.json``: each case's ``RestResult``, its recorded readings, and that
+check. The cases run twice, and the two files must be byte-identical.
 
 Reproduce with ``uv run pytest tests/test_rest.py``. To verify the artifact by hand, take
 a case's ``readings`` in ``artifacts/test_joints_and_objects_come_to_rest/rest.json`` and
@@ -42,10 +41,12 @@ check its ``result.window`` against them under ``result.criteria``.
 
 from __future__ import annotations
 
+import gc
 import json
 import math
-import shutil
+import weakref
 from dataclasses import replace
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,15 @@ ARM = ("shoulder", "elbow", "wrist")
 TICK_NS = 2_000_000  # arm.xml's timestep, one substep per tick
 STEP_NS = 10_000_000  # the spacing of the hand-built trajectories' waypoints
 RADIUS = 0.02
+BALL_REST = RestCriteria(
+    max_gap_ns=TICK_NS,
+    dwell_ns=100_000_000,
+    translation_m=0.001,
+    rotation_rad=0.05,
+    source="test: 1 mm per coordinate and 0.05 rad of turn held for 100 ms, chosen for this "
+    "ball, not a calibration",
+)
+"""The ball's criteria: the runtime declares none for scene objects."""
 # A ramp tilted 0.15 rad about x, rising toward +y, and a wall at its low end: a ball
 # dropped on the ramp's high side lands, rolls down into the wall, and stops there.
 SCENE = f"""<mujoco>
@@ -210,61 +220,40 @@ def _within(run: list[tuple[int, list[float]]], criteria: RestCriteria, judged: 
     )
 
 
-def _oracle(result: RestResult, readings: list[list[Any]]) -> dict[str, Any]:
-    """The first tick at which the recorded readings justify rest, and whether the
-    result agrees with it."""
+def _justified(result: RestResult, readings: list[list[Any]]) -> dict[str, Any]:
+    """Whether the recorded readings justify the result's window: for a result at rest,
+    the checks of the module docstring; otherwise, that it has none."""
     c = result.criteria
     judged = [result.elements.index(e) for e in result.judged]
-    samples: list[tuple[int, list[float]]] = []
-    for t, v in readings:
-        if isinstance(v, str):
-            break  # the channel stopped answering: nothing after this is a sample
-        samples.append((t, v))
-    first: int | None = None
-    for k in range(len(samples)):
-        i = k
-        while i > 0 and 0 < samples[i][0] - samples[i - 1][0] <= c.max_gap_ns:
-            i -= 1
-        for start in range(k, i - 1, -1):  # every run ending at k, shortest first
-            run = samples[start : k + 1]
-            if c.variation is not None and not _within(run, c, judged):
-                break  # a joint range only grows as the run does
-            if run[-1][0] - run[0][0] >= c.dwell_ns and _within(run, c, judged):
-                first = k
-                break
-        if first is not None:
-            break
-    verdict: dict[str, Any] = {"first_rest_ns": None if first is None else samples[first][0]}
-    if result.outcome != "at_rest":
-        verdict["agrees"] = first is None or samples[first][0] > result.end.time_ns
-        return verdict
+    samples = [(t, v) for t, v in readings if not isinstance(v, str)]
     window = [(s.time_ns, list(s.value)) for s in result.window]
-    assert first is not None
+    if result.outcome != "at_rest":
+        return {"agrees": not window}
     end = samples.index(window[-1])
     start = end - len(window) + 1
     before = samples[start - 1] if start > 0 else None
     continuous = before is not None and 0 < window[0][0] - before[0] <= c.max_gap_ns
-    verdict.update(
-        fires_first=end == first,
-        window_is_recorded=samples[start : end + 1] == window,
-        spans_dwell=window[-1][0] - window[0][0] >= c.dwell_ns,
-        within=_within(window, c, judged),
-        preceding_breaks_bound=(
+    verdict = {
+        "window_is_recorded": samples[start : end + 1] == window,
+        "no_gap": all(0 < b[0] - a[0] <= c.max_gap_ns for a, b in pairwise(window)),
+        "spans_dwell": window[-1][0] - window[0][0] >= c.dwell_ns,
+        "within": _within(window, c, judged),
+        "preceding_breaks_bound": (
             result.preceding is None
             if not continuous
             else result.preceding is not None
             and (result.preceding.time_ns, list(result.preceding.value)) == before
             and not _within([before, *window], c, judged)
         ),
-    )
-    verdict["agrees"] = all(v for k, v in verdict.items() if k not in ("first_rest_ns",))
+    }
+    verdict["agrees"] = all(verdict.values())
     return verdict
 
 
 def _case(result: RestResult, readings: list[list[Any]], **more: Any) -> dict[str, Any]:
     return {
         "result": json.loads(dumps(result)),
-        "oracle": _oracle(result, readings),
+        "justified": _justified(result, readings),
         **more,
         "readings": readings,
     }
@@ -333,7 +322,9 @@ def _ball(work: Path) -> dict[str, Any]:
     touches = ObservationRequest(channels=("contact.ball.ramp", "contact.ball.wall"))
     landed: dict[str, int] = {}
     with RobotContext(package.description, runtime) as ctx:
-        watch = ctx.watch_rest(ObjectRest("ball"), deadline_ns=ctx.now.time_ns + 5_000_000_000)
+        watch = ctx.watch_rest(
+            ObjectRest("ball", BALL_REST), deadline_ns=ctx.now.time_ns + 5_000_000_000
+        )
         pose = ObservationRequest(channels=("ball.pose",))
         readings: list[list[Any]] = []
         after, fired = 0, False
@@ -370,7 +361,24 @@ def _ball(work: Path) -> dict[str, Any]:
     )
 
 
-def _refusals() -> dict[str, str]:
+def _unretained() -> dict[str, Any]:
+    """Many watches end in one context, whose only sink keeps nothing; how many of their
+    results are still alive once the caller lets go of them."""
+    package = load_package(PACKAGE)
+    alive = []
+    with RobotContext(package.description, MujocoRuntime(package), sinks=[lambda r: None]) as ctx:
+        for _ in range(50):
+            watch = ctx.watch_rest(JointRest("arm"), deadline_ns=ctx.now.time_ns + 5 * TICK_NS)
+            while not watch.done:
+                ctx.step()
+            assert watch.result is not None
+            alive.append(weakref.ref(watch.result))
+            del watch
+        gc.collect()
+        return {"watches": len(alive), "results_alive": sum(r() is not None for r in alive)}
+
+
+def _refusals(work: Path) -> dict[str, str]:
     package = load_package(PACKAGE)
 
     def code(action: Any) -> str:
@@ -401,7 +409,14 @@ def _refusals() -> dict[str, str]:
             lambda: ctx.watch_rest(JointRest("arm"), deadline_ns=ctx.now.time_ns)
         )
         out["unsourced_criteria"] = code(lambda: replace(declared, source=" "))
-        out["gap_below_cadence"] = code(lambda: replace(declared, max_gap_ns=1))
+        out["nonpositive_gap"] = code(lambda: replace(declared, max_gap_ns=0))
+    scene = work / "refusals.xml"
+    scene.parent.mkdir(parents=True, exist_ok=True)
+    scene.write_text(SCENE)
+    with RobotContext(package.description, MujocoRuntime(package, scene=scene)) as ctx:
+        out["object_without_criteria"] = code(
+            lambda: ctx.watch_rest(ObjectRest("ball"), deadline_ns=ctx.now.time_ns + TICK_NS)
+        )
     script = ReplayScript.hold(package.description, clock="sim:replay", tick_ns=TICK_NS, ticks=10)
     with RobotContext(package.description, ReplayRuntime(script)) as ctx:
         out["replay_declares_none"] = code(
@@ -411,7 +426,12 @@ def _refusals() -> dict[str, str]:
 
 
 def _evidence(work: Path) -> str:
-    evidence = {**_arm_cases(work), "ball": _ball(work), "refused": _refusals()}
+    evidence = {
+        **_arm_cases(work),
+        "ball": _ball(work),
+        "unretained": _unretained(),
+        "refused": _refusals(work),
+    }
     return json.dumps(evidence, indent=2) + "\n"
 
 
@@ -430,7 +450,7 @@ def test_joints_and_objects_come_to_rest(artifacts: Path, tmp_path: Path) -> Non
         "missing",
         "ball",
     ):
-        assert out[name]["oracle"]["agrees"], (name, out[name]["oracle"])
+        assert out[name]["justified"]["agrees"], (name, out[name]["justified"])
 
     for name in ("settle", "out_and_back"):
         case = out[name]
@@ -456,7 +476,6 @@ def test_joints_and_objects_come_to_rest(artifacts: Path, tmp_path: Path) -> Non
     assert out["chatter_within"]["result"]["outcome"] == "at_rest"
     beyond = out["chatter_beyond"]["result"]
     assert beyond["outcome"] == "deadline" and beyond["window"] == [], beyond["outcome"]
-    assert out["chatter_beyond"]["oracle"]["first_rest_ns"] is None
 
     for name in ("stale", "missing"):
         result = out[name]["result"]
@@ -478,6 +497,8 @@ def test_joints_and_objects_come_to_rest(artifacts: Path, tmp_path: Path) -> Non
     assert ball["rolled_m"] > 0.2
     assert ball["stays_at_rest_after"] and ball["ticks_after"] == 200
 
+    assert out["unretained"] == {"watches": 50, "results_alive": 0}
+
     assert out["refused"] == {
         "gripper_joints": "rest_unobservable",
         "unknown_object": "rest_unobservable",
@@ -485,87 +506,7 @@ def test_joints_and_objects_come_to_rest(artifacts: Path, tmp_path: Path) -> Non
         "variation_per_element": "criteria_mismatch",
         "deadline_now": "out_of_limits",
         "unsourced_criteria": "invalid_rest_criteria",
-        "gap_below_cadence": "invalid_rest_criteria",
+        "nonpositive_gap": "invalid_rest_criteria",
+        "object_without_criteria": "no_rest_criteria",
         "replay_declares_none": "no_rest_criteria",
     }
-
-
-def test_readings_sit_on_the_declared_resolution(artifacts: Path, tmp_path: Path) -> None:
-    """The example arm, with a MuJoCo profile that declares the resolution its simulated
-    sensors report at: ``arm_q`` at a 17-bit encoder's step per joint, and every object's
-    pose at 0.1 mm per coordinate and 0.001 rad per rotation-vector component. Each tick,
-    while the arm settles under gravity and the ball falls onto the ramp, every ``arm_q``
-    reading must be a whole number of steps, and every ball pose a whole number of steps
-    in position and in rotation vector, with a unit quaternion. The snapshot, the
-    simulation's own state, stays exact: within half a step of the reading, and not on
-    the grid. Writes ``resolution.json``: the steps and each tick's readings
-    and snapshot values, to check by dividing by the step."""
-    root = tmp_path / "package"
-    shutil.copytree(PACKAGE, root)
-    steps = [2 * math.pi / 2**17] * 3  # a 17-bit encoder's step, per joint
-    translation, rotation = 1e-4, 1e-3
-    text = (root / "mujoco.toml").read_text()
-    (root / "mujoco.toml").write_text(
-        text.replace(
-            "[[rest]]",
-            f"object_resolution = {{ translation_m = {translation}, rotation_rad = {rotation} }}"
-            f'\n\n[[resolution]]\nchannel = "arm_q"\nstep = {steps}\n\n[[rest]]',
-            1,
-        )
-    )
-    package = load_package(root)
-    scene = tmp_path / "scene.xml"
-    scene.write_text(SCENE)
-    request = ObservationRequest(channels=("arm_q", "ball.pose"))
-
-    def whole(value: float, step: float) -> bool:
-        return abs(value / step - round(value / step)) < 1e-6
-
-    ticks = []
-    with RobotContext(package.description, MujocoRuntime(package, scene=scene)) as ctx:
-        for _ in range(200):
-            ctx.step()
-            arm, ball = (list(r.value) for r in ctx.observe(request).readings)  # type: ignore[arg-type]
-            snapshot = ctx.snapshot()
-            exact = [snapshot.position(j) for j in ARM]
-            pose = next(o.pose for o in snapshot.objects if o.name == "ball")
-            ticks.append(
-                {
-                    "arm_q": arm,
-                    "arm_exact": exact,
-                    "ball": ball,
-                    "ball_exact": [*pose.position, *pose.quat_wxyz],
-                }
-            )
-    (artifacts / "resolution.json").write_text(
-        json.dumps(
-            {
-                "arm_q_step": steps,
-                "translation_m": translation,
-                "rotation_rad": rotation,
-                "ticks": ticks,
-            },
-            indent=1,
-        )
-        + "\n"
-    )
-    off_grid = 0
-    for t in ticks:
-        assert all(whole(v, s) for v, s in zip(t["arm_q"], steps, strict=True)), t
-        assert all(
-            abs(v - e) <= s / 2 + 1e-12
-            for v, e, s in zip(t["arm_q"], t["arm_exact"], steps, strict=True)
-        )
-        off_grid += sum(not whole(e, s) for e, s in zip(t["arm_exact"], steps, strict=True))
-        x, y, z, w, i, j, k = t["ball"]
-        assert all(whole(v, translation) for v in (x, y, z)), t
-        assert math.isclose(w * w + i * i + j * j + k * k, 1.0) and w >= 0
-        sine = math.sqrt(i * i + j * j + k * k)
-        angle = 2 * math.atan2(sine, w)
-        vector = [0.0, 0.0, 0.0] if sine == 0 else [angle * v / sine for v in (i, j, k)]
-        assert all(whole(v, rotation) for v in vector), t
-        assert all(
-            abs(a - b) <= translation / 2 + 1e-12
-            for a, b in zip((x, y, z), t["ball_exact"][:3], strict=True)
-        )
-    assert off_grid > 0  # the state itself is not rounded
