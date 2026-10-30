@@ -138,6 +138,11 @@ class RestCriteria(Value):
     prismatic one. A pose channel takes ``translation_m`` for
     each coordinate of its position, and ``rotation_rad`` for the largest angle between
     any sample's orientation and the first one's. See *Rest watches* in docs/contracts.md.
+
+    A pose source declares only its signal: cadence, largest gap, and bounds, with no
+    ``dwell_ns``. How long an object must stay still is the object's, from its own
+    dynamics, and ``ObjectRest`` supplies it. A joint-position channel's criteria, and
+    every criteria a watch judges by, have a dwell.
     """
 
     cadence_ns: int = field(
@@ -146,8 +151,13 @@ class RestCriteria(Value):
     max_gap_ns: int = field(
         metadata=meta("The largest spacing between samples still treated as continuous.", unit="ns")
     )
-    dwell_ns: int = field(
-        metadata=meta("How long the readings must stay within bounds.", unit="ns")
+    dwell_ns: int | None = field(
+        default=None,
+        metadata=meta(
+            "How long the readings must stay within bounds; None only for a pose source's "
+            "signal, whose objects supply their own.",
+            unit="ns",
+        ),
     )
     variation: tuple[float, ...] | None = field(
         default=None,
@@ -178,6 +188,8 @@ class RestCriteria(Value):
     def _validate(self) -> None:
         for name in ("cadence_ns", "max_gap_ns", "dwell_ns"):
             value = getattr(self, name)
+            if name == "dwell_ns" and value is None:
+                continue
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValidationError(
                     "invalid_rest_criteria", f"{name} must be a positive integer", path=name
@@ -206,7 +218,7 @@ class RestCriteria(Value):
             raise ValidationError(
                 "invalid_rest_criteria", "max_gap_ns must be at least cadence_ns", path="max_gap_ns"
             )
-        if self.dwell_ns < self.cadence_ns:
+        if self.dwell_ns is not None and self.dwell_ns < self.cadence_ns:
             raise ValidationError(
                 "invalid_rest_criteria", "dwell_ns must be at least cadence_ns", path="dwell_ns"
             )
@@ -222,6 +234,10 @@ class RestCriteria(Value):
         if not self.source.strip():
             raise ValidationError(
                 "invalid_rest_criteria", "say where the values come from", path="source"
+            )
+        if self.variation is not None and self.dwell_ns is None:
+            raise ValidationError(
+                "invalid_rest_criteria", "joint-position criteria need a dwell", path="dwell_ns"
             )
 
     def check_for(

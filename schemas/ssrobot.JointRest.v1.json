@@ -51,8 +51,15 @@
           "x-unit": "ns"
         },
         "dwell_ns": {
-          "type": "integer",
-          "description": "How long the readings must stay within bounds.",
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How long the readings must stay within bounds; None only for a pose source's signal, whose objects supply their own.",
           "x-unit": "ns"
         },
         "variation": {
@@ -102,7 +109,6 @@
       "required": [
         "cadence_ns",
         "max_gap_ns",
-        "dwell_ns",
         "source"
       ],
       "additionalProperties": false

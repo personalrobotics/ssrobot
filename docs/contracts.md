@@ -1056,9 +1056,12 @@ declared channel, by criteria declared as data with their source.
 - **The conditions.** `JointRest(component, criteria=None)` judges a component's joints
   on a confirmed `joint_position` channel whose source covers them. Without explicit
   criteria, the first such channel with declared criteria is used, and otherwise the
-  first in description order. `ObjectRest(object, criteria=None)` judges a scene object
-  on a confirmed `pose` channel whose source is the object, a runtime's scene channel or
-  the description's, whoever produces it. A condition no confirmed channel can judge is
+  first in description order. `ObjectRest(object, criteria=None, *, dwell_ns,
+  dwell_source)` judges a scene object on a confirmed `pose` channel whose source is the
+  object, a runtime's scene channel or the description's, whoever produces it. The
+  object supplies its dwell, from its own dynamics, with where it comes from; or
+  `criteria` gives every value at once, its dwell still the object's. An `ObjectRest`
+  with neither, or with both, is refused (`invalid_rest_criteria`). A condition no confirmed channel can judge is
   refused (`rest_unobservable`), as are criteria of the wrong kind for the channel
   (`criteria_mismatch`).
 - **The criteria.** A `RestCriteria` gives `cadence_ns`, the spacing of samples it was
@@ -1067,17 +1070,22 @@ declared channel, by criteria declared as data with their source.
   where the values come from. A joint-position channel's bound is `variation`, one bound per
   element of the channel: the most that joint's range may be, in its units (rad for a
   revolute joint, m for a prismatic one). Its length must match the channel's shape
-  (`criteria_mismatch` for a watch, `invalid_profile` in a MuJoCo profile). A pose channel's bounds are `translation_m`,
-  the most each position coordinate's range may be, and `rotation_rad`, the largest
-  angle any orientation may be from the first one's. Every number is finite and
-  positive, both `max_gap_ns` and `dwell_ns` are at least `cadence_ns`, and `source` is
-  not blank (`invalid_rest_criteria`).
+  (`criteria_mismatch` for a watch, `invalid_profile` in a MuJoCo profile). A pose
+  channel's bounds are `translation_m`, the most each position coordinate's range may
+  be, and `rotation_rad`, the largest angle any orientation may be from the first
+  one's. Every number is finite and positive, both `max_gap_ns` and `dwell_ns` are at
+  least `cadence_ns`, and `source` is not blank (`invalid_rest_criteria`). Joint-position
+  criteria always have a dwell. A pose source's criteria have none: they declare the
+  signal, and the watched object supplies the dwell.
 - **Who declares them.** Rest depends on the whole observed signal: its sampling,
   quantization, estimator noise, the controller's settling, and how long stillness must
   last. It is therefore a property of whoever produces the readings, not of the robot.
   A simulated arm and the physical one are different sources, so a criterion measured
   in one never silently becomes the other's. The runtime that sources a channel declares
-  its criteria in `RuntimeInfo.rest`. A robot package declares none. A condition may
+  its criteria in `RuntimeInfo.rest`; for a pose channel, the signal only, without a
+  dwell (`undeclared_capability` otherwise). A robot package declares none. An
+  `ObjectRest` judges by the source's signal with the object's dwell, and the resolved
+  criteria's `source` names both: `signal: <the source's>; dwell: <the object's>`. A condition may
   instead carry explicit criteria, with their own source. A channel with neither is
   refused when the watch starts (`no_rest_criteria`). There is no default.
   `ReplayRuntime` declares none; `MujocoRuntime` declares those of its profile (see

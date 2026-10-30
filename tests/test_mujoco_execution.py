@@ -445,6 +445,20 @@ path = "mujoco.toml"
             _copy(tmp_path, "missing", _write("mujoco.toml", '"left_finger"', '"left_thumb"')),
             {},
         ),
+        "object_rest with a dwell, which is the object's": (
+            "invalid_profile",
+            _copy(
+                tmp_path,
+                "object-dwell",
+                _write(
+                    "mujoco.toml",
+                    "object_rest = { cadence_ns = 2_000_000, max_gap_ns = 2_000_000,",
+                    "object_rest = { cadence_ns = 2_000_000, max_gap_ns = 2_000_000, "
+                    "dwell_ns = 2_000_000,",
+                ),
+            ),
+            {},
+        ),
         "resolution without a step for every element": (
             "invalid_profile",
             _copy(

@@ -239,7 +239,30 @@
               "type": "null"
             }
           ],
-          "description": "The criteria to judge by; None for those the channel's runtime declares."
+          "description": "Every criterion to judge by, its dwell the object's; None for the signal the channel's runtime declares, with this condition's dwell."
+        },
+        "dwell_ns": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How long the object must stay within the signal's bounds, from its own dynamics; None only with criteria.",
+          "x-unit": "ns"
+        },
+        "dwell_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the dwell comes from; None only with criteria."
         }
       },
       "required": [
@@ -309,8 +332,15 @@
           "x-unit": "ns"
         },
         "dwell_ns": {
-          "type": "integer",
-          "description": "How long the readings must stay within bounds.",
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How long the readings must stay within bounds; None only for a pose source's signal, whose objects supply their own.",
           "x-unit": "ns"
         },
         "variation": {
@@ -360,7 +390,6 @@
       "required": [
         "cadence_ns",
         "max_gap_ns",
-        "dwell_ns",
         "source"
       ],
       "additionalProperties": false

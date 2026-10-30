@@ -342,6 +342,12 @@ class MujocoProfile(Record):
                 self.object_rest.check_for(Quantity.POSE)
             except ValidationError as e:
                 raise ValidationError("invalid_profile", e.message, path="object_rest") from None
+            if self.object_rest.dwell_ns is not None:
+                raise ValidationError(
+                    "invalid_profile",
+                    "object_rest declares the signal only; each object supplies its dwell",
+                    path="object_rest.dwell_ns",
+                )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
