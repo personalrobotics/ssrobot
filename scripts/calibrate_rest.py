@@ -20,12 +20,17 @@ docs/mujoco.md), and the rule, fixed before any trial ran, is:
 - joint ``dwell_ns``, from the compiled model: for each joint of the channel, its servo's
   kp, its damping c (the servo's kv plus the joint's damping), and M, the largest
   diagonal of the joint-space inertia (armature included) over the configurations the
-  trials pass through. With wn = sqrt(kp / M) and zeta = c / (2 sqrt(kp M)), the
-  candidate is one damped period, 2 pi / (wn sqrt(1 - zeta^2)), for zeta < 1, since over
-  a whole period an oscillation spans twice its amplitude, so readings within one step for
-  a period leave less than half a step of amplitude; and for zeta >= 1 the slow pole's
-  time constant, 1 / (wn (zeta - sqrt(zeta^2 - 1))). The dwell is the largest candidate
-  over the channel's joints, rounded up to whole ticks. The diagonal ignores coupling.
+  trials pass through, and A0, its largest tracking error against the final setpoint
+  when a trial's execution ends, with r its resolution step. With wn = sqrt(kp / M) and
+  zeta = c / (2 sqrt(kp M)): if zeta < 1 and the first overshoot A0 e^(-pi zeta /
+  sqrt(1 - zeta^2)) is at least r, the oscillation is visible, and the candidate is one
+  damped period, 2 pi / (wn sqrt(1 - zeta^2)), since over a whole period an oscillation
+  spans twice its amplitude, so readings within one step for a period leave less than
+  half a step of amplitude. Otherwise the response is effectively monotone, and the
+  candidate is its decay time constant: 1 / (zeta wn) for zeta < 1, and the slow pole's
+  1 / (wn (zeta - sqrt(zeta^2 - 1))) for zeta >= 1, which agree at zeta = 1. The dwell is
+  the largest candidate over the channel's joints, rounded up to whole ticks. The
+  diagonal ignores coupling.
 - an object's ``dwell_ns``, supplied by the object (``ObjectRest``), not by the pose
   source: its rocking period as a compound pendulum about an edge it rests on, T = 2 pi
   sqrt(I_edge / (m g d)), from its geometry and mass in the compiled model, with d the
@@ -496,26 +501,41 @@ def largest_inertia(
 
 
 def joint_dwell(
-    constants: dict[str, dict[str, float]], inertia: dict[str, float], tick: int
+    constants: dict[str, dict[str, float]],
+    inertia: dict[str, float],
+    arrival: dict[str, float],
+    steps: dict[str, float],
+    tick: int,
 ) -> tuple[int, dict[str, dict[str, Any]]]:
-    """The rule's joint dwell: each joint's candidate, one damped period if underdamped,
-    else the slow pole's time constant; the largest, in whole ticks."""
+    """The rule's joint dwell. For each joint, with A0 its largest tracking error at
+    arrival and r its step: one damped period when it is underdamped and its first
+    overshoot A0 e^(-pi zeta / sqrt(1 - zeta^2)) is at least r, a visible oscillation;
+    otherwise, an effectively monotone response, its decay time constant, 1 / (zeta wn)
+    below critical damping and the slow pole's 1 / (wn (zeta - sqrt(zeta^2 - 1))) at or
+    above it, which agree at zeta = 1. The largest candidate, in whole ticks."""
     rows: dict[str, dict[str, Any]] = {}
     for joint, servo in constants.items():
         kp, c, m = servo["kp"], servo["c"], inertia[joint]
+        a0, r = arrival[joint], steps[joint]
         wn = math.sqrt(kp / m)
         zeta = c / (2 * math.sqrt(kp * m))
-        if zeta < 1:
+        overshoot = a0 * math.exp(-math.pi * zeta / math.sqrt(1 - zeta * zeta)) if zeta < 1 else 0.0
+        if zeta < 1 and overshoot >= r:
             candidate, kind = 2 * math.pi / (wn * math.sqrt(1 - zeta * zeta)), "damped period"
+        elif zeta < 1:
+            candidate, kind = 1 / (zeta * wn), "decay time constant"
         else:
             candidate = 1 / (wn * (zeta - math.sqrt(zeta * zeta - 1)))
-            kind = "slow time constant"
+            kind = "slow pole time constant"
         rows[joint] = {
             "M": m,
             "kp": kp,
             "c": c,
             "omega_n": wn,
             "zeta": zeta,
+            "A0": a0,
+            "step": r,
+            "overshoot_steps": overshoot / r,
             "candidate_s": candidate,
             "candidate": kind,
         }
@@ -846,6 +866,12 @@ def run_joint(
         status = execution.status
         objects = list(ctx.snapshot().objects)
         recording = joined(moving, after)
+        # The tracking error at arrival: each joint's distance from the final setpoint at
+        # the sample where the execution ended.
+        arrival = {
+            j: abs(float(moving.exact[-1][joints.index(j)]) - goal)
+            for j, goal in zip(arm.joints, trajectory.positions[-1], strict=True)
+        }
         inertia = largest_inertia(runtime._model, joints, recording.configurations)
     return {
         "legs": [[k, d, s] for k, d, s in legs],
@@ -853,6 +879,7 @@ def run_joint(
         "end_ns": submitted + trajectory.time_from_start_ns[-1],
         "execution": {"state": status.state.value, "ended_ns": status.stamp.time_ns},
         "recording": recording,
+        "arrival_error": arrival,
         "inertia": inertia,
         "watched_from": len(moving.stamps),
         "result": None if watch is None else watch.result,
@@ -1170,7 +1197,10 @@ def calibrate_robot(
         configurations = sum(len(run["recording"].configurations) for run in first)
         servo = constants[channel]
         inertia = {j: max(run["inertia"][j] for run in first) for j in servo}
-        dwell, rows = joint_dwell(servo, inertia, tick)
+        arrived = [run for run in first if run["execution"]["state"] == "succeeded"]
+        arrival = {j: max(run["arrival_error"][j] for run in arrived) for j in servo}
+        step = dict(zip(joints[channel], steps[channel], strict=True))
+        dwell, rows = joint_dwell(servo, inertia, arrival, step, tick)
         slowest = max(rows, key=lambda j: rows[j]["candidate_s"])
         what = (
             "variation: one step of this profile's declared resolution per element "
@@ -1179,7 +1209,9 @@ def calibrate_robot(
             f"unmeasured. dwell: {slowest}'s servo, {rows[slowest]['candidate']} "
             f"{rows[slowest]['candidate_s']:.6g} s (kp {rows[slowest]['kp']:g}, c "
             f"{rows[slowest]['c']:g}, largest M {rows[slowest]['M']:.6g} over the trials, zeta "
-            f"{rows[slowest]['zeta']:.3g}), the largest over the channel's joints, from the "
+            f"{rows[slowest]['zeta']:.3g}, first overshoot "
+            f"{rows[slowest]['overshoot_steps']:.3g} steps from its largest arrival error "
+            f"{rows[slowest]['A0']:.3g}), the largest over the channel's joints, from the "
             f"compiled model, rounded up to {dwell // tick} ticks. cadence and largest gap: "
             f"one {tick / 1e6:g} ms control tick"
         )
