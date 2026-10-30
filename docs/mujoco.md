@@ -498,15 +498,17 @@ channel. The runtime reports them in `RuntimeInfo.rest` for the channels it conf
 channel the description does not declare, criteria of the wrong kind for the channel, or
 a channel listed twice is refused (`invalid_profile`), as is a `variation` whose length
 differs from the channel's shape. A channel not listed, and every object's pose without
-`object_rest`, has no criteria from this source. Every value needs its `source`. A
-sample spacing follows from the control tick. A variation follows from the declared
-resolution, since a still reading moves by at most one step. A dwell follows from the
-model: with the remaining error decaying as e^(-t/τ), readings within one step for at
-least the slowest servo time constant τ leave less than one step of motion, and for an
-object the contact's time constant (its geoms' `solref`) plays τ's part. Each is checked
-by a calibration that exercises the arm through representative motions, including
-zero-velocity crossings, slow creep, and pauses, and is cited from the profile. A
-simulated value never stands in for the physical robot's.
+`object_rest`, has no criteria from this source. Every value needs its `source`.
+
+The criteria are empirical and belong to this source: a signal is at rest when its
+observed position remains within a declared variation for a declared dwell. The sample
+spacing is the control tick. The variation is set just above the stationary chatter the
+source's readings show once genuinely settled, at the declared resolution, and the dwell
+just longer than the longest interval in which the readings stay within that variation
+and then move beyond it again, during commanded motion or after it. Both come from a
+calibration over isolated traces of the motions the stack commands, which replays the
+traces through the watch and is cited from the profile. A simulated value never stands
+in for the physical robot's.
 
 ## Execution
 

@@ -1051,7 +1051,8 @@ A fixed wait stands in for that event badly, since it is either longer than need
 too short, and neither failure shows in the evidence. One reading cannot decide it
 either, since an arm passing through zero velocity at a turnaround reads as still. Rest
 is a claim about a signal over time, so the context decides it, from the readings of a
-declared channel, by criteria declared as data with their source.
+declared channel, by criteria declared as data with their source: a signal is at rest
+when its observed position remains within a declared variation for a declared dwell.
 
 - **The conditions.** `JointRest(component, criteria=None)` judges a component's joints
   on a confirmed `joint_position` channel whose source covers them. Without explicit
