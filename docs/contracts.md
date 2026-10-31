@@ -833,9 +833,9 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`KinematicModel`](../schemas/ssrobot.KinematicModel.v1.json) | A robot's frames and joints, as a model loader produces them. |
 | [`ssrobot.package`](../schemas/ssrobot.package.v1.json) | A package manifest, `ssrobot.toml`. See [packages.md](packages.md). |
 | [`PackageReport`](../schemas/ssrobot.PackageReport.v1.json) | What loading a package resolved. |
-| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v6.json) | What an opened runtime binds and confirms, including its scene channels, which channels are privileged, and the rest criteria it declares. |
-| [`JointRest`](../schemas/ssrobot.JointRest.v1.json), [`ObjectRest`](../schemas/ssrobot.ObjectRest.v1.json) | What a rest watch waits for: a component's joints, or a scene object, at rest. |
-| [`RestResult`](../schemas/ssrobot.RestResult.v1.json) | How a rest watch ended, with the readings that justify it. |
+| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v7.json) | What an opened runtime binds and confirms, including its scene channels, which channels are privileged, and the rest criteria it declares. |
+| [`JointRest`](../schemas/ssrobot.JointRest.v2.json), [`ObjectRest`](../schemas/ssrobot.ObjectRest.v2.json) | What a rest watch waits for: a component's joints, or a scene object, at rest. |
+| [`RestResult`](../schemas/ssrobot.RestResult.v2.json) | How a rest watch ended, with the readings that justify it. |
 | [`JointCommand`](../schemas/ssrobot.JointCommand.v1.json) | Instantaneous position, velocity, or effort targets for a group. |
 | [`GripperCommand`](../schemas/ssrobot.GripperCommand.v1.json) | Target opening. |
 | [`BaseTwistCommand`](../schemas/ssrobot.BaseTwistCommand.v1.json) | Planar base velocity. |
@@ -848,7 +848,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
 | [`Submission`](../schemas/ssrobot.Submission.v2.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
-| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v6.json) | One event in a trace. |
+| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v7.json) | One event in a trace. |
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`PortfolioReport`](../schemas/ssrobot.PortfolioReport.v1.json) | Every attempt of a planner portfolio and which was selected. See planning.md. |
@@ -867,7 +867,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`MotionValidation`](../schemas/ssrobot.MotionValidation.v2.json) | One validator's answer for one exact motion, bound to its scene, constraints, goal, and policy. |
 | [`PlanResult`](../schemas/ssrobot.PlanResult.v4.json) | A planner's answer to one request, carrying the request and its validation evidence. |
 | [`PreparedTrajectory`](../schemas/ssrobot.PreparedTrajectory.v6.json) | A command compiled for a runtime's trajectory contract, with its readiness checks and both validation reports; one that decodes is ready to execute. |
-| [`MujocoProfile`](../schemas/ssrobot.MujocoProfile.v1.json) | MuJoCo-specific settings a package declares for `MujocoRuntime`. See [mujoco.md](mujoco.md). |
+| [`MujocoProfile`](../schemas/ssrobot.MujocoProfile.v2.json) | MuJoCo-specific settings a package declares for `MujocoRuntime`. See [mujoco.md](mujoco.md). |
 | [`AuthoringDraft`](../schemas/ssrobot.AuthoringDraft.v1.json) | What `ssrobot init` knows about a package being authored, and what is undecided. See [authoring.md](authoring.md). |
 | [`AuthoringAnswers`](../schemas/ssrobot.AuthoringAnswers.v1.json) | Answers to a draft's decisions, for non-interactive authoring. |
 | [`DoctorReport`](../schemas/ssrobot.DoctorReport.v1.json) | The result of `ssrobot doctor`. |
@@ -1109,8 +1109,9 @@ when its observed position remains within a declared variation for a declared dw
 
 `execute_continuation` takes the result of a `JointRest` watch as its evidence that the
 arm arrived (see *Interleaving planning and execution* in [planning.md](planning.md)).
-It accepts only a result this context decided (`unknown_rest`). The context keeps only
-each decided result's fingerprint for that check; the result itself, with the samples
+It accepts only a result this context decided (`unknown_rest`). For that check the
+context keeps no full result, only each decided result's fingerprint: one entry per
+completed watch, kept for the context's lifetime. The result itself, with the samples
 that justify it, is in the trace.
 
 ## Traces

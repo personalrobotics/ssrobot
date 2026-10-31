@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.JointRest v1",
+  "title": "ssrobot.JointRest v2",
   "$ref": "#/$defs/JointRest",
   "$defs": {
     "JointRest": {
@@ -11,7 +11,7 @@
           "const": "ssrobot.JointRest"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "component": {
           "type": "string",

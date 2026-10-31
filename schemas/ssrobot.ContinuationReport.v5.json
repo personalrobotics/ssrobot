@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.ContinuationReport v4",
+  "title": "ssrobot.ContinuationReport v5",
   "$ref": "#/$defs/ContinuationReport",
   "$defs": {
     "ContinuationReport": {
@@ -11,7 +11,7 @@
           "const": "ssrobot.ContinuationReport"
         },
         "version": {
-          "const": 4
+          "const": 5
         },
         "prediction": {
           "type": "string",
@@ -191,7 +191,7 @@
           "const": "ssrobot.JointRest"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "component": {
           "type": "string",
@@ -224,7 +224,7 @@
           "const": "ssrobot.ObjectRest"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "object": {
           "type": "string",
@@ -367,7 +367,7 @@
           "const": "ssrobot.RestResult"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "condition": {
           "anyOf": [

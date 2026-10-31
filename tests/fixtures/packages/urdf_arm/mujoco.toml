@@ -1,7 +1,7 @@
 # MujocoRuntime settings: compile arm_mujoco.xml, not the canonical URDF, and start at
 # the SRDF's "home" state.
 schema = "ssrobot.MujocoProfile"
-version = 1
+version = 2
 model = "mujoco"
 keyframe = "home"
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.MujocoProfile v1",
+  "title": "ssrobot.MujocoProfile v2",
   "$ref": "#/$defs/MujocoProfile",
   "$defs": {
     "ChannelRest": {
@@ -153,7 +153,7 @@
           "const": "ssrobot.MujocoProfile"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "model": {
           "anyOf": [

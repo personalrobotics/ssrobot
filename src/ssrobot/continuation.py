@@ -220,7 +220,7 @@ class ContinuationReport(Record):
     """Whether a continuation ran, and the evidence for that decision."""
 
     SCHEMA = "ssrobot.ContinuationReport"
-    VERSION = 4
+    VERSION = 5
 
     prediction: str = field(metadata=meta("Fingerprint of the prediction it was planned on."))
     source: str = field(metadata=meta("The source execution's identifier."))

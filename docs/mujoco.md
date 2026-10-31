@@ -413,7 +413,7 @@ rest.
 
 ```toml
 schema = "ssrobot.MujocoProfile"
-version = 1
+version = 2
 model = "mujoco"      # optional: the package model MuJoCo compiles (see Model)
 keyframe = "home"     # optional: the start keyframe (see Start keyframe)
 

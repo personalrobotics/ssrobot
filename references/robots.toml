@@ -6,7 +6,7 @@
 [[robots]]
 name = "geodude"
 repository = "personalrobotics/geodude_assets"
-commit = "43f1570af30e9f2ac3ac8b701710310c42506ebe"
+commit = "c55f21abcddb9e1100f03846a0f517e25400ce13"
 module = "geodude_assets"
 package_root = "src/geodude_assets"
 # No keyframe: the package's MuJoCo profile starts it at "ready" (#95).
@@ -76,7 +76,7 @@ quat_in_frame_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
 [[robots]]
 name = "ada"
 repository = "personalrobotics/ada_assets"
-commit = "5aa62928bea3e21b1e7248485d071362e305e753"
+commit = "efeeb63a48a094d952245837a85251f765e8f7ab"
 module = "ada_assets"
 package_root = "src/ada_assets"
 # No keyframe: the package's MuJoCo profile starts it at "resting" (#95,

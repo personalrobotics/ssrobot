@@ -409,7 +409,8 @@ class RobotContext:
         self._planning_pool: ThreadPoolExecutor | None = None
         self._watches: list[RestWatch] = []  # live rest watches, in start order
         # The fingerprint of every rest result this context decided: the only results a
-        # continuation accepts as evidence. The results themselves are in the trace.
+        # continuation accepts as evidence. One entry per completed watch, never evicted;
+        # the full results are in the trace, not kept here.
         self._rested: set[str] = set()
 
     # -- Properties ------------------------------------------------------------------

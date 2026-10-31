@@ -233,7 +233,7 @@ class MujocoProfile(Record):
     """MuJoCo-specific settings a robot package declares for ``MujocoRuntime``."""
 
     SCHEMA = "ssrobot.MujocoProfile"
-    VERSION = 1
+    VERSION = 2
 
     model: str | None = field(
         default=None,

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.RuntimeInfo v6",
+  "title": "ssrobot.RuntimeInfo v7",
   "$ref": "#/$defs/RuntimeInfo",
   "$defs": {
     "ChannelRest": {
@@ -257,7 +257,7 @@
           "const": "ssrobot.RuntimeInfo"
         },
         "version": {
-          "const": 6
+          "const": 7
         },
         "runtime": {
           "type": "string",
