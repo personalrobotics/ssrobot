@@ -225,7 +225,8 @@ class _Tracked:
 
 
 def _check_start(start: Mapping[str, float] | None) -> dict[str, float]:
-    """``start`` as joint positions, each name a string and each position finite."""
+    """``start`` as joint positions in name order, each name a string and each position
+    finite."""
     if start is None:
         return {}
     if not isinstance(start, Mapping):
@@ -243,7 +244,7 @@ def _check_start(start: Mapping[str, float] | None) -> dict[str, float]:
                 "invalid_argument", f"{name}'s start position is not finite", path=f"start[{name}]"
             )
         checked[name] = float(q)
-    return checked
+    return dict(sorted(checked.items()))
 
 
 class MujocoRuntime:

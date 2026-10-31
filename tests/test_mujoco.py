@@ -220,10 +220,12 @@ def _altered(description: RobotDescription) -> RobotDescription:
 
 def test_mujoco_runtime_starts_where_it_is_told(artifacts: Path) -> None:
     """``start`` moves joints from the keyframe's positions to its own: they are observed
-    there exactly and recorded in the mapping, and a start at the keyframe's own
-    positions runs exactly as the keyframe does, servos included."""
+    there exactly and recorded in the mapping, the same start given in another order
+    yields the same mapping, and a start at the keyframe's own positions runs exactly as
+    the keyframe does, servos included."""
     package = load_package(FIXTURE)
     arm = ObservationRequest(channels=("arm_q",))
+    mappings: dict[str, Any] = {}
 
     def run(start: dict[str, float] | None) -> dict[str, Any]:
         runtime = MujocoRuntime(package, keyframe="home", start=start)
@@ -233,6 +235,7 @@ def test_mujoco_runtime_starts_where_it_is_told(artifacts: Path) -> None:
                 ctx.step()
             after = ctx.observe(arm).readings[0].value
         mapping = _json(runtime.mapping)
+        mappings[json.dumps(start)] = mapping
         return {
             "start": start,
             "initial": initial,
@@ -241,8 +244,10 @@ def test_mujoco_runtime_starts_where_it_is_told(artifacts: Path) -> None:
         }
 
     moved = {"elbow": 0.75, "wrist": -1.25}
+    reversed_moved = dict(reversed(moved.items()))
     report = {
         "moved": run(moved),
+        "moved_reversed": run(reversed_moved),
         "keyframe": run(None),
         "keyframe_as_start": run({"elbow": -1.0, "wrist": 0.25}),
     }
@@ -250,6 +255,7 @@ def test_mujoco_runtime_starts_where_it_is_told(artifacts: Path) -> None:
 
     assert report["moved"]["initial"] == (0.5, 0.75, -1.25)  # the keyframe's shoulder
     assert report["moved"]["recorded"] == moved
+    assert mappings[json.dumps(moved)] == mappings[json.dumps(reversed_moved)]
     assert report["keyframe"]["recorded"] == {}
     same = report["keyframe_as_start"]
     assert (same["initial"], same["after_1s"]) == (

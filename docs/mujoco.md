@@ -163,8 +163,8 @@ position servo holds its joint where it starts. A start at a keyframe's own posi
 runs exactly as the keyframe does. It moves joints only: a gripper actuator keeps the
 keyframe's control, and objects start where the scene puts them. It is for an
 application that must begin from a prescribed state the model names no keyframe for,
-such as an object held at a release pose. The mapping records it (`start_joints`,
-`start_positions`).
+such as an object held at a release pose. The mapping records it in joint-name
+order (`start_joints`, `start_positions`), so equal starts give equal mappings.
 
 ## Scene and attachments
 
