@@ -218,6 +218,52 @@ def _altered(description: RobotDescription) -> RobotDescription:
     return dataclasses.replace(description, joints=joints)
 
 
+def test_mujoco_runtime_starts_where_it_is_told(artifacts: Path) -> None:
+    """``start`` moves joints from the keyframe's positions to its own: they are observed
+    there exactly and recorded in the mapping, the same start given in another order
+    yields the same mapping, and a start at the keyframe's own positions runs exactly as
+    the keyframe does, servos included."""
+    package = load_package(FIXTURE)
+    arm = ObservationRequest(channels=("arm_q",))
+    mappings: dict[str, Any] = {}
+
+    def run(start: dict[str, float] | None) -> dict[str, Any]:
+        runtime = MujocoRuntime(package, keyframe="home", start=start)
+        with RobotContext(package.description, runtime) as ctx:
+            initial = ctx.observe(arm).readings[0].value
+            for _ in range(500):  # one simulated second
+                ctx.step()
+            after = ctx.observe(arm).readings[0].value
+        mapping = _json(runtime.mapping)
+        mappings[json.dumps(start)] = mapping
+        return {
+            "start": start,
+            "initial": initial,
+            "after_1s": after,
+            "recorded": dict(zip(mapping["start_joints"], mapping["start_positions"], strict=True)),
+        }
+
+    moved = {"elbow": 0.75, "wrist": -1.25}
+    reversed_moved = dict(reversed(moved.items()))
+    report = {
+        "moved": run(moved),
+        "moved_reversed": run(reversed_moved),
+        "keyframe": run(None),
+        "keyframe_as_start": run({"elbow": -1.0, "wrist": 0.25}),
+    }
+    (artifacts / "start.json").write_text(json.dumps(report, indent=2) + "\n")
+
+    assert report["moved"]["initial"] == (0.5, 0.75, -1.25)  # the keyframe's shoulder
+    assert report["moved"]["recorded"] == moved
+    assert mappings[json.dumps(moved)] == mappings[json.dumps(reversed_moved)]
+    assert report["keyframe"]["recorded"] == {}
+    same = report["keyframe_as_start"]
+    assert (same["initial"], same["after_1s"]) == (
+        report["keyframe"]["initial"],
+        report["keyframe"]["after_1s"],
+    )
+
+
 def test_mujoco_runtime_refuses_mismatches_before_commands(
     artifacts: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -359,6 +405,18 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
             "package_changed",
             _changed_after_loading(tmp_path, "symlink", _escape(tmp_path)),
         ),
+        "start names no joint": (
+            "unknown_reference",
+            lambda: (package.description, MujocoRuntime(package, start={"knee": 0.0})),
+        ),
+        "start outside the joint limits": (
+            "invalid_initial_state",
+            lambda: (package.description, MujocoRuntime(package, start={"elbow": 2.5})),
+        ),
+        "start not finite": (
+            "invalid_argument",
+            lambda: (package.description, MujocoRuntime(package, start={"elbow": float("nan")})),
+        ),
         # Last: its patch of the loaded MuJoCo version lasts for the rest of the test.
         "MuJoCo version drift": ("unsupported_backend_version", drifted),
     }
@@ -404,6 +462,8 @@ def test_mujoco_runtime_refuses_mismatches_before_commands(
         assert not outcome.get("opened") and not outcome.get("mapping_available"), (case, outcome)
     assert report["description disagrees with MuJoCo"]["path"] == "joints[elbow]"
     assert report["keyframe outside the joint limits"]["path"] == "joints[elbow]"
+    assert report["start names no joint"]["path"] == "start[knee]"
+    assert report["start outside the joint limits"]["path"] == "start[elbow]"
     assert {
         case: report[case]["path"]
         for case in (

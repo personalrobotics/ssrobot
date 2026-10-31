@@ -288,6 +288,12 @@ class MujocoMapping(Value):
     timestep_ns: int = field(metadata=meta("MuJoCo physics timestep.", unit="ns"))
     substeps: int = field(metadata=meta("Physics steps per control tick.", unit="count"))
     keyframe: str | None = field(metadata=meta("Keyframe the runtime opened in, if any."))
+    start_joints: tuple[str, ...] = field(
+        default=(), metadata=meta("Joints the runtime started at an explicit position.")
+    )
+    start_positions: tuple[float, ...] = field(
+        default=(), metadata=meta("Their positions, in order.", unit="joint")
+    )
     scene: str | None = field(
         default=None, metadata=meta("Scene file composed with the model, as given, if any.")
     )
