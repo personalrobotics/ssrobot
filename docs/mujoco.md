@@ -64,7 +64,7 @@ is a reset. The runtime never exposes MuJoCo's `MjModel` or `MjData`.
 
 `MujocoRuntime(package, *, substeps=1, keyframe=None, profile=None, goal_tolerance=0.01,
 settle_ns=1_000_000_000, scene=None, scene_root=None, attach_tolerance_m=0.01,
-attach_tolerance_rad=0.1)`
+attach_tolerance_rad=0.1, contacts=(), start=None)`
 only checks its arguments. It compiles nothing and starts no thread:
 
 - `substeps` must be a positive integer (`invalid_substeps`).
@@ -73,6 +73,8 @@ only checks its arguments. It compiles nothing and starts no thread:
   *Trajectories* and *Scene and attachments*.
 - `scene` is a path to an MJCF file of task objects, read at open with every file it
   depends on, under `scene_root` (the scene file's directory by default).
+- `start` maps joint names to finite positions (`invalid_argument`). See *Start
+  keyframe*.
 
 ## Opening
 
@@ -92,7 +94,8 @@ only checks its arguments. It compiles nothing and starts no thread:
 | `invalid_timestep` | The model's timestep is not a whole number of nanoseconds. |
 | `model_mismatch` | MuJoCo's compiled model disagrees with the description (see *Mapping*), or the start keyframe disagrees with the named configuration of the same name (`configurations[<name>]`; see *Start keyframe*). The path names the entity. |
 | `unknown_keyframe` | `keyframe` names no keyframe in the model. |
-| `invalid_initial_state` | A joint starts more than `START_TOLERANCE` outside its limits, in the keyframe or in the model's default state. The path names the joint. |
+| `invalid_initial_state` | A joint starts more than `START_TOLERANCE` outside its limits, in the keyframe, in the model's default state, or in `start`. The path names the joint (`joints[<name>]`, or `start[<name>]`). |
+| `unknown_reference` | `start` names a joint the description lacks (`start[<name>]`). |
 | `unknown_profile`, `ambiguous_profile` | `profile` names no `mujoco` profile of the package, or none is named and the package has several. |
 | `invalid_profile` | The profile is not valid TOML or not a valid `ssrobot.MujocoProfile`. It also fails if it names a model the package lacks, a gripper the description lacks, an actuator the model lacks, or a gripper actuator that is not a position servo, or if no opening in [0, 1] is within every actuator's control range. The path names the file and entry. |
 | `actuator_alias` | An actuator would serve resources the context treats as separately owned, so two owners could write the same control. A gripper actuator must move only joints the gripper declares: through its joint, or every joint of its fixed tendon. Two confirmed capabilities with disjoint resources may never share an actuator. |
@@ -154,6 +157,14 @@ example, arms passing through each other, or a joint outside its limits, which f
 When the description has a named configuration with the keyframe's name, such as
 `home` or `ready`, the keyframe must put that configuration's group at its positions,
 within `START_TOLERANCE`. The two describe one pose and may not drift apart.
+
+`start` then moves the joints it names to its positions, at rest, and every joint
+position servo holds its joint where it starts. A start at a keyframe's own positions
+runs exactly as the keyframe does. It moves joints only: a gripper actuator keeps the
+keyframe's control, and objects start where the scene puts them. It is for an
+application that must begin from a prescribed state the model names no keyframe for,
+such as an object held at a release pose. The mapping records it (`start_joints`,
+`start_positions`).
 
 ## Scene and attachments
 
@@ -583,7 +594,8 @@ the returned model or data reaches no other materialization and no runtime.
 | `artifacts/test_mujoco_rejects_unexecutable_commands/rejections.json` | `start_mismatch`, an unconfirmed velocity command, a chunk commanding the arm and the overlapping `wrist_only` group, and each profile failure, with its code and path. That covers a gripper profile naming the arm's actuator (`actuator_alias`) and no reachable opening. A zero-gear wrist opens with the arm's and wrist's position commands unconfirmed and their reasons recorded. |
 | `artifacts/test_mujoco_compiles_the_profiles_model_against_the_canonical_description/multi-artifact.json` | The `urdf_arm` fixture, whose canonical model is URDF and SRDF, opened through the MJCF its profile names, with no `keyframe` argument. It records the compiled entry, format, path, and signature, and the URDF's description fingerprint. It starts at the profile's `home`, equal to the SRDF state of that name, and a trajectory succeeds. |
 | `artifacts/test_mujoco_model_signature_covers_every_file_the_model_brings_in/{original,moved,edited}-mapping.json` | Three copies of the example: unchanged, moved to another directory, and with one gain changed in the included `actuators.xml`. The edited copy has the same root-file hash but a different model signature, and the moved copy's mapping is identical to the original's. |
-| `artifacts/test_mujoco_runtime_refuses_mismatches_before_commands/startup-failures.json` | Each code in *Opening*, plus `invalid_substeps`, with its path and message, including a keyframe with the elbow outside its range (`invalid_initial_state`). Model selection fails four ways: a profile naming a missing model (`invalid_profile`) or the URDF (`unsupported_model_format`); two MJCF models and no choice (`ambiguous_model`); and an MJCF artifact with a renamed joint (`model_mismatch` at `joints[j3]`). An artifact edited after loading fails with `package_changed`, and a keyframe disagreeing with its configuration with `model_mismatch` at `configurations[home]`. A keyframe with the wrist 0.5 mrad past its stop opens, is first observed at 3.0005, and settles back to its stop. For `package_changed`: the canonical MJCF edited after loading, an included file edited, and an include replaced by a symlink out of the package. None of them opened or left a mapping. |
+| `artifacts/test_mujoco_runtime_starts_where_it_is_told/start.json` | The example arm opened at `home` with its elbow and wrist moved by `start`: observed there exactly, and recorded in the mapping. Started at `home`'s own positions through `start`, it is observed exactly as when opened at `home` alone, at the start and after one simulated second. |
+| `artifacts/test_mujoco_runtime_refuses_mismatches_before_commands/startup-failures.json` | Each code in *Opening*, plus `invalid_substeps`, with its path and message, including a keyframe with the elbow outside its range (`invalid_initial_state`). Model selection fails four ways: a profile naming a missing model (`invalid_profile`) or the URDF (`unsupported_model_format`); two MJCF models and no choice (`ambiguous_model`); and an MJCF artifact with a renamed joint (`model_mismatch` at `joints[j3]`). An artifact edited after loading fails with `package_changed`, and a keyframe disagreeing with its configuration with `model_mismatch` at `configurations[home]`. A `start` naming no joint fails with `unknown_reference`, one outside a joint's range with `invalid_initial_state`, and a non-finite one with `invalid_argument`. A keyframe with the wrist 0.5 mrad past its stop opens, is first observed at 3.0005, and settles back to its stop. For `package_changed`: the canonical MJCF edited after loading, an included file edited, and an include replaced by a symlink out of the package. None of them opened or left a mapping. |
 | `artifacts/test_grasp_carry_release_and_drop_are_traced/{carry,drop}/trace.jsonl`, `summary.json` | The example arm with `examples/scenes/pedestal.xml`. **Carry:** the box starts on the pedestal and the hand closes on it. `attach("box", "hand")` resolves the transform and allows `gripper`, `left_finger`, `right_finger`, and `tcp`. Friction alone lifts the box, swings it 0.6 rad aside and back, and releases it just above the pedestal, where it lands within 1 cm of its start. There is no violation, and detach empties the scene. **Drop:** the hand opens after lifting without detaching. One `violation` is traced, the attachment turns `held: false` and stays, and closing detaches it. `scene` records run at revisions 0 to 2 (carry) and 0 to 3 (drop). A second run gives byte-identical files. |
 | `artifacts/test_invalid_attachments_and_scenes_change_nothing/refusals.json` | Each refused `attach` and `detach`, with its code, leaving the scene unchanged: an unknown object, a fixture as object, an unknown end effector or allow name, a repeated allow name, a non-pose transform, a transform far from the box (`attachment_mismatch`), a stale revision (`StaleRevisionError`), a boolean or float revision (`wrong_type`) and a negative one (`out_of_limits`), already attached, and not attached. A fixture may be allowed. Scenes that reuse a robot name (`scene_conflict`), have an articulated or unnamed body, or include or reference a file that does not exist (`invalid_scene`) fail at open. |
 | `artifacts/test_scenes_include_files_and_assets_under_one_identity/scene_assets.json` | A scene that sets `meshdir`, includes a table fixture with a mesh visual, and has a free cylinder, opened with the example arm. The mapping lists `meshes/leg.stl`, `parts/table.xml`, and `scene.xml` with their hashes. A moved copy keeps the identity; editing the include or the mesh changes it. A declared `scene_root` lets the scene use a sibling directory's mesh, which it otherwise cannot reach (`scene_escape`). `..`, a symlink out of the root (`scene_escape`), an absolute path, and a `<model file>` reference (`invalid_scene`) are refused. A mesh rewritten after the closure was read does not reach the compiled model. A planning scene builds on the composed world. Two runs are byte-identical. |

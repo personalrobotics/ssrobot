@@ -7,7 +7,7 @@ import itertools
 import math
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -224,13 +224,36 @@ class _Tracked:
     held: bool = True
 
 
+def _check_start(start: Mapping[str, float] | None) -> dict[str, float]:
+    """``start`` as joint positions, each name a string and each position finite."""
+    if start is None:
+        return {}
+    if not isinstance(start, Mapping):
+        raise ValidationError(
+            "invalid_argument", "start must map joints to positions", path="start"
+        )
+    checked = {}
+    for name, q in start.items():
+        if not isinstance(name, str) or isinstance(q, bool) or not isinstance(q, int | float):
+            raise ValidationError(
+                "invalid_argument", "start must map joint names to numbers", path="start"
+            )
+        if not math.isfinite(q):
+            raise ValidationError(
+                "invalid_argument", f"{name}'s start position is not finite", path=f"start[{name}]"
+            )
+        checked[name] = float(q)
+    return checked
+
+
 class MujocoRuntime:
     """A manually clocked ``Runtime`` that simulates a robot package in MuJoCo.
 
     Construction only checks its arguments. ``open`` compiles the package's canonical
     MJCF model, resolves the description and the MuJoCo profile in it, binds the
     declared commands and channels it can execute, and starts in the model's default
-    state, or in ``keyframe``, with every joint position servo holding its joint. One
+    state, or in ``keyframe``, with each joint in ``start`` moved to its position there,
+    and every joint position servo holding its joint. One
     ``step`` applies due commands and runs ``substeps`` physics steps. A trajectory
     succeeds once every joint is within ``goal_tolerance`` of its last waypoint, and
     fails with ``goal_not_reached`` if that takes longer than ``settle_ns``.
@@ -257,6 +280,7 @@ class MujocoRuntime:
         attach_tolerance_m: float = 0.01,
         attach_tolerance_rad: float = 0.1,
         contacts: Sequence[tuple[str, str]] = (),
+        start: Mapping[str, float] | None = None,
     ) -> None:
         if not _is_int(substeps) or substeps < 1:
             raise ValidationError(
@@ -274,6 +298,7 @@ class MujocoRuntime:
         self._package = package
         self._substeps = substeps
         self._keyframe = keyframe
+        self._start = _check_start(start)
         self._profile = profile
         self._scene = None if scene is None else Path(scene)
         if scene_root is not None and scene is None:
@@ -756,6 +781,25 @@ class MujocoRuntime:
                         f"configuration of that name puts it at {expected:.6g}",
                         path=f"configurations[{configuration.name}]",
                     )
+        for joint_name, q in self._start.items():
+            if joint_name not in self._joints:
+                raise ValidationError(
+                    "unknown_reference",
+                    f"{joint_name!r} is not a joint of the description",
+                    path=f"start[{joint_name}]",
+                )
+            limits = description.joint(joint_name).limits
+            if (limits.lower is not None and q < limits.lower - START_TOLERANCE) or (
+                limits.upper is not None and q > limits.upper + START_TOLERANCE
+            ):
+                raise ValidationError(
+                    "invalid_initial_state",
+                    f"{joint_name}={q:.6g} is outside [{limits.lower}, {limits.upper}]",
+                    path=f"start[{joint_name}]",
+                )
+            binding = self._joints[joint_name]
+            data.qpos[binding.qpos_address] = q
+            data.qvel[binding.dof_address] = 0.0
         for (joint_name, mode), drive in self._drives.items():
             if mode is JointMode.POSITION:  # hold where it starts, rather than at ctrl 0
                 q = float(data.qpos[self._joints[joint_name].qpos_address])
@@ -795,6 +839,8 @@ class MujocoRuntime:
             timestep_ns=timestep_ns,
             substeps=self._substeps,
             keyframe=keyframe,
+            start_joints=tuple(self._start),
+            start_positions=tuple(self._start.values()),
             scene=None if self._scene is None else str(self._scene),
             scene_identity=scene_identity,
             scene_files=() if scene_source is None else scene_source.files,
