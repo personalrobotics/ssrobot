@@ -76,7 +76,7 @@ quat_in_frame_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
 [[robots]]
 name = "ada"
 repository = "personalrobotics/ada_assets"
-commit = "efeeb63a48a094d952245837a85251f765e8f7ab"
+commit = "7b25c46d2cb72b3d71f3abb71faa40ef768d6ef4"
 module = "ada_assets"
 package_root = "src/ada_assets"
 # No keyframe: the package's MuJoCo profile starts it at "resting" (#95,
