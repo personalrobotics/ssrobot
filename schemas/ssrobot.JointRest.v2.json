@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.JointRest v1",
+  "title": "ssrobot.JointRest v2",
   "$ref": "#/$defs/JointRest",
   "$defs": {
     "JointRest": {
@@ -11,7 +11,7 @@
           "const": "ssrobot.JointRest"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "component": {
           "type": "string",
@@ -38,13 +38,8 @@
     },
     "RestCriteria": {
       "type": "object",
-      "description": "When a channel's readings count as at rest, as declared by whoever produces them.",
+      "description": "When a channel's readings count as at rest: declared by the runtime that sources the",
       "properties": {
-        "cadence_ns": {
-          "type": "integer",
-          "description": "The spacing of samples the criteria were declared for.",
-          "x-unit": "ns"
-        },
         "max_gap_ns": {
           "type": "integer",
           "description": "The largest spacing between samples still treated as continuous.",
@@ -100,7 +95,6 @@
         }
       },
       "required": [
-        "cadence_ns",
         "max_gap_ns",
         "dwell_ns",
         "source"

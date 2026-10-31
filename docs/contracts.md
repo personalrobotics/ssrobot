@@ -833,9 +833,9 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`KinematicModel`](../schemas/ssrobot.KinematicModel.v1.json) | A robot's frames and joints, as a model loader produces them. |
 | [`ssrobot.package`](../schemas/ssrobot.package.v1.json) | A package manifest, `ssrobot.toml`. See [packages.md](packages.md). |
 | [`PackageReport`](../schemas/ssrobot.PackageReport.v1.json) | What loading a package resolved. |
-| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v6.json) | What an opened runtime binds and confirms, including its scene channels, which channels are privileged, and the rest criteria it declares. |
-| [`JointRest`](../schemas/ssrobot.JointRest.v1.json), [`ObjectRest`](../schemas/ssrobot.ObjectRest.v1.json) | What a rest watch waits for: a component's joints, or a scene object, at rest. |
-| [`RestResult`](../schemas/ssrobot.RestResult.v1.json) | How a rest watch ended, with the readings that justify it. |
+| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v7.json) | What an opened runtime binds and confirms, including its scene channels, which channels are privileged, and the rest criteria it declares. |
+| [`JointRest`](../schemas/ssrobot.JointRest.v2.json), [`ObjectRest`](../schemas/ssrobot.ObjectRest.v2.json) | What a rest watch waits for: a component's joints, or a scene object, at rest. |
+| [`RestResult`](../schemas/ssrobot.RestResult.v2.json) | How a rest watch ended, with the readings that justify it. |
 | [`JointCommand`](../schemas/ssrobot.JointCommand.v1.json) | Instantaneous position, velocity, or effort targets for a group. |
 | [`GripperCommand`](../schemas/ssrobot.GripperCommand.v1.json) | Target opening. |
 | [`BaseTwistCommand`](../schemas/ssrobot.BaseTwistCommand.v1.json) | Planar base velocity. |
@@ -848,7 +848,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
 | [`Submission`](../schemas/ssrobot.Submission.v2.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
-| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v6.json) | One event in a trace. |
+| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v7.json) | One event in a trace. |
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`PortfolioReport`](../schemas/ssrobot.PortfolioReport.v1.json) | Every attempt of a planner portfolio and which was selected. See planning.md. |
@@ -867,7 +867,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`MotionValidation`](../schemas/ssrobot.MotionValidation.v2.json) | One validator's answer for one exact motion, bound to its scene, constraints, goal, and policy. |
 | [`PlanResult`](../schemas/ssrobot.PlanResult.v4.json) | A planner's answer to one request, carrying the request and its validation evidence. |
 | [`PreparedTrajectory`](../schemas/ssrobot.PreparedTrajectory.v6.json) | A command compiled for a runtime's trajectory contract, with its readiness checks and both validation reports; one that decodes is ready to execute. |
-| [`MujocoProfile`](../schemas/ssrobot.MujocoProfile.v1.json) | MuJoCo-specific settings a package declares for `MujocoRuntime`. See [mujoco.md](mujoco.md). |
+| [`MujocoProfile`](../schemas/ssrobot.MujocoProfile.v2.json) | MuJoCo-specific settings a package declares for `MujocoRuntime`. See [mujoco.md](mujoco.md). |
 | [`AuthoringDraft`](../schemas/ssrobot.AuthoringDraft.v1.json) | What `ssrobot init` knows about a package being authored, and what is undecided. See [authoring.md](authoring.md). |
 | [`AuthoringAnswers`](../schemas/ssrobot.AuthoringAnswers.v1.json) | Answers to a draft's decisions, for non-interactive authoring. |
 | [`DoctorReport`](../schemas/ssrobot.DoctorReport.v1.json) | The result of `ssrobot doctor`. |
@@ -1062,27 +1062,27 @@ when its observed position remains within a declared variation for a declared dw
   the description's, whoever produces it. A condition no confirmed channel can judge is
   refused (`rest_unobservable`), as are criteria of the wrong kind for the channel
   (`criteria_mismatch`).
-- **The criteria.** A `RestCriteria` gives `cadence_ns`, the spacing of samples it was
-  declared for; `max_gap_ns`, the largest spacing still treated as continuous;
-  `dwell_ns`, how long the readings must stay within bounds; the bounds; and `source`,
-  where the values come from. A joint-position channel's bound is `variation`, one bound per
-  element of the channel: the most that joint's range may be, in its units (rad for a
-  revolute joint, m for a prismatic one). Its length must match the channel's shape
-  (`criteria_mismatch` for a watch, `invalid_profile` in a MuJoCo profile). A pose channel's bounds are `translation_m`,
+- **The criteria.** A `RestCriteria` gives `max_gap_ns`, the largest spacing between
+  readings still treated as continuous; `dwell_ns`, how long the readings must stay
+  within bounds; the bounds; and `source`, where the values come from. A joint-position
+  channel's bound is `variation`, one bound per element of the channel: the most that
+  joint's range may be, in its units (rad for a revolute joint, m for a prismatic one).
+  Its length must match the channel's shape (`criteria_mismatch` for a watch,
+  `invalid_profile` in a MuJoCo profile). A pose channel's bounds are `translation_m`,
   the most each position coordinate's range may be, and `rotation_rad`, the largest
   angle any orientation may be from the first one's. Every number is finite and
-  positive, both `max_gap_ns` and `dwell_ns` are at least `cadence_ns`, and `source` is
-  not blank (`invalid_rest_criteria`).
-- **Who declares them.** Rest depends on the whole observed signal: its sampling,
-  quantization, estimator noise, the controller's settling, and how long stillness must
-  last. It is therefore a property of whoever produces the readings, not of the robot.
-  A simulated arm and the physical one are different sources, so a criterion measured
-  in one never silently becomes the other's. The runtime that sources a channel declares
-  its criteria in `RuntimeInfo.rest`. A robot package declares none. A condition may
-  instead carry explicit criteria, with their own source. A channel with neither is
-  refused when the watch starts (`no_rest_criteria`). There is no default.
-  `ReplayRuntime` declares none; `MujocoRuntime` declares those of its profile (see
-  [mujoco.md](mujoco.md)).
+  positive, and `source` is not blank (`invalid_rest_criteria`). The decision uses the
+  readings' own stamps, so the criteria name no sampling rate.
+- **Who declares them.** A source knows the readings it produces; a caller knows how
+  much stillness its action needs, and two decisions may judge the same readings by
+  different criteria. So a condition may carry explicit criteria, with their own source,
+  and the runtime that sources a channel may offer criteria in `RuntimeInfo.rest`, but
+  only for the channels its evidence covers. A simulated arm and the physical one are
+  different sources, so a criterion measured in one never silently becomes the other's.
+  A robot package declares none. A channel with neither is refused when the watch
+  starts (`no_rest_criteria`). There is no core default. `ReplayRuntime` offers none;
+  `MujocoRuntime` offers those its profile declares for the robot's joint-position
+  channels, and none for scene objects' poses (see [mujoco.md](mujoco.md)).
 - **The watch.** `RobotContext.watch_rest(condition, *, deadline_ns)` returns a
   `RestWatch` with `done`, `result`, and `cancel()`. `deadline_ns` is a time on the
   runtime clock after now (`out_of_limits`). Each time the context's time advances on a
@@ -1109,7 +1109,10 @@ when its observed position remains within a declared variation for a declared dw
 
 `execute_continuation` takes the result of a `JointRest` watch as its evidence that the
 arm arrived (see *Interleaving planning and execution* in [planning.md](planning.md)).
-It accepts only a result this context decided (`unknown_rest`).
+It accepts only a result this context decided (`unknown_rest`). For that check the
+context keeps no full result, only each decided result's fingerprint: one entry per
+completed watch, kept for the context's lifetime. The result itself, with the samples
+that justify it, is in the trace.
 
 ## Traces
 

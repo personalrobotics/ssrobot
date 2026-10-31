@@ -1,31 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.MujocoProfile v1",
+  "title": "ssrobot.MujocoProfile v2",
   "$ref": "#/$defs/MujocoProfile",
   "$defs": {
-    "ChannelResolution": {
-      "type": "object",
-      "description": "The resolution a joint-position channel's readings are quantized at: one step per",
-      "properties": {
-        "channel": {
-          "type": "string",
-          "description": "A joint-position channel of the description."
-        },
-        "step": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "Each element's quantization step.",
-          "x-unit": "channel"
-        }
-      },
-      "required": [
-        "channel",
-        "step"
-      ],
-      "additionalProperties": false
-    },
     "ChannelRest": {
       "type": "object",
       "description": "The rest criteria a runtime declares for one channel it sources.",
@@ -176,7 +153,7 @@
           "const": "ssrobot.MujocoProfile"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "model": {
           "anyOf": [
@@ -213,35 +190,6 @@
             "$ref": "#/$defs/ChannelRest"
           },
           "description": "Rest criteria for the description's joint-position or pose channels, as this simulation produces them; a channel not listed has none."
-        },
-        "object_rest": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RestCriteria"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Rest criteria for every scene object's pose channel; without them, those channels have none."
-        },
-        "resolution": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ChannelResolution"
-          },
-          "description": "The resolution each listed joint-position channel's readings are quantized at, modelling the simulated sensor; a channel not listed is read exactly."
-        },
-        "object_resolution": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/PoseResolution"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The resolution every scene object's pose readings are quantized at; without it, they are read exactly."
         }
       },
       "required": [
@@ -250,36 +198,10 @@
       ],
       "additionalProperties": false
     },
-    "PoseResolution": {
-      "type": "object",
-      "description": "The resolution an object's pose readings are quantized at: each position",
-      "properties": {
-        "translation_m": {
-          "type": "number",
-          "description": "Position step.",
-          "x-unit": "m"
-        },
-        "rotation_rad": {
-          "type": "number",
-          "description": "Rotation-vector step.",
-          "x-unit": "rad"
-        }
-      },
-      "required": [
-        "translation_m",
-        "rotation_rad"
-      ],
-      "additionalProperties": false
-    },
     "RestCriteria": {
       "type": "object",
-      "description": "When a channel's readings count as at rest, as declared by whoever produces them.",
+      "description": "When a channel's readings count as at rest: declared by the runtime that sources the",
       "properties": {
-        "cadence_ns": {
-          "type": "integer",
-          "description": "The spacing of samples the criteria were declared for.",
-          "x-unit": "ns"
-        },
         "max_gap_ns": {
           "type": "integer",
           "description": "The largest spacing between samples still treated as continuous.",
@@ -335,7 +257,6 @@
         }
       },
       "required": [
-        "cadence_ns",
         "max_gap_ns",
         "dwell_ns",
         "source"

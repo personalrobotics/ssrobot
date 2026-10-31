@@ -76,7 +76,6 @@ def _rested(ctx: RobotContext) -> RestResult:
     criteria (the fixture's runtime declares none), stepping until the watch ends."""
     tick = ctx.trajectory_contract.period_ns
     criteria = RestCriteria(
-        cadence_ns=tick,
         max_gap_ns=tick,
         dwell_ns=25 * tick,
         variation=(1e-4,) * 7,  # one per element of the 7-joint channel that covers the arm

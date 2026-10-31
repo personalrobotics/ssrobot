@@ -129,7 +129,8 @@ rotation."""
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RestCriteria(Value):
-    """When a channel's readings count as at rest, as declared by whoever produces them.
+    """When a channel's readings count as at rest: declared by the runtime that sources the
+    channel, for the readings its evidence covers, or given by the caller.
 
     Rest holds once consecutive samples span ``dwell_ns``, no two more than ``max_gap_ns``
     apart and each stamped later than the one before, and every element's range over them
@@ -140,9 +141,6 @@ class RestCriteria(Value):
     any sample's orientation and the first one's. See *Rest watches* in docs/contracts.md.
     """
 
-    cadence_ns: int = field(
-        metadata=meta("The spacing of samples the criteria were declared for.", unit="ns")
-    )
     max_gap_ns: int = field(
         metadata=meta("The largest spacing between samples still treated as continuous.", unit="ns")
     )
@@ -176,7 +174,7 @@ class RestCriteria(Value):
     )
 
     def _validate(self) -> None:
-        for name in ("cadence_ns", "max_gap_ns", "dwell_ns"):
+        for name in ("max_gap_ns", "dwell_ns"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValidationError(
@@ -202,14 +200,6 @@ class RestCriteria(Value):
                 raise ValidationError(
                     "invalid_rest_criteria", f"{name} must be finite and positive", path=name
                 )
-        if self.max_gap_ns < self.cadence_ns:
-            raise ValidationError(
-                "invalid_rest_criteria", "max_gap_ns must be at least cadence_ns", path="max_gap_ns"
-            )
-        if self.dwell_ns < self.cadence_ns:
-            raise ValidationError(
-                "invalid_rest_criteria", "dwell_ns must be at least cadence_ns", path="dwell_ns"
-            )
         joint = self.variation is not None
         pose = (self.translation_m is not None, self.rotation_rad is not None)
         if joint == any(pose) or (any(pose) and not all(pose)):

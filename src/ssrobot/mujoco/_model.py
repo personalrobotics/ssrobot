@@ -18,7 +18,7 @@ from ssrobot.conventions import check_name
 from ssrobot.description import JointKind, RobotDescription
 from ssrobot.errors import CapabilityError, SsrobotError, ValidationError
 from ssrobot.execution import Diagnostic
-from ssrobot.observations import ChannelRest, Quantity, RestCriteria
+from ssrobot.observations import ChannelRest, Quantity
 from ssrobot.package import ModelEntry, ModelFormat, ProfileEntry, RobotPackage, load_package
 
 MUJOCO_VERSION = "3.14.0"
@@ -228,56 +228,12 @@ class GripperProfile(Value):
             )
 
 
-def _step(value: object) -> bool:
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, int | float)
-        and math.isfinite(value)
-        and value > 0
-    )
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ChannelResolution(Value):
-    """The resolution a joint-position channel's readings are quantized at: one step per
-    element, in its units (rad for a revolute joint, m for a prismatic one)."""
-
-    channel: str = field(metadata=meta("A joint-position channel of the description."))
-    step: tuple[float, ...] = field(
-        metadata=meta("Each element's quantization step.", unit="channel")
-    )
-
-    def _validate(self) -> None:
-        check_name(self.channel, path="channel")
-        if not self.step or not all(_step(v) for v in self.step):
-            raise ValidationError(
-                "invalid_profile", "each step must be finite and positive", path="step"
-            )
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class PoseResolution(Value):
-    """The resolution an object's pose readings are quantized at: each position
-    coordinate to ``translation_m``, and each component of the rotation vector to
-    ``rotation_rad``."""
-
-    translation_m: float = field(metadata=meta("Position step.", unit="m"))
-    rotation_rad: float = field(metadata=meta("Rotation-vector step.", unit="rad"))
-
-    def _validate(self) -> None:
-        for name in ("translation_m", "rotation_rad"):
-            if not _step(getattr(self, name)):
-                raise ValidationError(
-                    "invalid_profile", f"{name} must be finite and positive", path=name
-                )
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MujocoProfile(Record):
     """MuJoCo-specific settings a robot package declares for ``MujocoRuntime``."""
 
     SCHEMA = "ssrobot.MujocoProfile"
-    VERSION = 1
+    VERSION = 2
 
     model: str | None = field(
         default=None,
@@ -299,35 +255,8 @@ class MujocoProfile(Record):
             "simulation produces them; a channel not listed has none."
         ),
     )
-    object_rest: RestCriteria | None = field(
-        default=None,
-        metadata=meta(
-            "Rest criteria for every scene object's pose channel; without them, those "
-            "channels have none."
-        ),
-    )
-
-    resolution: tuple[ChannelResolution, ...] = field(
-        default=(),
-        metadata=meta(
-            "The resolution each listed joint-position channel's readings are quantized at, "
-            "modelling the simulated sensor; a channel not listed is read exactly."
-        ),
-    )
-    object_resolution: PoseResolution | None = field(
-        default=None,
-        metadata=meta(
-            "The resolution every scene object's pose readings are quantized at; without "
-            "it, they are read exactly."
-        ),
-    )
 
     def _validate(self) -> None:
-        resolved = [r.channel for r in self.resolution]
-        if len(set(resolved)) != len(resolved):
-            raise ValidationError(
-                "invalid_profile", "a channel's resolution is listed twice", path="resolution"
-            )
         for value, path in ((self.model, "model"), (self.keyframe, "keyframe")):
             if value is not None:
                 check_name(value, path=path)
@@ -337,11 +266,6 @@ class MujocoProfile(Record):
         channels = [r.channel for r in self.rest]
         if len(set(channels)) != len(channels):
             raise ValidationError("invalid_profile", "a channel is listed twice", path="rest")
-        if self.object_rest is not None:
-            try:
-                self.object_rest.check_for(Quantity.POSE)
-            except ValidationError as e:
-                raise ValidationError("invalid_profile", e.message, path="object_rest") from None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -25,7 +25,6 @@ from ssrobot.mujoco._model import (
     ActuatorKind,
     AllowanceBinding,
     ChannelBinding,
-    ChannelResolution,
     CommandBinding,
     FrameBinding,
     GripperActuator,
@@ -36,7 +35,6 @@ from ssrobot.mujoco._model import (
     MujocoMapping,
     MujocoObject,
     MujocoProfile,
-    PoseResolution,
 )
 from ssrobot.mujoco._render import RenderFrame, RenderHandle, render_handle
 from ssrobot.mujoco._runtime import MujocoRuntime
@@ -48,7 +46,6 @@ __all__ = [
     "ActuatorKind",
     "AllowanceBinding",
     "ChannelBinding",
-    "ChannelResolution",
     "CommandBinding",
     "FrameBinding",
     "GripperActuator",
@@ -61,7 +58,6 @@ __all__ = [
     "MujocoObject",
     "MujocoProfile",
     "MujocoRuntime",
-    "PoseResolution",
     "RenderFrame",
     "RenderHandle",
     "SceneFile",

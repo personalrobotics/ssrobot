@@ -29,7 +29,7 @@ class JointRest(Record):
     declared joint-position channel that covers them."""
 
     SCHEMA = "ssrobot.JointRest"
-    VERSION = 1
+    VERSION = 2
 
     component: str = field(metadata=meta("The component whose joints are judged."))
     criteria: RestCriteria | None = field(
@@ -47,7 +47,7 @@ class ObjectRest(Record):
     the object, whoever produces it."""
 
     SCHEMA = "ssrobot.ObjectRest"
-    VERSION = 1
+    VERSION = 2
 
     object: str = field(metadata=meta("The scene object whose pose is judged."))
     criteria: RestCriteria | None = field(
@@ -107,7 +107,7 @@ class RestResult(Record):
     """How a rest watch ended, and the readings that justify it."""
 
     SCHEMA = "ssrobot.RestResult"
-    VERSION = 1
+    VERSION = 2
 
     condition: JointRest | ObjectRest = field(metadata=meta("What was watched, as asked."))
     channel: RestChannel = field(metadata=meta("The channel it was judged on."))

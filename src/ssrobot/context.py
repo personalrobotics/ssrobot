@@ -408,9 +408,10 @@ class RobotContext:
         self._prepared: dict[str, PreparedTrajectory] = {}
         self._planning_pool: ThreadPoolExecutor | None = None
         self._watches: list[RestWatch] = []  # live rest watches, in start order
-        # Every rest result this context decided, by fingerprint: the only ones a
-        # continuation accepts as evidence.
-        self._rested: dict[str, RestResult] = {}
+        # The fingerprint of every rest result this context decided: the only results a
+        # continuation accepts as evidence. One entry per completed watch, never evicted;
+        # the full results are in the trace, not kept here.
+        self._rested: set[str] = set()
 
     # -- Properties ------------------------------------------------------------------
 
@@ -718,7 +719,7 @@ class RobotContext:
             return
         result = watch._finish(self.now, outcome, detail)
         self._watches.remove(watch)
-        self._rested[fingerprint(result)] = result
+        self._rested.add(fingerprint(result))
         self._emit(TraceKind.RESTED, "context", result)
 
     # -- Scene -----------------------------------------------------------------------
@@ -1361,7 +1362,7 @@ class RobotContext:
         self._require("execute_continuation")
         if not isinstance(rest, RestResult):
             raise ValidationError("wrong_type", "rest must be a RestResult", path="rest")
-        if self._rested.get(fingerprint(rest)) != rest:
+        if fingerprint(rest) not in self._rested:
             raise ValidationError(
                 "unknown_rest", "this context did not decide that rest", path="rest"
             )
