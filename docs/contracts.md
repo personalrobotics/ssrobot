@@ -51,7 +51,7 @@ uses them:
 | --- | --- |
 | Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `ResolvedFile`, `SourceItem`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointLimitDeclaration`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
-| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `GuardedJointTrajectory`, `WrenchGuard`, `WrenchPart`, `GuardOutcome`, `GuardCause`, `ActionChunk`, `GripperCommand`, `GripperResult`, `GripperTermination`, `GripperDirection`, `GripperEvidence`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `JointRest`, `ObjectRest`, `RestCriteria`, `RestWatch`, `RestResult`, `RestOutcome`, `RestSample`, `RestChannel`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
+| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `GuardedJointTrajectory`, `WrenchGuard`, `WrenchPart`, `OpeningGuard`, `GuardOutcome`, `GuardCause`, `ActionChunk`, `GripperCommand`, `GripperResult`, `GripperTermination`, `GripperDirection`, `GripperEvidence`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `JointRest`, `ObjectRest`, `RestCriteria`, `RestWatch`, `RestResult`, `RestOutcome`, `RestSample`, `RestChannel`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
 | Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `ChannelRest`, `GuardCapability`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
 | Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `BASE_CONSTRAINTS`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `TimedTrajectory`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `PreparedTrajectory`, `prepare`, `MotionValidator`, `MotionValidation`, `plan_portfolio`, `PlanAttempt`, `Portfolio`, `PortfolioReport`, `AttemptRecord`, `AttemptOutcome`, `plan_alternatives`, `start_alternatives`, `AlternativesRun`, `Alternative`, `Alternatives`, `AlternativesReport`, `AlternativeRecord`, `AlternativeAttempt`, `AlternativeOutcome`, `plan_chains`, `start_chains`, `ChainsRun`, `Chain`, `Stage`, `StageRequest`, `StageResult`, `Chains`, `ChainsReport`, `ChainRecord`, `ChainAttempt`, `StageAttempt`, `StageOutcome`, `PredictedSnapshot`, `PlanProjection`, `Continuation`, `ContinuationReport`, `ContinuationResult`, `Discrepancy` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
@@ -172,12 +172,13 @@ or task logic.
   channels (see *Scene channels and privilege*). In `RuntimeInfo` (version 4),
   `trajectory` is the runtime's trajectory-execution contract, or None when it cannot
   declare one (see *Runtime commands*). `guards` lists, per component, a
-  `GuardCapability`: the wrench channels it evaluates force-torque guards on, whether
-  it can tare them, how often it evaluates them (`period_ns`), and the longest time
-  from a triggering reading to the hold (`stop_latency_ns`). It is empty when the
-  runtime cannot execute a `GuardedJointTrajectory` (see *Guarded trajectories*). Each
-  component must be one the runtime confirms for joint trajectories, and each channel
-  a confirmed wrench channel (`undeclared_capability`). In version 6, `rest` lists the
+  `GuardCapability`: the wrench and gripper-opening channels it evaluates guards on,
+  whether it can tare a wrench guard, how often it evaluates them (`period_ns`), and
+  the longest time from a triggering reading to the hold (`stop_latency_ns`). It is
+  empty when the runtime cannot execute a `GuardedJointTrajectory` (see *Guarded
+  trajectories*). Each component must be one the runtime confirms for joint
+  trajectories, and each channel a confirmed wrench or gripper-opening channel
+  (`undeclared_capability`); before version 8, only wrench channels. In version 6, `rest` lists the
   rest criteria the runtime declares for channels it sources, sorted by channel. Each
   must be a confirmed joint-position or pose channel, with criteria of the matching
   kind (`undeclared_capability`). See *Rest watches*.
@@ -833,22 +834,23 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`KinematicModel`](../schemas/ssrobot.KinematicModel.v1.json) | A robot's frames and joints, as a model loader produces them. |
 | [`ssrobot.package`](../schemas/ssrobot.package.v1.json) | A package manifest, `ssrobot.toml`. See [packages.md](packages.md). |
 | [`PackageReport`](../schemas/ssrobot.PackageReport.v1.json) | What loading a package resolved. |
-| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v7.json) | What an opened runtime binds and confirms, including its scene channels, which channels are privileged, and the rest criteria it declares. |
+| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v8.json) | What an opened runtime binds and confirms, including its scene channels, which channels are privileged, and the rest criteria it declares. |
 | [`JointRest`](../schemas/ssrobot.JointRest.v2.json), [`ObjectRest`](../schemas/ssrobot.ObjectRest.v2.json) | What a rest watch waits for: a component's joints, or a scene object, at rest. |
 | [`RestResult`](../schemas/ssrobot.RestResult.v2.json) | How a rest watch ended, with the readings that justify it. |
 | [`JointCommand`](../schemas/ssrobot.JointCommand.v1.json) | Instantaneous position, velocity, or effort targets for a group. |
 | [`GripperCommand`](../schemas/ssrobot.GripperCommand.v1.json) | Target opening. |
 | [`BaseTwistCommand`](../schemas/ssrobot.BaseTwistCommand.v1.json) | Planar base velocity. |
 | [`JointTrajectory`](../schemas/ssrobot.JointTrajectory.v1.json) | Timed waypoints from t = 0, strictly increasing. |
-| [`GuardedJointTrajectory`](../schemas/ssrobot.GuardedJointTrajectory.v1.json) | A joint trajectory and the force-torque guard that stops it. |
+| [`GuardedJointTrajectory`](../schemas/ssrobot.GuardedJointTrajectory.v2.json) | A joint trajectory and the guard that stops it. |
+| [`WrenchGuard`](../schemas/ssrobot.WrenchGuard.v1.json), [`OpeningGuard`](../schemas/ssrobot.OpeningGuard.v1.json) | A force-torque guard, or a gripper-opening guard. |
 | [`ActionChunk`](../schemas/ssrobot.ActionChunk.v1.json) | Fixed-period steps of instantaneous commands from a start time. Every step addresses the same components, joints, and modes. |
 | [`ObservationRequest`](../schemas/ssrobot.ObservationRequest.v2.json) | Channel names to observe, and whether only portable channels may be. |
 | [`Observation`](../schemas/ssrobot.Observation.v1.json) | Timestamped readings, one per requested channel. |
-| [`ExecutionStatus`](../schemas/ssrobot.ExecutionStatus.v2.json) | The state of a submitted command, and how a guarded trajectory ended. |
+| [`ExecutionStatus`](../schemas/ssrobot.ExecutionStatus.v4.json) | The state of a submitted command, and how a guarded trajectory ended. |
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
-| [`Submission`](../schemas/ssrobot.Submission.v2.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
+| [`Submission`](../schemas/ssrobot.Submission.v3.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
-| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v7.json) | One event in a trace. |
+| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v8.json) | One event in a trace. |
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`PortfolioReport`](../schemas/ssrobot.PortfolioReport.v1.json) | Every attempt of a planner portfolio and which was selected. See planning.md. |
@@ -895,7 +897,8 @@ inspected before any runtime opens. The runtime confirms which are available in
    arithmetic is exact over integer nanoseconds.
 3. The capability is declared (`unsupported_command`).
 4. The capability is available now (`unavailable_command` or `unavailable_channel`).
-5. A guarded trajectory's guard reads a declared wrench channel (`unknown_reference`,
+5. A guarded trajectory's guard reads a declared channel of its quantity, a wrench for a
+   `WrenchGuard` and a gripper opening for an `OpeningGuard` (`unknown_reference`,
    `unsupported_quantity`), and the runtime guards the trajectory's group
    (`guards_unavailable`) on that channel (`unavailable_guard_channel`) with every
    feature it asks for (`unsupported_guard_feature`). Its trajectory is checked as in steps 2 to 4.
@@ -979,29 +982,34 @@ limit, or safety override is listed as a `Modification`.
 
 ### Guarded trajectories
 
-A `GuardedJointTrajectory` is a `JointTrajectory` and a `WrenchGuard`. The runtime
+A `GuardedJointTrajectory` is a `JointTrajectory` and a guard: a `WrenchGuard` or an
+`OpeningGuard`. The runtime
 executes the trajectory exactly as it would alone, and evaluates the guard every
 `GuardCapability.period_ns`, at its own rate; no client loop is involved. It owns only the
 guard and the stop: no IK, Cartesian interpolation, or force control.
 
-- **The measure.** `part` (force or torque) of the guard's wrench channel, in the
-  sensor's frame and with the contract's wrench sign (*Observation channels*). With
-  `tare`, the reading when the motion started is subtracted first. The measure is the
-  magnitude of that vector, or with `axis` (a unit vector in the sensor frame) its
-  signed projection.
-- **The trigger.** The measure is at least `threshold` (positive, in N or N·m) for
-  `samples` consecutive ticks.
+- **The measure.**
+  - A `WrenchGuard`'s is `part` (force or torque) of its wrench channel, in the sensor's
+    frame and with the contract's wrench sign (*Observation channels*). With `tare`, the
+    reading when the motion started is subtracted first. The measure is the magnitude
+    of that vector, or with `axis` (a unit vector in the sensor frame) its signed
+    projection.
+  - An `OpeningGuard`'s is its gripper-opening channel's reading, untared.
+- **The trigger.** For `samples` consecutive ticks, a `WrenchGuard`'s measure is at
+  least `threshold` (positive, in N or N·m), or an `OpeningGuard`'s is below `below`
+  (in (0, 1]): fingers that close past an object's width while the trajectory runs.
 - **The stop.** When it triggers, the runtime holds the trajectory's joints where they
   are, with a joint position command recorded as `applied`, no later than
   `GuardCapability.stop_latency_ns` after the triggering reading.
 - **The outcome.** The execution ends `succeeded` either way, and its status carries a
   `GuardOutcome`: `cause` (`guard_triggered` or `trajectory_completed`), the time since
-  the trajectory started, the deciding measure, and the evidence for the decision: the
-  tare `baseline` (exactly when the guard tares) and the `window` of the last readings
-  evaluated, untared, at most `samples` of them. The context reproduces the decision
-  from that evidence (`check_guard_outcome`). The measure must be the last reading's, a
-  trigger needs a full window at or over the threshold, and a completion must not have
-  one. Anything else is a contract breach (`guard_mismatch`, failing the context with
+  the trajectory started, the wrench `part` (exactly for a `WrenchGuard`), the
+  deciding measure, and the evidence for the decision: the tare `baseline` (exactly
+  when the guard tares) and the `window` of the last readings evaluated, untared, at
+  most `samples` of them, each of the guarded channel's shape. The context reproduces
+  the decision from that evidence (`check_guard_outcome`). The measure must be the last
+  reading's, a trigger needs a full window that trips the guard, and a completion must
+  not have one. Anything else is a contract breach (`guard_mismatch`, failing the context with
   `runtime_contract`). A
   guarded trajectory that does not settle at its goal fails (`goal_not_reached`), as an
   unguarded one does. Cancellation, timeout, and faults keep their states, with no

@@ -19,6 +19,7 @@ from ssrobot.commands import (
     Command,
     CommandKind,
     GripperCommand,
+    Guard,
     GuardedJointTrajectory,
     InstantCommand,
     JointCommand,
@@ -152,18 +153,20 @@ def _check_trajectory(
 def _check_guard(
     description: RobotDescription, info: RuntimeInfo | None, command: GuardedJointTrajectory
 ) -> None:
-    """A guard reads a declared wrench channel, and the runtime evaluates it for the
-    trajectory's group, there, with every feature it asks for."""
+    """A guard reads a declared channel of the quantity it measures (a wrench, or a
+    gripper opening), and the runtime evaluates it for the trajectory's group, there, with
+    every feature it asks for."""
     guard, component = command.guard, command.trajectory.group
     spec = next((c for c in description.channels if c.name == guard.channel), None)
     if spec is None:
         raise ValidationError(
             "unknown_reference", f"no channel {guard.channel!r}", path="guard.channel"
         )
-    if spec.quantity is not Quantity.WRENCH:
+    quantity = Quantity.WRENCH if isinstance(guard, WrenchGuard) else Quantity.GRIPPER_OPENING
+    if spec.quantity is not quantity:
         raise ValidationError(
             "unsupported_quantity",
-            f"{guard.channel!r} measures {spec.quantity}, not a wrench",
+            f"{guard.channel!r} measures {spec.quantity}, not {quantity}",
             path="guard.channel",
         )
     if info is None:
@@ -405,16 +408,18 @@ def _lowerings(command: Command) -> set[tuple[object, ...]]:
     return {_applied_key(command)}
 
 
-def check_guard_outcome(guard: WrenchGuard, outcome: GuardOutcome) -> None:
+def check_guard_outcome(guard: Guard, outcome: GuardOutcome) -> None:
     """Raise unless ``outcome`` is ``guard``'s decision on its own evidence: the measure
     of every reading in its window, from its baseline, by the guard's rule. A trigger
-    needs a full window at or over the threshold; a completion must not have one."""
+    needs a full window whose every measure trips the guard; a completion must not have
+    one."""
 
     def refuse(message: str, path: str) -> ValidationError:
         return ValidationError("guard_mismatch", message, path=path)
 
-    if outcome.part is not guard.part:
-        raise refuse(f"measures {outcome.part}, the guard {guard.part}", "part")
+    part = guard.part if isinstance(guard, WrenchGuard) else None
+    if outcome.part is not part:
+        raise refuse(f"measures {outcome.part}, the guard {part}", "part")
     if (outcome.baseline is not None) != guard.tare:
         raise refuse("has a baseline exactly when the guard tares", "baseline")
     if len(outcome.window) > guard.samples:
@@ -422,11 +427,9 @@ def check_guard_outcome(guard: WrenchGuard, outcome: GuardOutcome) -> None:
     measures = [guard.measure(w, outcome.baseline) for w in outcome.window]
     if outcome.measure != measures[-1]:
         raise refuse(f"measure {outcome.measure} is not {measures[-1]}", "measure")
-    held = len(measures) == guard.samples and all(m >= guard.threshold for m in measures)
+    held = len(measures) == guard.samples and all(guard.trips(m) for m in measures)
     if (outcome.cause is GuardCause.GUARD_TRIGGERED) != held:
-        raise refuse(
-            f"{outcome.cause} on measures {measures}, threshold {guard.threshold}", "cause"
-        )
+        raise refuse(f"{outcome.cause} on measures {measures}, guard {guard!r}", "cause")
 
 
 def check_applied(description: RobotDescription, command: Command, applied: InstantCommand) -> None:

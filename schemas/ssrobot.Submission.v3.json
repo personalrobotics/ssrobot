@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.Submission v2",
+  "title": "ssrobot.Submission v3",
   "$ref": "#/$defs/Submission",
   "$defs": {
     "ActionChunk": {
@@ -133,14 +133,21 @@
           "const": "ssrobot.GuardedJointTrajectory"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "trajectory": {
           "$ref": "#/$defs/JointTrajectory",
           "description": "The motion to execute."
         },
         "guard": {
-          "$ref": "#/$defs/WrenchGuard",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WrenchGuard"
+            },
+            {
+              "$ref": "#/$defs/OpeningGuard"
+            }
+          ],
           "description": "When to stop it."
         }
       },
@@ -336,6 +343,39 @@
       ],
       "additionalProperties": false
     },
+    "OpeningGuard": {
+      "type": "object",
+      "description": "A gripper-opening condition a runtime evaluates at every control tick.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.OpeningGuard"
+        },
+        "version": {
+          "const": 1
+        },
+        "channel": {
+          "type": "string",
+          "description": "The gripper-opening channel it reads."
+        },
+        "below": {
+          "type": "number",
+          "description": "Trigger when the opening is below this.",
+          "x-unit": "1"
+        },
+        "samples": {
+          "type": "integer",
+          "description": "Consecutive ticks below the bound.",
+          "x-unit": "count"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "channel",
+        "below"
+      ],
+      "additionalProperties": false
+    },
     "Submission": {
       "type": "object",
       "description": "A command accepted by a context for execution, with its source and deadline.",
@@ -344,7 +384,7 @@
           "const": "ssrobot.Submission"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "execution": {
           "type": "string",
@@ -444,6 +484,12 @@
       "type": "object",
       "description": "A force-torque condition a runtime evaluates at every control tick.",
       "properties": {
+        "schema": {
+          "const": "ssrobot.WrenchGuard"
+        },
+        "version": {
+          "const": 1
+        },
         "channel": {
           "type": "string",
           "description": "The wrench channel it reads."
@@ -504,6 +550,8 @@
         }
       },
       "required": [
+        "schema",
+        "version",
         "channel",
         "part",
         "threshold"

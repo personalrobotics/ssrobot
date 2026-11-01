@@ -66,11 +66,15 @@ class GuardOutcome(Value):
     elapsed_ns: int = field(
         metadata=meta("Time since the trajectory started when it ended.", unit="ns")
     )
-    part: WrenchPart = field(metadata=meta("Which half of the wrench was measured."))
+    part: WrenchPart | None = field(
+        default=None,
+        metadata=meta("Which half of the wrench was measured; None for an opening guard."),
+    )
     measure: float = field(
         metadata=meta(
-            "The guarded measure at the deciding tick: the last of window.",
-            unit_by=("part", {"force": "N", "torque": "N*m"}),
+            "The guarded measure at the deciding tick: the last of window. A wrench "
+            "guard's is in N or N*m by part; an opening guard's is the opening, in 1.",
+            unit="channel",
         )
     )
     baseline: tuple[float, ...] | None = field(
@@ -90,11 +94,20 @@ class GuardOutcome(Value):
             raise ValidationError("out_of_limits", "elapsed_ns is negative", path="elapsed_ns")
         if not self.window:
             raise ValidationError("shape_mismatch", "at least one reading", path="window")
+        if self.part is None and self.baseline is not None:
+            raise ValidationError(
+                "shape_mismatch", "an opening guard has no baseline", path="baseline"
+            )
+        size, what = (
+            (6, "a wrench is six finite values")
+            if self.part is not None
+            else (1, "an opening is one finite value")
+        )
         rows = [("baseline", self.baseline)] if self.baseline is not None else []
         rows += [(f"window[{i}]", w) for i, w in enumerate(self.window)]
-        for path, wrench in rows:
-            if len(wrench) != 6 or not all(math.isfinite(v) for v in wrench):
-                raise ValidationError("shape_mismatch", "a wrench is six finite values", path=path)
+        for path, reading in rows:
+            if len(reading) != size or not all(math.isfinite(v) for v in reading):
+                raise ValidationError("shape_mismatch", what, path=path)
         if not math.isfinite(self.measure):
             raise ValidationError("out_of_limits", "measure is not finite", path="measure")
 
@@ -157,7 +170,7 @@ class ExecutionStatus(Record):
     """The state of one submitted command at a point in runtime time."""
 
     SCHEMA = "ssrobot.ExecutionStatus"
-    VERSION = 3
+    VERSION = 4
 
     execution: str = field(metadata=meta("Execution identifier, unique within a context."))
     state: ExecutionState = field(metadata=meta("Current state."))
@@ -276,7 +289,7 @@ class Submission(Record):
     """A command accepted by a context for execution, with its source and deadline."""
 
     SCHEMA = "ssrobot.Submission"
-    VERSION = 2
+    VERSION = 3
 
     execution: str = field(metadata=meta("Execution identifier assigned by the context."))
     source: str = field(metadata=meta("Who submitted it, e.g. 'planner' or 'policy:act'."))
