@@ -17,7 +17,8 @@ as the test's registration source and as the reference the snapshot is compared 
   record holds it beside the transform MuJoCo resolved, 1 cm apart. Lifted, the
   snapshot's box is where the hand carries the declared transform, not where MuJoCo
   has it. Pulled out of the hand, the runtime's violation is traced and the scene still
-  holds it. Detached, its pose is unknown and planning refuses it.
+  holds it, while ``violation`` returns the report for evaluation. Detached, its pose is
+  unknown, the report is gone with the attachment, and planning refuses it.
 - ``removals`` and ``releases``: a lift is predicted with the box to be released and
   removed (``removals``), or only released (``releases``), and a move higher is planned
   on the prediction. After the lift, the box is released, detached and removed. The
@@ -265,6 +266,7 @@ def _carry() -> dict[str, Any]:
         held = ctx.scene.attachment("box")
         out["pulled"] = {
             "violations": sum(1 for r in records if r.kind is TraceKind.VIOLATION),
+            "violation_reported": ctx.violation("box") is not None,
             "still_held": held is not None and held.held,
             "revision_unchanged": ctx.scene.revision == revision,
             "status": _box(ctx).status.value,
@@ -272,6 +274,7 @@ def _carry() -> dict[str, Any]:
         ctx.detach("box")
         out["detached"] = {
             "status": _box(ctx).status.value,
+            "violation_reported": ctx.violation("box") is not None,
             "planning": _code(lambda: ctx.planning_scene(ctx.snapshot(), "arm")),
         }
     return out
@@ -402,11 +405,16 @@ def test_registered_object_poses_hold_until_registered_again(artifacts: Path) ->
     assert carry["lifted"]["snapshot_from_channel_m"] > 0.005  # the registration's error
     assert carry["pulled"] == {
         "violations": 1,
+        "violation_reported": True,
         "still_held": True,
         "revision_unchanged": True,
         "status": "attached",
     }
-    assert carry["detached"] == {"status": "unknown", "planning": "unknown_object_pose"}
+    assert carry["detached"] == {
+        "status": "unknown",
+        "violation_reported": False,
+        "planning": "unknown_object_pose",
+    }
 
     assert evidence["removals"] == {
         "predicted_box": "removed",

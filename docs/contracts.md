@@ -144,6 +144,7 @@ trace. It validates everything going into the runtime and everything coming out.
 | `scene` | The current `SceneState`: its revision, the runtime's objects and fixtures, and the attachments. See *Scene*. |
 | `attach(object, end_effector, *, transform=None, allow=None, revision=None, source="client")` | Open only. Declares a scene object held by an end effector and returns the new scene. Changes nothing unless it succeeds. With registered object poses, the default transform comes from the registration; see *Registered objects*. |
 | `detach(object, *, revision=None, source="client")` | Open or faulted. Removes the attachment and its allowances and returns the new scene. With registered object poses, the object's pose is then unknown. |
+| `violation(object)` | Open or faulted. The runtime's `AttachmentViolation` for the object's current attachment, if it reported one, else None: privileged reference data, for evaluation. Cleared when the attachment ends. |
 | `register(object, pose, *, stamp, source, revision=None)` | Open or faulted. Registered object poses only. Registers a free object at a pose observed at `stamp` by `source`, and returns the new scene. See *Registered objects*. |
 | `remove(object, *, source, revision=None)` | Open or faulted. Registered object poses only. Takes a free object out of the active scene, and returns the new scene. See *Registered objects*. |
 | `snapshot()` | Open or faulted. Captures a `SceneSnapshot` for planning. See *Snapshots and planning scenes*. |
@@ -285,13 +286,13 @@ Every committed change increments `revision` and is traced as a `scene` record.
 
 **Violations.** A runtime reports an `AttachmentViolation` once, in its update, when a
 held object leaves its declared transform. The context:
-- traces it;
+- traces it, and keeps it for `violation(object)` until the attachment ends;
 - marks the attachment `held: false` and increments the revision;
 - keeps the attachment until the client detaches it.
 
 A violation for an object that is not attached, or already marked, is a contract
-breach. With registered object poses, a violation is only traced; see *Registered
-objects*.
+breach. With registered object poses, a violation is only traced and kept; see
+*Registered objects*.
 
 **Lifetime.** Attachments are not owned by executions. `cancel`, `stop`, timeouts and
 faults leave them in place. Closing the context detaches every attachment, and that
@@ -346,7 +347,8 @@ validated there, and reported per object in each snapshot:
 `attach` traces the two together once, as an `attached` record (`AttachmentReference`),
 with the distance and angle between them: the registration's error at the grasp. A
 later `AttachmentViolation` is motion relative to the tracked transform. It is traced,
-and never changes the registered scene: the attachment stays `held`. A re-declaration,
+and `violation(object)` returns it, but it never changes the registered scene: the
+attachment stays `held`. A re-declaration,
 a detach and attach with no step between, has the runtime resolve its reference again.
 
 Privileged pose channels stay readable, for evaluation. They never change registered

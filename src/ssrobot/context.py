@@ -489,6 +489,9 @@ class RobotContext:
         # continuation accepts as evidence. One entry per completed watch, never evicted;
         # the full results are in the trace, not kept here.
         self._rested: set[str] = set()
+        # The runtime's violation report for each attachment it reported, until that
+        # attachment ends: privileged reference data, read by ``violation``.
+        self._violations: dict[str, AttachmentViolation] = {}
 
     # -- Properties ------------------------------------------------------------------
 
@@ -900,6 +903,7 @@ class RobotContext:
             )
             tracked = replace(tracked, transform=declared)
             registrations = tuple(r for r in registrations if r.object != object)
+        self._violations.pop(object, None)
         attachments = sorted((*scene.attachments, tracked), key=lambda a: a.object)
         return self._commit(
             replace(scene, attachments=tuple(attachments), registrations=registrations), source
@@ -917,8 +921,21 @@ class RobotContext:
         if scene.attachment(object) is None:
             raise ValidationError("not_attached", f"{object!r} is not attached", path="object")
         self._scene_runtime.detach(object)
+        self._violations.pop(object, None)
         remaining = tuple(a for a in scene.attachments if a.object != object)
         return self._commit(replace(scene, attachments=remaining), source)
+
+    def violation(self, object: str) -> AttachmentViolation | None:
+        """The runtime's report that ``object`` left its current attachment's transform,
+        if it made one: privileged reference data, for evaluation. It never changes a
+        registered scene; with live object poses the attachment is also marked not
+        ``held``."""
+        self._require("snapshot")
+        if object not in self.scene.objects:
+            raise ValidationError(
+                "unknown_reference", f"{object!r} is not a scene object", path="object"
+            )
+        return self._violations.get(object)
 
     def register(
         self,
@@ -2583,6 +2600,7 @@ class RobotContext:
         if current is None or not current.held:
             raise self._breach(f"violation reported for {violation.object!r}, which is not held")
         self._emit(TraceKind.VIOLATION, self._runtime_source, violation, violation.stamp)
+        self._violations[violation.object] = violation
         if scene.object_poses is ObjectPoses.REGISTERED:
             return  # privileged reference data: it never changes the registered scene
         attachments = tuple(
