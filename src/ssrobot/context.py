@@ -23,8 +23,10 @@ from ssrobot.commands import (
     Command,
     CommandKind,
     GripperCommand,
+    Guard,
     GuardedJointTrajectory,
     JointTrajectory,
+    OpeningGuard,
     TrajectoryContract,
     command_components,
 )
@@ -60,6 +62,7 @@ from ssrobot.execution import (
     Diagnostic,
     ExecutionState,
     ExecutionStatus,
+    GuardCause,
     HealthState,
     RuntimeHealth,
     Submission,
@@ -226,6 +229,31 @@ class Ownership:
     """The component's resources this execution holds, sorted."""
     complete: bool
     """Whether it holds every resource of the component."""
+
+
+def _completed(execution: Execution) -> bool:
+    """Whether ``execution`` succeeded without its guard, if it had one, triggering."""
+    status = execution.status
+    return status.state is ExecutionState.SUCCEEDED and (
+        status.guard is None or status.guard.cause is GuardCause.TRAJECTORY_COMPLETED
+    )
+
+
+def _ended(execution: Execution) -> str:
+    """How ``execution`` stands, for a refusal: its state, or that its guard triggered."""
+    status = execution.status
+    if status.guard is not None and status.guard.cause is GuardCause.GUARD_TRIGGERED:
+        return "stopped by its guard"
+    return status.state.value
+
+
+def _guarded(
+    command: JointTrajectory, guard: Guard | None
+) -> JointTrajectory | GuardedJointTrajectory:
+    """A prepared command as submitted: guarded by ``guard``, if there is one."""
+    if guard is None:
+        return command
+    return GuardedJointTrajectory(trajectory=command, guard=guard)
 
 
 def _state(snapshot: SceneSnapshot | PredictedSnapshot | PlanProjection) -> SceneSnapshot:
@@ -1002,8 +1030,10 @@ class RobotContext:
         every held object its hand moves carried with it, everything else as in the
         captured snapshot it was submitted with. One motion ahead: the execution must
         have been submitted with a snapshot this context captured, and be a joint
-        trajectory; a guarded one stops where it meets contact, which is not known in
-        advance (``unpredictable_command``).
+        trajectory. One guarded by a ``WrenchGuard`` stops where it meets contact, which
+        is not known in advance (``unpredictable_command``); one guarded by an
+        ``OpeningGuard`` is expected to complete, since its guard triggering is a fault,
+        and a continuation from it is refused if it does (``source_not_succeeded``).
 
         ``unsettled`` names free objects whose pose the prediction makes no claim about,
         such as one just released and still falling; it is recorded in the prediction,
@@ -1023,16 +1053,23 @@ class RobotContext:
         self._require("predict")
         self._check_own(execution)
         command = execution.command
+        if isinstance(command, GuardedJointTrajectory) and isinstance(command.guard, OpeningGuard):
+            command = command.trajectory
         if not isinstance(command, JointTrajectory):
+            what = type(command).__name__
+            if isinstance(command, GuardedJointTrajectory):
+                what += " stopped by a WrenchGuard"
             raise ValidationError(
                 "unpredictable_command",
-                f"only a joint trajectory's end is predictable, not a {type(command).__name__}",
+                f"only a joint trajectory's end is predictable, not a {what}",
                 path="execution",
             )
         state = execution.status.state
-        if state.terminal and state is not ExecutionState.SUCCEEDED:
+        if state.terminal and not _completed(execution):
             raise ValidationError(
-                "source_not_succeeded", f"{execution.id} ended {state.value}", path="execution"
+                "source_not_succeeded",
+                f"{execution.id} ended {_ended(execution)}",
+                path="execution",
             )
         base_id = execution.submission.snapshot
         base = None if base_id is None else self._captured.get(base_id)
@@ -1336,6 +1373,7 @@ class RobotContext:
         object_tolerance_rad: float = OBJECT_TOLERANCE_RAD,
         source: str = "planner",
         timeout_ns: int | None = None,
+        guard: Guard | None = None,
     ) -> ContinuationResult:
         """Run ``continuation`` from the state the robot actually arrived in, or refuse.
 
@@ -1357,8 +1395,9 @@ class RobotContext:
         it onto the actual state, that goal included
         (``Planner.rebase``), and the rebased motion is compiled with ``prepare``,
         validated whole under the plan's validation policy, and submitted with the actual
-        snapshot. A refusal submits nothing; its code says which check failed. The report
-        is the evidence either way."""
+        snapshot, as a ``GuardedJointTrajectory`` with ``guard`` if one is given. A refusal
+        submits nothing; its code says which check failed. The report is the evidence
+        either way."""
         self._require("execute_continuation")
         if not isinstance(rest, RestResult):
             raise ValidationError("wrong_type", "rest must be a RestResult", path="rest")
@@ -1417,11 +1456,8 @@ class RobotContext:
             return ContinuationResult(report=report, execution=None, rebased=None)
 
         source_execution = self._executions.get(prediction.source)
-        if (
-            source_execution is None
-            or source_execution.status.state is not ExecutionState.SUCCEEDED
-        ):
-            state = "unknown" if source_execution is None else source_execution.status.state.value
+        if source_execution is None or not _completed(source_execution):
+            state = "unknown" if source_execution is None else _ended(source_execution)
             return refuse("source_not_succeeded", f"{prediction.source} is {state}")
 
         info = self.info
@@ -1547,7 +1583,7 @@ class RobotContext:
             return refuse("continuation_invalid", e.message)
         evidence["prepared"] = fingerprint(prepared)
         execution = self._submit(
-            prepared.command,
+            _guarded(prepared.command, guard),
             source=source,
             timeout_ns=timeout_ns,
             snapshot=actual,
@@ -1614,20 +1650,21 @@ class RobotContext:
         processor: TrajectoryProcessor | None = None,
         source: str = "planner",
         timeout_ns: int | None = None,
+        guard: Guard | None = None,
     ) -> Execution:
         """Compile a successful plan for this runtime and submit it; nonblocking.
 
-        The command is ``ctx.prepare``'s, then submitted with the plan's snapshot. Any
-        refusal comes before anything reaches the runtime. The trace records the
-        ``PreparedTrajectory`` (``compiled``) just before its ``submitted`` record, which
-        names it. ``processor`` times a path-only plan, as in ``prepare``; nothing is
-        replanned, retimed, or retried.
+        The command is ``ctx.prepare``'s, guarded by ``guard`` if one is given, then
+        submitted with the plan's snapshot. Any refusal comes before anything reaches the
+        runtime. The trace records the ``PreparedTrajectory`` (``compiled``) just before
+        its ``submitted`` record, which names it. ``processor`` times a path-only plan, as
+        in ``prepare``; nothing is replanned, retimed, or retried.
         """
         self._require("execute")
         prepared = self.prepare(plan, planner=planner, processor=processor)
         snapshot = self._captured[plan.request.snapshot]
         execution = self._submit(
-            prepared.command,
+            _guarded(prepared.command, guard),
             source=source,
             timeout_ns=timeout_ns,
             snapshot=snapshot,
@@ -2078,7 +2115,11 @@ class RobotContext:
                 raise CapabilityError(
                     "undeclared_capability", f"rest criteria for {rest.channel!r}: {e.message}"
                 ) from None
-        wrenches = {c.name for c in self._description.channels if c.quantity is Quantity.WRENCH}
+        guardable = {
+            c.name
+            for c in self._description.channels
+            if c.quantity in (Quantity.WRENCH, Quantity.GRIPPER_OPENING)
+        }
         trajectories = {
             c.component for c in info.commands if c.kind is CommandKind.JOINT_TRAJECTORY
         }
@@ -2089,10 +2130,11 @@ class RobotContext:
                     f"runtime guards {guards.component!r}, which takes no joint trajectories",
                 )
             for name in guards.channels:
-                if name not in wrenches or name not in info.channels:
+                if name not in guardable or name not in info.channels:
                     raise CapabilityError(
                         "undeclared_capability",
-                        f"runtime guards on {name!r}, which is not a confirmed wrench channel",
+                        f"runtime guards on {name!r}, which is not a confirmed wrench or "
+                        "gripper-opening channel",
                     )
         has_scene = callable(getattr(self._runtime, "attach", None)) and callable(
             getattr(self._runtime, "detach", None)

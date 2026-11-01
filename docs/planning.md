@@ -264,7 +264,8 @@ or constraint check of its own.
 
 ## Executing a plan
 
-`ctx.execute(plan, *, planner, processor=None, source="planner", timeout_ns=None)` is
+`ctx.execute(plan, *, planner, processor=None, source="planner", timeout_ns=None,
+guard=None)` is
 the normal way to run a plan. It is nonblocking and returns the ordinary `Execution`.
 It:
 1. prepares the command with `ctx.prepare`, below, which:
@@ -279,7 +280,9 @@ It:
      `trajectory_contract_undeclared` if there is none;
    - builds that snapshot's planning scene and `planner.validator(plan.request,
      scene)`, and compiles with `ssrobot.prepare` (see "Compiling a plan");
-2. submits the command with the snapshot. The trace records the `PreparedTrajectory`
+2. submits the command with the snapshot, as a `GuardedJointTrajectory` with `guard` if
+   one is given (see *Guarded trajectories* in [contracts.md](contracts.md)). The trace
+   records the `PreparedTrajectory`
    (`compiled`) just before the `submitted` record, whose `Submission.prepared` is its
    fingerprint.
 
@@ -567,9 +570,12 @@ it when the robot arrives. Three pieces make that safe:
    duration.
 
    Only a joint trajectory submitted with a snapshot captured at the current revision is
-   predictable. A guarded trajectory stops where it meets contact, which isn't known in
-   advance (`unpredictable_command`). A prediction extends a captured snapshot by one
-   motion.
+   predictable. A trajectory guarded by a `WrenchGuard` stops where it meets contact,
+   which isn't known in advance (`unpredictable_command`). One guarded by an
+   `OpeningGuard` is predicted to complete, since its guard triggering is a fault: if it
+   triggers, the source has not succeeded as predicted, and neither `predict` nor a
+   continuation accepts it (`source_not_succeeded`). A prediction extends a captured
+   snapshot by one motion.
 2. **Planning on it.** `ctx.plan`, the manipulator views and `ctx.plan_async` accept a
    `PredictedSnapshot` and plan in its predicted state. `ctx.plan_async` negotiates and
    builds the planning scene on the context's thread, then runs only `planner.plan` and
@@ -579,7 +585,8 @@ it when the robot arrives. Three pieces make that safe:
 3. **A continuation.** `ctx.continuation(plan, planner=..., prediction=...)` binds the
    plan to its prediction and the planner that made it.
    `ctx.execute_continuation(continuation, *, rest, arrival_tolerance=None,
-   object_tolerance_m=0.005, object_tolerance_rad=0.05, source="planner", timeout_ns=None)`
+   object_tolerance_m=0.005, object_tolerance_rad=0.05, source="planner", timeout_ns=None,
+   guard=None)`
    then:
    1. refuses a tolerance that isn't a finite number >= 0 (`non_finite`, `out_of_limits`),
       and a `rest` that isn't a `RestResult` this context decided (`wrong_type`,
@@ -624,7 +631,8 @@ it when the robot arrives. Three pieces make that safe:
    4. compiles the rebased motion with `prepare`, validating it whole under the plan's
       validation policy in a fresh scene of the actual state, not the one the planner
       rebased in (`continuation_invalid`);
-   5. submits it with the actual snapshot.
+   5. submits it with the actual snapshot, guarded by `guard` if one is given, as
+      `execute` does.
 
    A refusal submits nothing. `ContinuationResult.report`, a `ContinuationReport`, is the
    evidence either way: the predicted and actual starts, every tolerance, every

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.OpeningGuard v1",
+  "$ref": "#/$defs/OpeningGuard",
+  "$defs": {
+    "OpeningGuard": {
+      "type": "object",
+      "description": "A gripper-opening condition a runtime evaluates at every control tick.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.OpeningGuard"
+        },
+        "version": {
+          "const": 1
+        },
+        "channel": {
+          "type": "string",
+          "description": "The gripper-opening channel it reads."
+        },
+        "below": {
+          "type": "number",
+          "description": "Trigger when the opening is below this.",
+          "x-unit": "1"
+        },
+        "samples": {
+          "type": "integer",
+          "description": "Consecutive ticks below the bound.",
+          "x-unit": "count"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "channel",
+        "below"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -6,6 +6,7 @@ import enum
 import itertools
 import math
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 from ssrobot._wire import Record, Value, meta
 from ssrobot.conventions import Timestamp, check_name
@@ -213,7 +214,7 @@ class WrenchPart(enum.StrEnum):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class WrenchGuard(Value):
+class WrenchGuard(Record):
     """A force-torque condition a runtime evaluates at every control tick.
 
     The measure is ``part`` of the channel's wrench, in the sensor's frame and with the
@@ -222,6 +223,9 @@ class WrenchGuard(Value):
     of that vector, or, with ``axis``, its signed projection onto that unit axis. The
     guard triggers once the measure is at least ``threshold`` for ``samples``
     consecutive ticks."""
+
+    SCHEMA = "ssrobot.WrenchGuard"
+    VERSION = 1
 
     channel: str = field(metadata=meta("The wrench channel it reads."))
     part: WrenchPart = field(metadata=meta("Force or torque."))
@@ -267,6 +271,52 @@ class WrenchGuard(Value):
             return math.hypot(*v)
         return sum(a * b for a, b in zip(self.axis, v, strict=True))
 
+    def trips(self, measure: float) -> bool:
+        """Whether one tick's ``measure`` counts toward triggering."""
+        return measure >= self.threshold
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpeningGuard(Record):
+    """A gripper-opening condition a runtime evaluates at every control tick.
+
+    The measure is the channel's opening, untared. The guard triggers once it is below
+    ``below`` for ``samples`` consecutive ticks: fingers that close past an object's
+    width while a trajectory runs."""
+
+    SCHEMA = "ssrobot.OpeningGuard"
+    VERSION = 1
+
+    channel: str = field(metadata=meta("The gripper-opening channel it reads."))
+    below: float = field(metadata=meta("Trigger when the opening is below this.", unit="1"))
+    samples: int = field(
+        default=1, metadata=meta("Consecutive ticks below the bound.", unit="count")
+    )
+
+    tare: ClassVar[bool] = False
+    """An opening guard never tares: its bound is absolute."""
+
+    def _validate(self) -> None:
+        check_name(self.channel, path="channel")
+        if not math.isfinite(self.below) or not 0.0 < self.below <= 1.0:
+            raise ValidationError("out_of_limits", "below must be in (0, 1]", path="below")
+        if self.samples < 1:
+            raise ValidationError("out_of_limits", "samples must be at least 1", path="samples")
+
+    def measure(self, opening: tuple[float, ...], baseline: tuple[float, ...] | None) -> float:
+        """The guarded measure of ``opening`` (one value); an opening guard has no
+        ``baseline``."""
+        assert baseline is None
+        return opening[0]
+
+    def trips(self, measure: float) -> bool:
+        """Whether one tick's ``measure`` counts toward triggering."""
+        return measure < self.below
+
+
+Guard = WrenchGuard | OpeningGuard
+"""A condition that stops a guarded trajectory."""
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GuardCapability(Value):
@@ -275,8 +325,12 @@ class GuardCapability(Value):
     joints hold no later than ``stop_latency_ns`` after the reading that triggers it."""
 
     component: str = field(metadata=meta("The joint group whose trajectories may be guarded."))
-    channels: tuple[str, ...] = field(metadata=meta("Wrench channels a guard may read, sorted."))
-    tare: bool = field(metadata=meta("Whether it measures from the reading at the start."))
+    channels: tuple[str, ...] = field(
+        metadata=meta("Wrench and gripper-opening channels a guard may read, sorted.")
+    )
+    tare: bool = field(
+        metadata=meta("Whether a wrench guard may measure from the reading at the start.")
+    )
     period_ns: int = field(metadata=meta("Time between guard evaluations.", unit="ns"))
     stop_latency_ns: int = field(
         metadata=meta("Longest time from a triggering reading to the hold.", unit="ns")
@@ -305,10 +359,10 @@ class GuardedJointTrajectory(Record):
     and the caller decides whether that is success."""
 
     SCHEMA = "ssrobot.GuardedJointTrajectory"
-    VERSION = 1
+    VERSION = 2
 
     trajectory: JointTrajectory = field(metadata=meta("The motion to execute."))
-    guard: WrenchGuard = field(metadata=meta("When to stop it."))
+    guard: Guard = field(metadata=meta("When to stop it."))
 
 
 InstantCommand = JointCommand | GripperCommand | BaseTwistCommand

@@ -22,6 +22,7 @@ from ssrobot.commands import (
     Command,
     CommandKind,
     GripperCommand,
+    Guard,
     GuardCapability,
     GuardedJointTrajectory,
     InstantCommand,
@@ -30,6 +31,7 @@ from ssrobot.commands import (
     JointTrajectory,
     TrajectoryContract,
     TrajectoryInterpolation,
+    WrenchGuard,
     command_components,
 )
 from ssrobot.conventions import ClockMode, Pose, Timestamp
@@ -452,7 +454,7 @@ class MujocoRuntime:
                 running.started_ns = applied_at.time_ns
                 command = running.command
                 if isinstance(command, GuardedJointTrajectory) and command.guard.tare:
-                    running.baseline = self._wrench(command.guard.channel)  # before it moves
+                    running.baseline = self._guarded(command.guard)  # before it moves
                 if not done:
                     self._status(execution, ExecutionState.ACTIVE, applied_at)
             for command in due:
@@ -813,6 +815,11 @@ class MujocoRuntime:
         guarded = sorted({c.component for c in confirmed if c.kind is CommandKind.JOINT_TRAJECTORY})
         scene = self._scene_channels(description)
         robot = tuple(b.name for b in channels if b.unavailable is None)
+        openings = {
+            c.name
+            for c in description.channels
+            if c.quantity is Quantity.GRIPPER_OPENING and c.name in robot
+        }
         rest = self._rest(description, profile, robot, profile_entry)
         privileged = sorted(
             {c.name for c in description.channels if c.privileged and c.name in robot}
@@ -838,19 +845,20 @@ class MujocoRuntime:
                 fixed_period=True,
                 goal_tolerance=self._goal_tolerance,
             ),
-            # Every trajectory-driven group, on every bound wrench channel. step() reads
+            # Every trajectory-driven group, on every bound wrench and gripper-opening
+            # channel. step() reads
             # the guard after each tick's physics and sets the hold before the next tick,
             # so the joints hold no later than one period after the triggering reading.
             guards=tuple(
                 GuardCapability(
                     component=component,
-                    channels=tuple(sorted(self._wrenches)),
+                    channels=tuple(sorted({*self._wrenches, *openings})),
                     tare=True,
                     period_ns=self._substeps * timestep_ns,
                     stop_latency_ns=self._substeps * timestep_ns,
                 )
                 for component in guarded
-                if self._wrenches
+                if self._wrenches or openings
             ),
         )
 
@@ -1437,6 +1445,12 @@ class MujocoRuntime:
             float(v) for v in data.sensordata[torque : torque + 3]
         )
 
+    def _guarded(self, guard: Guard) -> tuple[float, ...]:
+        """The reading ``guard`` measures now: its wrench, or its gripper's opening."""
+        if isinstance(guard, WrenchGuard):
+            return self._wrench(guard.channel)
+        return (self._opening(self._described().channel(guard.channel).source),)
+
     def _outcome(
         self,
         cause: GuardCause,
@@ -1445,10 +1459,11 @@ class MujocoRuntime:
         now: Timestamp,
     ) -> GuardOutcome:
         assert running.started_ns is not None
+        guard = command.guard
         return GuardOutcome(
             cause=cause,
             elapsed_ns=now.time_ns - running.started_ns,
-            part=command.guard.part,
+            part=guard.part if isinstance(guard, WrenchGuard) else None,
             measure=command.guard.measure(running.window[-1], running.baseline),
             baseline=running.baseline,
             window=tuple(running.window),
@@ -1461,9 +1476,9 @@ class MujocoRuntime:
         command = running.command
         assert isinstance(command, GuardedJointTrajectory)
         guard = command.guard
-        running.window = [*running.window, self._wrench(guard.channel)][-guard.samples :]
-        if len(running.window) < guard.samples or any(
-            guard.measure(w, running.baseline) < guard.threshold for w in running.window
+        running.window = [*running.window, self._guarded(guard)][-guard.samples :]
+        if len(running.window) < guard.samples or not all(
+            guard.trips(guard.measure(w, running.baseline)) for w in running.window
         ):
             return
         data = self._open_data()

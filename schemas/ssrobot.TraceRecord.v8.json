@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.TraceRecord v7",
+  "title": "ssrobot.TraceRecord v8",
   "$ref": "#/$defs/TraceRecord",
   "$defs": {
     "ActionChunk": {
@@ -794,7 +794,7 @@
           "const": "ssrobot.ExecutionStatus"
         },
         "version": {
-          "const": 3
+          "const": 4
         },
         "execution": {
           "type": "string",
@@ -950,11 +950,11 @@
           "items": {
             "type": "string"
           },
-          "description": "Wrench channels a guard may read, sorted."
+          "description": "Wrench and gripper-opening channels a guard may read, sorted."
         },
         "tare": {
           "type": "boolean",
-          "description": "Whether it measures from the reading at the start."
+          "description": "Whether a wrench guard may measure from the reading at the start."
         },
         "period_ns": {
           "type": "integer",
@@ -994,23 +994,24 @@
           "x-unit": "ns"
         },
         "part": {
-          "type": "string",
-          "enum": [
-            "force",
-            "torque"
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "force",
+                "torque"
+              ]
+            },
+            {
+              "type": "null"
+            }
           ],
-          "description": "Which half of the wrench was measured."
+          "description": "Which half of the wrench was measured; None for an opening guard."
         },
         "measure": {
           "type": "number",
-          "description": "The guarded measure at the deciding tick: the last of window.",
-          "x-unit-by": {
-            "field": "part",
-            "units": {
-              "force": "N",
-              "torque": "N*m"
-            }
-          }
+          "description": "The guarded measure at the deciding tick: the last of window. A wrench guard's is in N or N*m by part; an opening guard's is the opening, in 1.",
+          "x-unit": "channel"
         },
         "baseline": {
           "anyOf": [
@@ -1042,51 +1043,10 @@
       "required": [
         "cause",
         "elapsed_ns",
-        "part",
         "measure",
         "window"
       ],
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "part": {
-                "const": "force"
-              }
-            },
-            "required": [
-              "part"
-            ]
-          },
-          "then": {
-            "properties": {
-              "measure": {
-                "x-unit": "N"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "part": {
-                "const": "torque"
-              }
-            },
-            "required": [
-              "part"
-            ]
-          },
-          "then": {
-            "properties": {
-              "measure": {
-                "x-unit": "N*m"
-              }
-            }
-          }
-        }
-      ]
+      "additionalProperties": false
     },
     "GuardedJointTrajectory": {
       "type": "object",
@@ -1096,14 +1056,21 @@
           "const": "ssrobot.GuardedJointTrajectory"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "trajectory": {
           "$ref": "#/$defs/JointTrajectory",
           "description": "The motion to execute."
         },
         "guard": {
-          "$ref": "#/$defs/WrenchGuard",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WrenchGuard"
+            },
+            {
+              "$ref": "#/$defs/OpeningGuard"
+            }
+          ],
           "description": "When to stop it."
         }
       },
@@ -1710,6 +1677,39 @@
         "distance",
         "position_tolerance",
         "rotation_tolerance"
+      ],
+      "additionalProperties": false
+    },
+    "OpeningGuard": {
+      "type": "object",
+      "description": "A gripper-opening condition a runtime evaluates at every control tick.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.OpeningGuard"
+        },
+        "version": {
+          "const": 1
+        },
+        "channel": {
+          "type": "string",
+          "description": "The gripper-opening channel it reads."
+        },
+        "below": {
+          "type": "number",
+          "description": "Trigger when the opening is below this.",
+          "x-unit": "1"
+        },
+        "samples": {
+          "type": "integer",
+          "description": "Consecutive ticks below the bound.",
+          "x-unit": "count"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "channel",
+        "below"
       ],
       "additionalProperties": false
     },
@@ -2463,7 +2463,7 @@
           "const": "ssrobot.RuntimeInfo"
         },
         "version": {
-          "const": 7
+          "const": 8
         },
         "runtime": {
           "type": "string",
@@ -2705,7 +2705,7 @@
           "const": "ssrobot.Submission"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "execution": {
           "type": "string",
@@ -2809,7 +2809,7 @@
           "const": "ssrobot.TraceRecord"
         },
         "version": {
-          "const": 7
+          "const": 8
         },
         "sequence": {
           "type": "integer",
@@ -3213,6 +3213,12 @@
       "type": "object",
       "description": "A force-torque condition a runtime evaluates at every control tick.",
       "properties": {
+        "schema": {
+          "const": "ssrobot.WrenchGuard"
+        },
+        "version": {
+          "const": 1
+        },
         "channel": {
           "type": "string",
           "description": "The wrench channel it reads."
@@ -3273,6 +3279,8 @@
         }
       },
       "required": [
+        "schema",
+        "version",
         "channel",
         "part",
         "threshold"
