@@ -44,10 +44,11 @@ class SnapshotMapping:
     """Each scene object, sorted, and its free joint's qpos address."""
 
     def apply(self, snapshot: SceneSnapshot, data: Any) -> None:
-        """Write ``snapshot``'s joint positions and object poses into ``data.qpos``.
-        Nothing else changes: run ``mujoco.mj_kinematics`` (or ``mj_forward``) for the
-        body poses. Fails with ``incompatible_snapshot`` for a snapshot of another
-        description or world, or of other joints or objects."""
+        """Write ``snapshot``'s joint positions and object poses into ``data.qpos``; an object
+        without a pose (unknown or removed) keeps its own. Nothing else changes: run
+        ``mujoco.mj_kinematics`` (or ``mj_forward``) for the body poses. Fails with
+        ``incompatible_snapshot`` for a snapshot of another description or world, or of
+        other joints or objects."""
         if snapshot.description != self.description or snapshot.model != self.world:
             raise ValidationError(
                 "incompatible_snapshot",
@@ -67,6 +68,8 @@ class SnapshotMapping:
             data.qpos[at] = position
         for name, at in self.objects:
             pose = objects[name]
+            if pose is None:
+                continue
             data.qpos[at : at + 3] = pose.position
             data.qpos[at + 3 : at + 7] = pose.quat_wxyz
 

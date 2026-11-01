@@ -51,6 +51,44 @@ class Attachment(Value):
         _check_names(self.allow, "allow")
 
 
+class ObjectPoses(enum.StrEnum):
+    """Where a context's snapshots take object poses from."""
+
+    LIVE = "live"
+    """The runtime's measurement at each snapshot."""
+    REGISTERED = "registered"
+    """Explicit registrations, and declared attachments; see docs/contracts.md."""
+
+
+class ObjectStatus(enum.StrEnum):
+    """What a snapshot knows of one object's pose. Each object is in exactly one."""
+
+    MEASURED = "measured"
+    """The runtime's pose at the snapshot: ``ObjectPoses.LIVE`` only."""
+    REGISTERED = "registered"
+    """Its last registration's pose."""
+    ATTACHED = "attached"
+    """Held: its end effector's pose composed with the declared transform."""
+    UNKNOWN = "unknown"
+    """No pose: released, and neither registered again nor removed."""
+    REMOVED = "removed"
+    """Out of the active scene, by an explicit removal."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Registration(Value):
+    """An object's pose, as a registration source reported it."""
+
+    object: str = field(metadata=meta("The scene object."))
+    pose: Pose = field(metadata=meta("Its pose in the world frame."))
+    stamp: Timestamp = field(metadata=meta("When the pose was observed, on the runtime clock."))
+    source: str = field(metadata=meta("What reported it, as an identifier."))
+
+    def _validate(self) -> None:
+        check_name(self.object, path="object")
+        check_name(self.source, path="source")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TrackedAttachment(Value):
     """A scene runtime's answer to an attach: the attachment it now tracks, and when it
@@ -65,7 +103,7 @@ class SceneState(Record):
     """A context's scene: the objects it can hold and what it holds now."""
 
     SCHEMA = "ssrobot.SceneState"
-    VERSION = 1
+    VERSION = 2
 
     revision: int = field(
         metadata=meta("Increments on every change, from 0 when the context opens.", unit="count")
@@ -76,6 +114,16 @@ class SceneState(Record):
     )
     attachments: tuple[Attachment, ...] = field(
         default=(), metadata=meta("Current attachments, sorted by object.")
+    )
+    object_poses: ObjectPoses = field(
+        default=ObjectPoses.LIVE, metadata=meta("Where snapshots take object poses from.")
+    )
+    registrations: tuple[Registration, ...] = field(
+        default=(),
+        metadata=meta("Each registered free object's last registration, sorted by object."),
+    )
+    removed: tuple[str, ...] = field(
+        default=(), metadata=meta("Objects explicitly removed from the active scene, sorted.")
     )
 
     def _validate(self) -> None:
@@ -96,6 +144,29 @@ class SceneState(Record):
                     f"{attachment.object!r} is not a scene object",
                     path=f"attachments[{i}].object",
                 )
+        registered = tuple(r.object for r in self.registrations)
+        _check_names(registered, "registrations")
+        _check_names(self.removed, "removed")
+        if self.object_poses is ObjectPoses.LIVE and (registered or self.removed):
+            raise ValidationError(
+                "inconsistent_scene",
+                "live object poses have no registrations or removals",
+                path="object_poses",
+            )
+        for path, names in (("registrations", registered), ("removed", self.removed)):
+            unknown = sorted(set(names) - set(self.objects))
+            if unknown:
+                raise ValidationError(
+                    "unknown_reference", f"{unknown[0]!r} is not a scene object", path=path
+                )
+        # Exactly one state per object: registered, attached, removed, or none (unknown).
+        claims = [*registered, *held, *self.removed]
+        if len(claims) != len(set(claims)):
+            raise ValidationError(
+                "inconsistent_scene",
+                "an object is in more than one of registered, attached and removed",
+                path="registrations",
+            )
 
     def attachment(self, object: str) -> Attachment | None:
         """The attachment holding ``object``, if any."""
@@ -103,6 +174,29 @@ class SceneState(Record):
             if attachment.object == object:
                 return attachment
         return None
+
+    def registration(self, object: str) -> Registration | None:
+        """``object``'s registration, if it is registered."""
+        for registration in self.registrations:
+            if registration.object == object:
+                return registration
+        return None
+
+    def object_status(self, object: str) -> ObjectStatus:
+        """What snapshots know of ``object``'s pose; the one place the rules are."""
+        if object not in self.objects:
+            raise ValidationError(
+                "unknown_reference", f"{object!r} is not a scene object", path="object"
+            )
+        if self.object_poses is ObjectPoses.LIVE:
+            return ObjectStatus.MEASURED
+        if self.attachment(object) is not None:
+            return ObjectStatus.ATTACHED
+        if self.registration(object) is not None:
+            return ObjectStatus.REGISTERED
+        if object in self.removed:
+            return ObjectStatus.REMOVED
+        return ObjectStatus.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -126,14 +220,64 @@ class AttachmentViolation(Record):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class AttachmentReference(Record):
+    """An attachment declared from registration, beside the transform the runtime resolved
+    and tracks: privileged reference data, for evaluation. Their disagreement is the
+    registration's error at the grasp; a later ``AttachmentViolation`` is motion
+    relative to the tracked transform."""
+
+    SCHEMA = "ssrobot.AttachmentReference"
+    VERSION = 1
+
+    object: str = field(metadata=meta("The attached object."))
+    declared: Pose = field(metadata=meta("The declared transform, in the end effector's frame."))
+    tracked: Pose = field(metadata=meta("The transform the runtime resolved and tracks."))
+    stamp: Timestamp = field(metadata=meta("When the runtime resolved it."))
+    position_error: float = field(metadata=meta("Distance between the two.", unit="m"))
+    rotation_error: float = field(metadata=meta("Angle between the two.", unit="rad"))
+
+    def _validate(self) -> None:
+        check_name(self.object, path="object")
+        if not (self.position_error >= 0 and self.rotation_error >= 0):
+            raise ValidationError(
+                "out_of_limits", "errors must be non-negative", path="position_error"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ObjectState(Value):
-    """A scene object's pose in the world."""
+    """A scene object's pose in the world, and what it is known from."""
 
     name: str = field(metadata=meta("Scene object name."))
-    pose: Pose = field(metadata=meta("The object's pose in the world frame."))
+    pose: Pose | None = field(
+        default=None,
+        metadata=meta("The object's pose in the world frame; none when unknown or removed."),
+    )
+    status: ObjectStatus = field(
+        default=ObjectStatus.MEASURED, metadata=meta("What the pose is known from.")
+    )
 
     def _validate(self) -> None:
         check_name(self.name)
+        posed = self.status in (
+            ObjectStatus.MEASURED,
+            ObjectStatus.REGISTERED,
+            ObjectStatus.ATTACHED,
+        )
+        if posed != (self.pose is not None):
+            raise ValidationError(
+                "inconsistent_scene",
+                f"a {self.status.value} object {'has' if posed else 'has no'} pose",
+                path="pose",
+            )
+
+    def known_pose(self) -> Pose:
+        """The object's pose; one unknown or removed has none (``unknown_object_pose``)."""
+        if self.pose is None:
+            raise ValidationError(
+                "unknown_object_pose", f"{self.name!r} is {self.status.value}", path="pose"
+            )
+        return self.pose
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -143,7 +287,7 @@ class SceneSnapshot(Record):
     from. Planning scenes are materialized from it; see docs/contracts.md."""
 
     SCHEMA = "ssrobot.SceneSnapshot"
-    VERSION = 1
+    VERSION = 2
 
     description: str = field(metadata=meta("Fingerprint of the robot description."))
     runtime: str = field(metadata=meta("Name of the runtime that captured it."))
@@ -157,7 +301,8 @@ class SceneSnapshot(Record):
         metadata=meta("Each joint's position, in the order of joints.", unit="joint")
     )
     objects: tuple[ObjectState, ...] = field(
-        default=(), metadata=meta("Every scene object's pose, sorted by name.")
+        default=(),
+        metadata=meta("Every scene object, sorted by name: its pose, and what it is known from."),
     )
     fixtures: tuple[str, ...] = field(default=(), metadata=meta("Scene fixtures, sorted."))
     attachments: tuple[Attachment, ...] = field(
@@ -196,6 +341,21 @@ class SceneSnapshot(Record):
                     "unknown_reference",
                     f"{attachment.object!r} is not a scene object",
                     path=f"attachments[{i}].object",
+                )
+        measured = {o.status is ObjectStatus.MEASURED for o in self.objects}
+        if len(measured) > 1:
+            raise ValidationError(
+                "inconsistent_scene",
+                "measured and registered object poses do not mix",
+                path="objects",
+            )
+        if measured == {False}:
+            attached = {o.name for o in self.objects if o.status is ObjectStatus.ATTACHED}
+            if attached != {a.object for a in self.attachments}:
+                raise ValidationError(
+                    "inconsistent_scene",
+                    "exactly the attached objects follow their attachments",
+                    path="objects",
                 )
 
     def fingerprint(self) -> str:

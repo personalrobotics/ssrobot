@@ -18,7 +18,7 @@ from ssrobot.observations import Observation
 from ssrobot.planning_contracts import PreparedTrajectory
 from ssrobot.rest import RestResult
 from ssrobot.runtime import RuntimeInfo
-from ssrobot.scene import AttachmentViolation, SceneSnapshot, SceneState
+from ssrobot.scene import AttachmentReference, AttachmentViolation, SceneSnapshot, SceneState
 
 
 class TraceKind(enum.StrEnum):
@@ -42,6 +42,9 @@ class TraceKind(enum.StrEnum):
     """The scene changed; payload is the new ``SceneState``."""
     SNAPSHOT = "snapshot"
     """A snapshot was captured; payload is the ``SceneSnapshot``."""
+    ATTACHED = "attached"
+    """An attachment was declared from registration; payload is the
+    ``AttachmentReference``: the declared transform beside the one the runtime tracks."""
     VIOLATION = "violation"
     """An attached object left its declared transform; payload is the
     ``AttachmentViolation``."""
@@ -68,6 +71,7 @@ TracePayload = (
     | AppliedCommand
     | RuntimeHealth
     | SceneState
+    | AttachmentReference
     | AttachmentViolation
     | SceneSnapshot
     | PreparedTrajectory
@@ -85,6 +89,7 @@ _PAYLOAD: dict[TraceKind, type[Record] | None] = {
     TraceKind.APPLIED: AppliedCommand,
     TraceKind.HEALTH: RuntimeHealth,
     TraceKind.SCENE: SceneState,
+    TraceKind.ATTACHED: AttachmentReference,
     TraceKind.VIOLATION: AttachmentViolation,
     TraceKind.SNAPSHOT: SceneSnapshot,
     TraceKind.PREDICTED: PredictedSnapshot,
@@ -100,7 +105,7 @@ class TraceRecord(Record):
     """One event in a context's life, in causal order."""
 
     SCHEMA = "ssrobot.TraceRecord"
-    VERSION = 8
+    VERSION = 9
 
     sequence: int = field(metadata=meta("Position in the trace, from 0.", unit="count"))
     kind: TraceKind = field(metadata=meta("What happened."))
@@ -131,6 +136,7 @@ class TraceRecord(Record):
             | ExecutionStatus
             | AppliedCommand
             | RuntimeHealth
+            | AttachmentReference
             | AttachmentViolation
             | SceneSnapshot,
         ):

@@ -370,7 +370,7 @@ def _requests(ctx: RobotContext, snapshot: SceneSnapshot) -> dict[str, PlanningR
     arm = ctx.manipulator()
     scene = ctx.planning_scene(snapshot, arm.group)
     aside = scene.forward_kinematics(ASIDE, "tcp")
-    box = snapshot.objects[0].pose.position
+    box = snapshot.objects[0].known_pose().position
     calls: dict[str, PlanningRequest] = {
         "configuration": arm.request(ConfigurationGoal(configurations=(ABOVE,)), snapshot=snapshot),
         "configurations": arm.request(

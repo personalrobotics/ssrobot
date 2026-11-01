@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.TraceRecord v8",
+  "title": "ssrobot.TraceRecord v9",
   "$ref": "#/$defs/TraceRecord",
   "$defs": {
     "ActionChunk": {
@@ -173,6 +173,55 @@
         "end_effector",
         "transform",
         "allow"
+      ],
+      "additionalProperties": false
+    },
+    "AttachmentReference": {
+      "type": "object",
+      "description": "An attachment declared from registration, beside the transform the runtime resolved",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.AttachmentReference"
+        },
+        "version": {
+          "const": 1
+        },
+        "object": {
+          "type": "string",
+          "description": "The attached object."
+        },
+        "declared": {
+          "$ref": "#/$defs/Pose",
+          "description": "The declared transform, in the end effector's frame."
+        },
+        "tracked": {
+          "$ref": "#/$defs/Pose",
+          "description": "The transform the runtime resolved and tracks."
+        },
+        "stamp": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the runtime resolved it."
+        },
+        "position_error": {
+          "type": "number",
+          "description": "Distance between the two.",
+          "x-unit": "m"
+        },
+        "rotation_error": {
+          "type": "number",
+          "description": "Angle between the two.",
+          "x-unit": "rad"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "object",
+        "declared",
+        "tracked",
+        "stamp",
+        "position_error",
+        "rotation_error"
       ],
       "additionalProperties": false
     },
@@ -1567,20 +1616,37 @@
     },
     "ObjectState": {
       "type": "object",
-      "description": "A scene object's pose in the world.",
+      "description": "A scene object's pose in the world, and what it is known from.",
       "properties": {
         "name": {
           "type": "string",
           "description": "Scene object name."
         },
         "pose": {
-          "$ref": "#/$defs/Pose",
-          "description": "The object's pose in the world frame."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pose"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The object's pose in the world frame; none when unknown or removed."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "measured",
+            "registered",
+            "attached",
+            "unknown",
+            "removed"
+          ],
+          "description": "What the pose is known from."
         }
       },
       "required": [
-        "name",
-        "pose"
+        "name"
       ],
       "additionalProperties": false
     },
@@ -1950,7 +2016,7 @@
           "const": "ssrobot.PredictedSnapshot"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "state": {
           "$ref": "#/$defs/SceneSnapshot",
@@ -2007,6 +2073,13 @@
             "type": "string"
           },
           "description": "Objects held by the source, expected to be released after it and before the plan made on it runs: the one scene change the prediction expects. In the state they are detached, at the resting pose the caller expects, for planning only; on arrival each must be detached, and is not compared by pose."
+        },
+        "removals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Objects held by the source, expected to be released after it and then removed from the scene before the plan made on it runs. In the state each is removed; on arrival each must be."
         },
         "allowances": {
           "type": "array",
@@ -2152,6 +2225,35 @@
         "channel",
         "stamp",
         "value"
+      ],
+      "additionalProperties": false
+    },
+    "Registration": {
+      "type": "object",
+      "description": "An object's pose, as a registration source reported it.",
+      "properties": {
+        "object": {
+          "type": "string",
+          "description": "The scene object."
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose",
+          "description": "Its pose in the world frame."
+        },
+        "stamp": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the pose was observed, on the runtime clock."
+        },
+        "source": {
+          "type": "string",
+          "description": "What reported it, as an identifier."
+        }
+      },
+      "required": [
+        "object",
+        "pose",
+        "stamp",
+        "source"
       ],
       "additionalProperties": false
     },
@@ -2578,7 +2680,7 @@
           "const": "ssrobot.SceneSnapshot"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "description": {
           "type": "string",
@@ -2621,7 +2723,7 @@
           "items": {
             "$ref": "#/$defs/ObjectState"
           },
-          "description": "Every scene object's pose, sorted by name."
+          "description": "Every scene object, sorted by name: its pose, and what it is known from."
         },
         "fixtures": {
           "type": "array",
@@ -2659,7 +2761,7 @@
           "const": "ssrobot.SceneState"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "revision": {
           "type": "integer",
@@ -2686,6 +2788,28 @@
             "$ref": "#/$defs/Attachment"
           },
           "description": "Current attachments, sorted by object."
+        },
+        "object_poses": {
+          "type": "string",
+          "enum": [
+            "live",
+            "registered"
+          ],
+          "description": "Where snapshots take object poses from."
+        },
+        "registrations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Registration"
+          },
+          "description": "Each registered free object's last registration, sorted by object."
+        },
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Objects explicitly removed from the active scene, sorted."
         }
       },
       "required": [
@@ -2809,7 +2933,7 @@
           "const": "ssrobot.TraceRecord"
         },
         "version": {
-          "const": 8
+          "const": 9
         },
         "sequence": {
           "type": "integer",
@@ -2828,6 +2952,7 @@
             "health",
             "scene",
             "snapshot",
+            "attached",
             "violation",
             "predicted",
             "continued",
@@ -2872,6 +2997,9 @@
             },
             {
               "$ref": "#/$defs/SceneState"
+            },
+            {
+              "$ref": "#/$defs/AttachmentReference"
             },
             {
               "$ref": "#/$defs/AttachmentViolation"

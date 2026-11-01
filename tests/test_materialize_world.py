@@ -141,7 +141,7 @@ def _evidence(work: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         per_snapshot.append(
             {
                 "time_ns": snapshot.stamp.time_ns,
-                "cylinder": [round(v, 6) for v in snapshot.objects[0].pose.position],
+                "cylinder": [round(v, 6) for v in snapshot.objects[0].known_pose().position],
                 "max_difference": difference,
                 "runtime": runtime,
                 "materialized": mine,

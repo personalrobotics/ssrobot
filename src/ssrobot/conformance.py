@@ -683,7 +683,11 @@ def _check_scene_observation(context: RobotContext) -> str:
     """Every scene channel reads, privileged, and each object's pose is the snapshot's."""
     specs = context.info.scene_channels
     observation = context.observe(ObservationRequest(channels=tuple(c.name for c in specs)))
-    poses = {o.name: (*o.pose.position, *o.pose.quat_wxyz) for o in context.snapshot().objects}
+    poses = {
+        o.name: (*o.pose.position, *o.pose.quat_wxyz)
+        for o in context.snapshot().objects
+        if o.pose is not None  # a conformance context's object poses are live
+    }
     compared = 0
     for spec in specs:
         _expect(spec.privileged, f"scene channel {spec.name!r} is not privileged")

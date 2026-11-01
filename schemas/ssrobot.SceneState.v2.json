@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.SceneSnapshot v1",
-  "$ref": "#/$defs/SceneSnapshot",
+  "title": "ssrobot.SceneState v2",
+  "$ref": "#/$defs/SceneState",
   "$defs": {
     "Attachment": {
       "type": "object",
@@ -36,25 +36,6 @@
         "end_effector",
         "transform",
         "allow"
-      ],
-      "additionalProperties": false
-    },
-    "ObjectState": {
-      "type": "object",
-      "description": "A scene object's pose in the world.",
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "Scene object name."
-        },
-        "pose": {
-          "$ref": "#/$defs/Pose",
-          "description": "The object's pose in the world frame."
-        }
-      },
-      "required": [
-        "name",
-        "pose"
       ],
       "additionalProperties": false
     },
@@ -110,84 +91,100 @@
       ],
       "additionalProperties": false
     },
-    "SceneSnapshot": {
+    "Registration": {
       "type": "object",
-      "description": "An immutable copy of everything a geometric query reads: the robot's joint",
+      "description": "An object's pose, as a registration source reported it.",
       "properties": {
-        "schema": {
-          "const": "ssrobot.SceneSnapshot"
-        },
-        "version": {
-          "const": 1
-        },
-        "description": {
+        "object": {
           "type": "string",
-          "description": "Fingerprint of the robot description."
+          "description": "The scene object."
         },
-        "runtime": {
-          "type": "string",
-          "description": "Name of the runtime that captured it."
-        },
-        "model": {
-          "type": "string",
-          "description": "The runtime's identity for the simulated world; opaque to the core."
+        "pose": {
+          "$ref": "#/$defs/Pose",
+          "description": "Its pose in the world frame."
         },
         "stamp": {
           "$ref": "#/$defs/Timestamp",
-          "description": "When it was captured, on the runtime clock."
+          "description": "When the pose was observed, on the runtime clock."
+        },
+        "source": {
+          "type": "string",
+          "description": "What reported it, as an identifier."
+        }
+      },
+      "required": [
+        "object",
+        "pose",
+        "stamp",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "SceneState": {
+      "type": "object",
+      "description": "A context's scene: the objects it can hold and what it holds now.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.SceneState"
+        },
+        "version": {
+          "const": 2
         },
         "revision": {
           "type": "integer",
-          "description": "Scene revision it was captured at.",
+          "description": "Increments on every change, from 0 when the context opens.",
           "x-unit": "count"
-        },
-        "joints": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Every description joint, in order."
-        },
-        "positions": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "Each joint's position, in the order of joints.",
-          "x-unit": "joint"
         },
         "objects": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/ObjectState"
+            "type": "string"
           },
-          "description": "Every scene object's pose, sorted by name."
+          "description": "Scene objects that can be attached, sorted."
         },
         "fixtures": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Scene fixtures, sorted."
+          "description": "Static scene bodies an attachment may allow contact with, sorted."
         },
         "attachments": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/Attachment"
           },
-          "description": "Declared attachments, sorted by object."
+          "description": "Current attachments, sorted by object."
+        },
+        "object_poses": {
+          "type": "string",
+          "enum": [
+            "live",
+            "registered"
+          ],
+          "description": "Where snapshots take object poses from."
+        },
+        "registrations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Registration"
+          },
+          "description": "Each registered free object's last registration, sorted by object."
+        },
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Objects explicitly removed from the active scene, sorted."
         }
       },
       "required": [
         "schema",
         "version",
-        "description",
-        "runtime",
-        "model",
-        "stamp",
         "revision",
-        "joints",
-        "positions"
+        "objects",
+        "fixtures"
       ],
       "additionalProperties": false
     },

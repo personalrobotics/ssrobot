@@ -35,7 +35,7 @@ from ssrobot.conventions import check_name
 from ssrobot.errors import ValidationError
 from ssrobot.planning_contracts import Planner, PlanResult
 from ssrobot.rest import RestResult
-from ssrobot.scene import ObjectState, SceneSnapshot
+from ssrobot.scene import ObjectState, ObjectStatus, SceneSnapshot
 
 if TYPE_CHECKING:
     from ssrobot.context import Execution
@@ -83,7 +83,7 @@ class PredictedSnapshot(Record):
     """The state expected if ``source`` succeeds and every recorded assumption holds."""
 
     SCHEMA = "ssrobot.PredictedSnapshot"
-    VERSION = 2
+    VERSION = 3
 
     state: SceneSnapshot = field(
         metadata=meta("The predicted state, as a snapshot value; never a captured one.")
@@ -126,6 +126,14 @@ class PredictedSnapshot(Record):
             "plan made on it runs: the one scene change the prediction expects. In the "
             "state they are detached, at the resting pose the caller expects, for planning "
             "only; on arrival each must be detached, and is not compared by pose."
+        ),
+    )
+    removals: tuple[str, ...] = field(
+        default=(),
+        metadata=meta(
+            "Objects held by the source, expected to be released after it and then removed "
+            "from the scene before the plan made on it runs. In the state each is removed; "
+            "on arrival each must be."
         ),
     )
     allowances: tuple[str, ...] = field(
@@ -188,6 +196,13 @@ class PredictedSnapshot(Record):
                 "inconsistent_prediction",
                 "releases names objects detached in the state, sorted, once each",
                 path="releases",
+            )
+        removed = {o.name for o in self.state.objects if o.status is ObjectStatus.REMOVED}
+        if list(self.removals) != sorted(set(self.removals)) or not set(self.removals) <= removed:
+            raise ValidationError(
+                "inconsistent_prediction",
+                "removals names objects removed in the state, sorted, once each",
+                path="removals",
             )
         attached = {a.object for a in self.state.attachments}
         if (

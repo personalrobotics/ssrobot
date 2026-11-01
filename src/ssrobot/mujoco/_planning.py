@@ -22,7 +22,7 @@ from ssrobot.mujoco._compose import compile_world
 from ssrobot.mujoco._model import FrameBinding, MujocoObject
 from ssrobot.mujoco._runtime import relative, world_pose
 from ssrobot.mujoco._scene import SceneSource
-from ssrobot.scene import Contact, ContactKind, SceneSnapshot
+from ssrobot.scene import Contact, ContactKind, ObjectStatus, SceneSnapshot
 
 _BODY = mujoco.mjtObj.mjOBJ_BODY
 _JOINT = mujoco.mjtObj.mjOBJ_JOINT
@@ -227,11 +227,28 @@ def materialize(
     data = mujoco.MjData(model)
     for joint, position in zip(snapshot.joints, snapshot.positions, strict=True):
         data.qpos[model.jnt_qposadr[resolve(_JOINT, joint, "snapshot.joints")]] = position
+    # A removed object is out of the scene. The world lies within its extent of its
+    # centre, so four extents below the centre is clear of everything the robot reaches.
+    away = (
+        float(model.stat.center[0]),
+        float(model.stat.center[1]),
+        float(model.stat.center[2]) - 4 * float(model.stat.extent),
+    )
     for state in snapshot.objects:
         free = int(model.body_jntadr[resolve(_BODY, state.name, "snapshot.objects")])
         at = int(model.jnt_qposadr[free])
-        data.qpos[at : at + 3] = state.pose.position
-        data.qpos[at + 3 : at + 7] = state.pose.quat_wxyz
+        if state.pose is not None:
+            data.qpos[at : at + 3] = state.pose.position
+            data.qpos[at + 3 : at + 7] = state.pose.quat_wxyz
+        elif state.status is ObjectStatus.REMOVED:
+            data.qpos[at : at + 3] = away
+            data.qpos[at + 3 : at + 7] = (1.0, 0.0, 0.0, 0.0)
+        else:
+            raise ValidationError(
+                "unknown_object_pose",
+                f"no pose is known for {state.name!r}",
+                path="snapshot.objects",
+            )
     mujoco.mj_kinematics(model, data)
 
     bound = {}

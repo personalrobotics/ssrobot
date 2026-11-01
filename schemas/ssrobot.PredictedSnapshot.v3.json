@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.PredictedSnapshot v2",
+  "title": "ssrobot.PredictedSnapshot v3",
   "$ref": "#/$defs/PredictedSnapshot",
   "$defs": {
     "Attachment": {
@@ -41,20 +41,37 @@
     },
     "ObjectState": {
       "type": "object",
-      "description": "A scene object's pose in the world.",
+      "description": "A scene object's pose in the world, and what it is known from.",
       "properties": {
         "name": {
           "type": "string",
           "description": "Scene object name."
         },
         "pose": {
-          "$ref": "#/$defs/Pose",
-          "description": "The object's pose in the world frame."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pose"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The object's pose in the world frame; none when unknown or removed."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "measured",
+            "registered",
+            "attached",
+            "unknown",
+            "removed"
+          ],
+          "description": "What the pose is known from."
         }
       },
       "required": [
-        "name",
-        "pose"
+        "name"
       ],
       "additionalProperties": false
     },
@@ -118,7 +135,7 @@
           "const": "ssrobot.PredictedSnapshot"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "state": {
           "$ref": "#/$defs/SceneSnapshot",
@@ -176,6 +193,13 @@
           },
           "description": "Objects held by the source, expected to be released after it and before the plan made on it runs: the one scene change the prediction expects. In the state they are detached, at the resting pose the caller expects, for planning only; on arrival each must be detached, and is not compared by pose."
         },
+        "removals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Objects held by the source, expected to be released after it and then removed from the scene before the plan made on it runs. In the state each is removed; on arrival each must be."
+        },
         "allowances": {
           "type": "array",
           "items": {
@@ -217,7 +241,7 @@
           "const": "ssrobot.SceneSnapshot"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "description": {
           "type": "string",
@@ -260,7 +284,7 @@
           "items": {
             "$ref": "#/$defs/ObjectState"
           },
-          "description": "Every scene object's pose, sorted by name."
+          "description": "Every scene object, sorted by name: its pose, and what it is known from."
         },
         "fixtures": {
           "type": "array",

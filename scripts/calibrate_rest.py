@@ -464,7 +464,7 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
     band = spec.get("guard", spec)  # the guarded proof's band, which leaves the object standing
 
     def where(ctx: RobotContext) -> list[float]:
-        pose = next(o.pose for o in ctx.snapshot().objects if o.name == spec["object"])
+        pose = next(o.known_pose() for o in ctx.snapshot().objects if o.name == spec["object"])
         return [*pose.position, *pose.quat_wxyz]
 
     def grasp(ctx: RobotContext, runtime: MujocoRuntime) -> tuple[float, ...]:
@@ -478,7 +478,7 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
         )
         view = ctx.manipulator(manipulator.name)
         snapshot = ctx.snapshot()
-        pose = next(o.pose for o in snapshot.objects if o.name == spec["object"])
+        pose = next(o.known_pose() for o in snapshot.objects if o.name == spec["object"])
         x, y, z = band["offset_position"]
         w, i, j, k = band["offset_quat_wxyz"]
         (a, b), (c, d), (e, f) = band["position_bounds"]
@@ -528,7 +528,7 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
         )
         held["close"] = None if status.gripper is None else status.gripper.termination.value
         held["object_gripped"] = where(ctx)
-        before = next(o.pose for o in ctx.snapshot().objects if o.name == spec["object"])
+        before = next(o.known_pose() for o in ctx.snapshot().objects if o.name == spec["object"])
         # Raise it clear of the table.
         lift = next((i for i, k in enumerate(arm.kinds) if k is JointKind.PRISMATIC), None)
         q = current(ctx, arm.joints)
@@ -536,7 +536,7 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
         up[0 if lift is None else lift] = 0.1 if lift is not None else 0.2
         move = profile(arm.group, arm.joints, q, [arm.leg("move", up, 2.0)])
         ctx.run_until(ctx.submit(move), max_ticks=20_000)
-        after = next(o.pose for o in ctx.snapshot().objects if o.name == spec["object"])
+        after = next(o.known_pose() for o in ctx.snapshot().objects if o.name == spec["object"])
         held["object_raised_m"] = after.position[2] - before.position[2]
         held["object_raised_to_m"] = after.position[2]
         return tuple(move.positions[-1])
@@ -619,7 +619,7 @@ def run_joint(
         "watched": after,
         "tick_ns": tick,
         "result": None if watch is None else watch.result,
-        "objects": {o.name: list(o.pose.position) for o in objects},
+        "objects": {o.name: list(o.known_pose().position) for o in objects},
     }
 
 

@@ -105,9 +105,14 @@ from ssrobot.rest import (
 from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime, SnapshotRuntime
 from ssrobot.scene import (
     Attachment,
+    AttachmentReference,
     AttachmentViolation,
     Contact,
+    ObjectPoses,
+    ObjectState,
+    ObjectStatus,
     PlanningScene,
+    Registration,
     SceneSnapshot,
     SceneState,
     TrackedAttachment,
@@ -154,6 +159,8 @@ ALLOWED_STATES: dict[str, frozenset[ContextState]] = {
     "snapshot": frozenset({_S.OPEN, _S.FAULTED}),
     "planning_scene": frozenset({_S.OPEN, _S.FAULTED}),
     "detach": frozenset({_S.OPEN, _S.FAULTED}),
+    "register": frozenset({_S.OPEN, _S.FAULTED}),
+    "remove": frozenset({_S.OPEN, _S.FAULTED}),
     "predict": frozenset({_S.OPEN}),
     "project": frozenset({_S.OPEN, _S.FAULTED}),
     "execute_continuation": frozenset({_S.OPEN}),
@@ -283,6 +290,20 @@ def _compose(a: Pose, b: Pose) -> Pose:
     return Pose(position=(ox + rx, oy + ry, oz + rz), quat_wxyz=(w / n, x / n, y / n, z / n))
 
 
+def _inverse(pose: Pose) -> Pose:
+    """The frame ``pose`` is given in, in ``pose``'s own frame."""
+    w, x, y, z = pose.quat_wxyz
+    px, py, pz = pose.position
+    turned = Pose(position=(0.0, 0.0, 0.0), quat_wxyz=(w, -x, -y, -z))
+    return _compose(turned, Pose(position=(-px, -py, -pz), quat_wxyz=(1.0, 0.0, 0.0, 0.0)))
+
+
+def _pose_errors(a: Pose, b: Pose) -> tuple[float, float]:
+    """The distance and the angle between two poses."""
+    dot = abs(sum(p * q for p, q in zip(a.quat_wxyz, b.quat_wxyz, strict=True)))
+    return math.dist(a.position, b.position), 2 * math.acos(min(1.0, dot))
+
+
 _SAME_END = 1e-9
 """How far apart, per joint (rad or m), two ends of a motion may be and still be the same
 end: floating point, not tolerance."""
@@ -315,8 +336,11 @@ def _scene_changes(
     revision, other attachments or fixtures), or a free object moved or turned beyond
     tolerance. Held objects move with their hand, which the joints already account for;
     an attachment no longer held is a free object. Unsettled and released ones are not
-    compared. The expected releases and allowance changes are the only allowed scene
-    changes: with them, the scene is compared by content rather than by revision."""
+    compared by pose. The expected releases, removals and allowance changes are the only
+    allowed scene changes: with them, the scene is compared by content rather than by
+    revision. With registered object poses, every object must also be in the state the
+    prediction expects: a release unknown, a removal removed, and every other object as
+    predicted."""
     predicted = prediction.state
     changes = []
     # Without releases or allowance changes the scene must not have changed at all. With
@@ -324,7 +348,7 @@ def _scene_changes(
     # released ones, each changed one with exactly its expected allow set, the same
     # fixtures, every object.
     base = prediction.base_revision
-    expects = prediction.releases or prediction.allowances
+    expects = prediction.releases or prediction.allowances or prediction.removals
     if actual.revision < base or (not expects and actual.revision != base):
         changes.append(
             Discrepancy(
@@ -338,12 +362,25 @@ def _scene_changes(
     held = {o.name for o in prediction.held}
     held |= {a.object for a in predicted.attachments if a.held}
     held |= {a.object for a in actual.attachments if a.held}
-    held |= set(prediction.unsettled) | set(prediction.releases)
+    held |= set(prediction.unsettled) | set(prediction.releases) | set(prediction.removals)
     now = {o.name: o for o in actual.objects}
     for o in predicted.objects:
+        there = now.get(o.name)
+        if there is not None and o.status is not ObjectStatus.MEASURED:
+            expected = o.status
+            if o.name in prediction.releases:
+                expected = ObjectStatus.UNKNOWN
+            elif o.name in prediction.removals:
+                expected = ObjectStatus.REMOVED
+            if there.status is not expected:
+                changes.append(
+                    Discrepancy(
+                        what=f"object {o.name} state", predicted=0.0, actual=1.0, tolerance=0.0
+                    )
+                )
+                continue
         if o.name in held:
             continue
-        there = now.get(o.name)
         if there is None:
             changes.append(
                 Discrepancy(
@@ -354,6 +391,8 @@ def _scene_changes(
                 )
             )
             continue
+        if o.pose is None or there.pose is None:
+            continue  # unknown or removed, as predicted: nothing to compare
         moved = math.dist(there.pose.position, o.pose.position)
         if moved > object_tolerance_m:
             changes.append(
@@ -397,8 +436,18 @@ class RobotContext:
     """
 
     def __init__(
-        self, description: RobotDescription, runtime: Runtime, *, sinks: Sequence[TraceSink] = ()
+        self,
+        description: RobotDescription,
+        runtime: Runtime,
+        *,
+        sinks: Sequence[TraceSink] = (),
+        object_poses: ObjectPoses = ObjectPoses.LIVE,
     ) -> None:
+        if not isinstance(object_poses, ObjectPoses):
+            raise ValidationError(
+                "wrong_type", "object_poses must be an ObjectPoses", path="object_poses"
+            )
+        self._object_poses = object_poses
         self._description = description
         self._fingerprint = description.fingerprint()
         self._runtime = runtime
@@ -533,7 +582,12 @@ class RobotContext:
             if update.stamp.clock != info.clock:
                 raise self._breach(f"update on clock {update.stamp.clock!r}, not {info.clock!r}")
             self._info, self._now, self._state = info, update.stamp, ContextState.OPEN
-            self._scene = SceneState(revision=0, objects=info.objects, fixtures=info.fixtures)
+            self._scene = SceneState(
+                revision=0,
+                objects=info.objects,
+                fixtures=info.fixtures,
+                object_poses=self._object_poses,
+            )
             self._emit(TraceKind.OPENED, self._runtime_source, info)
             if info.objects or info.fixtures:
                 self._emit(TraceKind.SCENE, "context", self._scene)
@@ -770,6 +824,12 @@ class RobotContext:
         (or the end effector's own frame, for a tool). With ``revision``, the scene must
         not have changed since then. Nothing changes unless it succeeds. Declaring an
         attachment never changes how the runtime simulates or drives the robot.
+
+        With registered object poses, the default transform is where the registered pose
+        is from the end effector, at the measured joints; an object with no registered
+        pose refuses (``unknown_object_pose``). The runtime still resolves and tracks the
+        object's actual transform, as privileged reference data: the declared one is
+        committed, and the two are traced together (``attached``).
         """
         self._require("attach")
         check_name(source, path="source")
@@ -784,6 +844,24 @@ class RobotContext:
         allowed = self._allowed(effector, scene, allow)
         if transform is not None and not isinstance(transform, Pose):
             raise ValidationError("wrong_type", "transform must be a Pose", path="transform")
+        declared: Pose | None = None
+        if scene.object_poses is ObjectPoses.REGISTERED:
+            status = scene.object_status(object)
+            if status is ObjectStatus.REMOVED:
+                raise ValidationError(
+                    "removed_object", f"{object!r} was removed from the scene", path="object"
+                )
+            registration = scene.registration(object)
+            if transform is not None:
+                declared = transform
+            elif registration is None:
+                raise ValidationError(
+                    "unknown_object_pose", f"{object!r} has no registered pose", path="object"
+                )
+            else:
+                hand = self._effector_pose(self._measured(scene), end_effector)
+                declared = _compose(_inverse(hand), registration.pose)
+            transform = None  # the runtime resolves the actual transform as its reference
         resolve = transform is None
         if transform is None:  # a placeholder the runtime replaces
             transform = Pose(position=(0.0, 0.0, 0.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0))
@@ -804,13 +882,35 @@ class RobotContext:
             self._accept_direct(answer.stamp)  # the transform was measured then
         except ValidationError as error:
             raise self._abandon(object, error) from None
+        registrations = scene.registrations
+        if declared is not None:
+            position, rotation = _pose_errors(declared, tracked.transform)
+            self._emit(
+                TraceKind.ATTACHED,
+                source,
+                AttachmentReference(
+                    object=object,
+                    declared=declared,
+                    tracked=tracked.transform,
+                    stamp=answer.stamp,
+                    position_error=position,
+                    rotation_error=rotation,
+                ),
+                answer.stamp,
+            )
+            tracked = replace(tracked, transform=declared)
+            registrations = tuple(r for r in registrations if r.object != object)
         attachments = sorted((*scene.attachments, tracked), key=lambda a: a.object)
-        return self._commit(replace(scene, attachments=tuple(attachments)), source)
+        return self._commit(
+            replace(scene, attachments=tuple(attachments), registrations=registrations), source
+        )
 
     def detach(
         self, object: str, *, revision: int | None = None, source: str = "client"
     ) -> SceneState:
-        """Remove ``object``'s attachment and its allowances; return the new scene."""
+        """Remove ``object``'s attachment and its allowances; return the new scene. With
+        registered object poses, its pose is then unknown until it is registered again or
+        removed."""
         self._require("detach")
         check_name(source, path="source")
         scene = self._current_scene(revision)
@@ -820,10 +920,95 @@ class RobotContext:
         remaining = tuple(a for a in scene.attachments if a.object != object)
         return self._commit(replace(scene, attachments=remaining), source)
 
+    def register(
+        self,
+        object: str,
+        pose: Pose,
+        *,
+        stamp: Timestamp,
+        source: str,
+        revision: int | None = None,
+    ) -> SceneState:
+        """Register a free ``object`` at ``pose``, as observed at ``stamp`` by ``source``;
+        return the new scene. Snapshots then hold it there until it is registered again,
+        attached, or removed, however the world moves. Only with registered object poses
+        (``registration_unavailable``)."""
+        self._require("register")
+        check_name(source, path="source")
+        scene = self._registered_scene(revision)
+        self._check_free(scene, object)
+        if not isinstance(pose, Pose):
+            raise ValidationError("wrong_type", "pose must be a Pose", path="pose")
+        if not isinstance(stamp, Timestamp):
+            raise ValidationError("wrong_type", "stamp must be a Timestamp", path="stamp")
+        if stamp.clock != self.now.clock:
+            raise ValidationError(
+                "clock_mismatch",
+                f"stamp is on {stamp.clock!r}, not {self.now.clock!r}",
+                path="stamp",
+            )
+        if stamp.time_ns > self.now.time_ns:
+            raise ValidationError(
+                "future_stamp", "a pose cannot be observed later than now", path="stamp"
+            )
+        registration = Registration(object=object, pose=pose, stamp=stamp, source=source)
+        registrations = sorted(
+            (*(r for r in scene.registrations if r.object != object), registration),
+            key=lambda r: r.object,
+        )
+        removed = tuple(name for name in scene.removed if name != object)
+        return self._commit(
+            replace(scene, registrations=tuple(registrations), removed=removed), source
+        )
+
+    def remove(self, object: str, *, source: str, revision: int | None = None) -> SceneState:
+        """Take a free ``object`` out of the active scene, by ``source``'s policy; return the
+        new scene. Planning ignores it until it is registered again. Only with registered
+        object poses (``registration_unavailable``)."""
+        self._require("remove")
+        check_name(source, path="source")
+        scene = self._registered_scene(revision)
+        self._check_free(scene, object)
+        if object in scene.removed:
+            raise ValidationError(
+                "already_removed", f"{object!r} is already removed", path="object"
+            )
+        registrations = tuple(r for r in scene.registrations if r.object != object)
+        removed = tuple(sorted((*scene.removed, object)))
+        return self._commit(replace(scene, registrations=registrations, removed=removed), source)
+
+    def _registered_scene(self, revision: int | None) -> SceneState:
+        scene = self._current_scene(revision)
+        if scene.object_poses is not ObjectPoses.REGISTERED:
+            raise CapabilityError(
+                "registration_unavailable", "this context's object poses are live, not registered"
+            )
+        return scene
+
+    def _check_free(self, scene: SceneState, object: str) -> None:
+        if object not in scene.objects:
+            raise ValidationError(
+                "unknown_reference", f"{object!r} is not a scene object", path="object"
+            )
+        if scene.attachment(object) is not None:
+            raise ValidationError("already_attached", f"{object!r} is attached", path="object")
+
     def snapshot(self) -> SceneSnapshot:
-        """Capture the robot, the objects, and the scene now, for planning."""
-        info = self._require("snapshot")
+        """Capture the robot, the objects, and the scene now, for planning. With registered
+        object poses, each object is as registered, carried by its attachment, unknown,
+        or removed (``ObjectStatus``), never as the runtime measures it."""
+        self._require("snapshot")
         scene = self.scene
+        taken = self._measured(scene)
+        if scene.object_poses is ObjectPoses.REGISTERED:
+            taken = self._registered_snapshot(taken, scene)
+        self._emit(TraceKind.SNAPSHOT, self._runtime_source, taken, taken.stamp)
+        self._captured[taken.fingerprint()] = taken
+        return taken
+
+    def _measured(self, scene: SceneState) -> SceneSnapshot:
+        """The runtime's snapshot, checked and accepted: its own measurements."""
+        info = self.info
         taken = self._snapshots.snapshot(scene)
         if (
             not isinstance(taken, SceneSnapshot)
@@ -835,12 +1020,52 @@ class RobotContext:
             or tuple(o.name for o in taken.objects) != scene.objects
             or taken.fixtures != scene.fixtures
             or taken.attachments != scene.attachments
+            or any(o.status is not ObjectStatus.MEASURED for o in taken.objects)
         ):
             raise self._breach(f"snapshot answered {taken!r} for scene {scene!r}")
         self._accept_direct(taken.stamp)
-        self._emit(TraceKind.SNAPSHOT, self._runtime_source, taken, taken.stamp)
-        self._captured[taken.fingerprint()] = taken
         return taken
+
+    def _registered_snapshot(self, measured: SceneSnapshot, scene: SceneState) -> SceneSnapshot:
+        """``measured`` with each object as ``scene`` registers it: a registered one at its
+        registration, an attached one where its end effector, at the measured joints,
+        carries it, and an unknown or removed one without a pose."""
+        hands: dict[str, Pose] = {}
+        objects = []
+        for o in measured.objects:
+            status = scene.object_status(o.name)
+            pose: Pose | None = None
+            if status is ObjectStatus.REGISTERED:
+                registration = scene.registration(o.name)
+                assert registration is not None
+                pose = registration.pose
+            elif status is ObjectStatus.ATTACHED:
+                attachment = scene.attachment(o.name)
+                assert attachment is not None
+                effector = attachment.end_effector
+                if effector not in hands:
+                    hands[effector] = self._effector_pose(measured, effector)
+                pose = _compose(hands[effector], attachment.transform)
+            objects.append(ObjectState(name=o.name, pose=pose, status=status))
+        return replace(measured, objects=tuple(objects))
+
+    def _effector_pose(self, measured: SceneSnapshot, end_effector: str) -> Pose:
+        """``end_effector``'s world pose at ``measured``'s joints, by the kinematics of the
+        manipulator that carries it."""
+        frame = self._description.end_effector(end_effector).frame
+        group = next(
+            (m.group for m in self._description.manipulators if m.end_effector == end_effector),
+            None,
+        )
+        if group is None:
+            raise ValidationError(
+                "unknown_reference",
+                f"no manipulator carries {end_effector!r}",
+                path="end_effector",
+            )
+        scene = self._snapshots.planning_scene(measured, group)
+        q = tuple(measured.position(j) for j in self._description.group(group).joints)
+        return scene.forward_kinematics(q, frame)
 
     def planning_scene(
         self,
@@ -860,6 +1085,13 @@ class RobotContext:
         self._require("planning_scene")
         snapshot = _state(snapshot)
         self._check_world(snapshot)
+        unknown = [o.name for o in snapshot.objects if o.status is ObjectStatus.UNKNOWN]
+        if unknown:
+            raise ValidationError(
+                "unknown_object_pose",
+                f"no pose is known for {', '.join(unknown)}: register or remove them",
+                path="snapshot.objects",
+            )
         if isinstance(clearance_m, bool) or not isinstance(clearance_m, numbers.Real):
             raise ValidationError("wrong_type", "clearance_m must be a number", path="clearance_m")
         clearance_m = float(clearance_m)
@@ -1023,6 +1255,7 @@ class RobotContext:
         *,
         unsettled: Iterable[str] = (),
         releases: Mapping[str, Pose] | None = None,
+        removals: Iterable[str] = (),
         allowances: Mapping[str, Iterable[str]] | None = None,
         joints: Mapping[str, float] | None = None,
     ) -> PredictedSnapshot:
@@ -1042,12 +1275,16 @@ class RobotContext:
         prediction runs, such as a can dropped where the motion ends, each with the pose
         it is expected to come to rest at. In the predicted state each is detached and at
         that pose, for planning only; on arrival each must have been detached, and its
-        pose is not compared. ``allowances`` names held objects whose attachment is
+        pose is not compared (with registered object poses, it must be unknown).
+        ``removals`` names held objects expected to be released and then removed from the
+        scene, as an application does with one it assumes landed; only with registered
+        object poses. In the predicted state each is removed; on arrival each must be.
+        ``allowances`` names held objects whose attachment is
         expected to be re-declared, after ``execution`` and before the plan runs, with
         another allow set and the same transform, such as a grasp narrowing what a lifted
         object may touch to the hand. In the predicted state each attachment has that
         allow set, checked as ``attach`` checks it; on arrival each must have exactly it.
-        Releases and allowance changes are the only scene changes allowed. ``joints``
+        Releases, removals and allowance changes are the only scene changes allowed. ``joints``
         sets joints the motion does not move to the positions expected when the plan
         runs, such as a gripper's, opened by that release; for planning only."""
         self._require("predict")
@@ -1092,18 +1329,31 @@ class RobotContext:
         positions = tuple(end.get(j, v) for j, v in zip(base.joints, base.positions, strict=True))
         moved = self._carried(base, command.group, command.joints, command.positions[-1])
         releases = dict(releases or {})
+        removing = tuple(sorted(set(removals)))
+        registered = self.scene.object_poses is ObjectPoses.REGISTERED
+        if removing and not registered:
+            raise CapabilityError(
+                "registration_unavailable", "only registered object poses can be removed"
+            )
         held_now = {a.object for a in base.attachments}
-        for name in releases:
-            if name not in held_now:
-                raise ValidationError(
-                    "unknown_reference",
-                    f"{name!r} is not held, so it cannot be released",
-                    path="releases",
-                )
+        for path, names in (("releases", tuple(releases)), ("removals", removing)):
+            for name in names:
+                if name not in held_now:
+                    raise ValidationError(
+                        "unknown_reference",
+                        f"{name!r} is not held, so it cannot be released",
+                        path=path,
+                    )
+        if set(releases) & set(removing):
+            raise ValidationError(
+                "inconsistent_prediction",
+                "an object is either released or removed, not both",
+                path="removals",
+            )
         changed: dict[str, tuple[str, ...]] = {}
         for name, allow in (allowances or {}).items():
             current = next((a for a in base.attachments if a.object == name), None)
-            if current is None or name in releases:
+            if current is None or name in releases or name in removing:
                 raise ValidationError(
                     "unknown_reference",
                     f"{name!r} is not held, or is released, so its allowance cannot change",
@@ -1112,13 +1362,20 @@ class RobotContext:
             effector = self._description.end_effector(current.end_effector)
             changed[name] = self._allowed(effector, base, allow)
         moved.update(releases)
-        objects = tuple(
-            replace(o, pose=moved[o.name]) if o.name in moved else o for o in base.objects
-        )
+        released = ObjectStatus.REGISTERED if registered else ObjectStatus.MEASURED
+
+        def predicted(o: ObjectState) -> ObjectState:
+            if o.name in removing:
+                return ObjectState(name=o.name, status=ObjectStatus.REMOVED)
+            if o.name in releases:
+                return ObjectState(name=o.name, pose=releases[o.name], status=released)
+            return replace(o, pose=moved[o.name]) if o.name in moved else o
+
+        objects = tuple(predicted(o) for o in base.objects)
         attachments = tuple(
             replace(a, allow=changed[a.object]) if a.object in changed else a
             for a in base.attachments
-            if a.object not in releases
+            if a.object not in releases and a.object not in removing
         )
         # It ends its duration after the runtime accepted it, not after the snapshot it
         # was planned on: time may pass in between.
@@ -1136,10 +1393,15 @@ class RobotContext:
             source=execution.id,
             command=fingerprint(command),
             moved=tuple(command.joints),
-            held=tuple(o for o in objects if o.name in moved and o.name not in releases),
+            held=tuple(
+                o
+                for o in objects
+                if o.name in moved and o.name not in releases and o.name not in removing
+            ),
             unsettled=tuple(sorted(set(unsettled))),
             expected=tuple(sorted(expected)),
             releases=tuple(sorted(releases)),
+            removals=removing,
             allowances=tuple(sorted(changed)),
             world=base.model,
             lineage=(base_id,),
@@ -1355,6 +1617,7 @@ class RobotContext:
         there = {o.name: o.pose for o in projected.objects}
         for held in prediction.held:
             pose = there.get(held.name)
+            assert held.pose is not None  # a held object is carried, so it has a pose
             if pose is None:
                 raise refuse(f"carries {held.name!r}, which the projection does not have")
             moved = math.dist(held.pose.position, pose.position)
@@ -1504,6 +1767,12 @@ class RobotContext:
                 discrepancies=tuple(changed),
             )
 
+        unknown = [o.name for o in actual.objects if o.status is ObjectStatus.UNKNOWN]
+        if unknown:  # released as predicted, but the plan cannot be validated around them
+            return refuse(
+                "continuation_invalid",
+                f"no pose is known for {', '.join(unknown)}: register or remove them",
+            )
         rebase = getattr(planner, "rebase", None)
         if rebase is None:
             return refuse("rebase_unsupported", f"planner {planner.name!r} cannot rebase a plan")
@@ -1956,6 +2225,11 @@ class RobotContext:
             raise incompatible("its joints are not this description's, in order", "joints")
         if tuple(o.name for o in snapshot.objects) != info.objects:
             raise incompatible("its objects are not this scene's", "objects")
+        live = self.scene.object_poses is ObjectPoses.LIVE
+        if any((o.status is ObjectStatus.MEASURED) != live for o in snapshot.objects):
+            raise incompatible(
+                f"its object poses are not {self.scene.object_poses.value}", "objects"
+            )
         if snapshot.fixtures != info.fixtures:
             raise incompatible("its fixtures are not this scene's", "fixtures")
         frames = {f.name for f in self._description.frames}
@@ -2302,12 +2576,15 @@ class RobotContext:
                 )
 
     def _apply_violation(self, violation: AttachmentViolation) -> None:
-        """Record that a held object left its grasp. The attachment stays until detached."""
+        """Record that a held object left its grasp. The attachment stays until detached.
+        With registered object poses it is only traced: the scene keeps it held."""
         scene = self.scene
         current = scene.attachment(violation.object)
         if current is None or not current.held:
             raise self._breach(f"violation reported for {violation.object!r}, which is not held")
         self._emit(TraceKind.VIOLATION, self._runtime_source, violation, violation.stamp)
+        if scene.object_poses is ObjectPoses.REGISTERED:
+            return  # privileged reference data: it never changes the registered scene
         attachments = tuple(
             replace(a, held=False) if a is current else a for a in scene.attachments
         )
