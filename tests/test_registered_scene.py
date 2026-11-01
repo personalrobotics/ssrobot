@@ -6,12 +6,14 @@ The example arm and the pedestal's box, in a context opened with
 as the test's registration source and as the reference the snapshot is compared to.
 - ``geometry``: before any registration the box's pose is unknown, and planning refuses
   it (``unknown_object_pose``). Registered where it is, a configuration that puts the
-  right finger into it (``INTO``) is in contact with it, as in a live context. Removed,
-  that configuration is valid and planned to, though the box is still there. Registered
-  elsewhere, where ``ASIDE`` would put the finger into it, the contact moves with the
-  registration: ``ASIDE`` is in contact and refused, ``INTO`` is planned to. The box,
-  then pushed off the pedestal in MuJoCo, moves in its pose channel and not in the
-  snapshot, at an unchanged scene revision; registering it again moves it there.
+  right finger into it (``INTO``) is in contact with it, as in a live context, and a
+  grasp planned before it happens (``with_attachments``) carries the box from its
+  registration. Removed, that configuration is valid and planned to, though the box is
+  still there. Registered elsewhere, where ``ASIDE`` would put the finger into it, the
+  contact moves with the registration: ``ASIDE`` is in contact and refused, ``INTO``
+  is planned to. The box, then pushed off the pedestal in MuJoCo, moves in its pose
+  channel and not in the snapshot, at an unchanged scene revision; registering it
+  again moves it there.
 - ``carry``: registered 1 cm from where it is, the box is grasped and attached with no
   transform. The declared transform comes from the registration, and the ``attached``
   record holds it beside the transform MuJoCo resolved, 1 cm apart. Lifted, the
@@ -47,6 +49,7 @@ from typing import Any
 import pytest
 
 from ssrobot import (
+    Attachment,
     AttachmentReference,
     ConfigurationGoal,
     JointRest,
@@ -179,6 +182,22 @@ def _geometry() -> dict[str, Any]:
             "status": _box(ctx).status.value,
             "into": _contacts(ctx, INTO),
             "aside": _contacts(ctx, ASIDE),
+        }
+        # A grasp planned before it happens: the box carried from where it is registered.
+        here = ctx.snapshot()
+        grasped = here.with_attachments(
+            (
+                Attachment(
+                    object="box",
+                    end_effector="hand",
+                    transform=Pose(position=(0.0, 0.0, 0.0), quat_wxyz=(1.0, 0.0, 0.0, 0.0)),
+                    allow=(),
+                ),
+            )
+        )
+        out["planned_grasp"] = {
+            "status": grasped.objects[0].status.value,
+            "pose_kept": grasped.objects[0].pose == here.objects[0].pose,
         }
         ctx.remove("box", source="test_policy")
         out["removed"] = {
@@ -384,6 +403,7 @@ def test_registered_object_poses_hold_until_registered_again(artifacts: Path) ->
     }
     # Registered where it is, geometry agrees with the live scene.
     assert geometry["registered_where_it_is"] == {"status": "registered", **geometry["live"]}
+    assert geometry["planned_grasp"] == {"status": "attached", "pose_kept": True}
     # Removed, the box is out of planning though MuJoCo still has it on the pedestal.
     assert geometry["removed"] == {"status": "removed", "into": [], "plan_into": "succeeded"}
     # Registered elsewhere, geometry and planning follow the registration, not MuJoCo.

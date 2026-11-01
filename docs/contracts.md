@@ -332,6 +332,10 @@ validated there, and reported per object in each snapshot:
 - **Unknown poses refuse.** `planning_scene` refuses a snapshot or prediction with an
   unknown object (`unknown_object_pose`), and `ObjectState.known_pose()` refuses one
   without a pose; nothing falls back to the runtime's measurement.
+- **Hypothetical attachments.** `SceneSnapshot.with_attachments(attachments)` is a
+  snapshot with exactly those attachments, such as a grasp planned before it happens,
+  as `start_chains` stages declare them: a newly attached object is carried from where
+  it is in the snapshot, and one no longer attached has no known pose.
 - **Live object poses refuse registration:** `register`, `remove` and `predict`'s
   `removals` fail with `registration_unavailable` (`CapabilityError`).
 

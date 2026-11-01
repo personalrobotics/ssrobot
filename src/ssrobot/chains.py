@@ -824,7 +824,7 @@ class ChainsRun:
         state = previous.projection.state
         if built.attachments is None:
             return state
-        return replace(state, attachments=tuple(built.attachments))
+        return state.with_attachments(built.attachments)
 
     def _react(self) -> bool:
         """Take every stage that has ended: build the next stage of its attempt, settle

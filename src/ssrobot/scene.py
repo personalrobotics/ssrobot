@@ -7,7 +7,7 @@ import enum
 import math
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from ssrobot._wire import Record, Value, fingerprint, meta
@@ -361,6 +361,31 @@ class SceneSnapshot(Record):
     def fingerprint(self) -> str:
         """Content identity: the SHA-256 of the canonical encoding."""
         return fingerprint(self)
+
+    def with_attachments(self, attachments: Sequence[Attachment]) -> SceneSnapshot:
+        """This snapshot with exactly ``attachments``, such as a grasp's planned before it
+        happens. With registered object poses, an object newly attached is carried from
+        where it is here, and one no longer attached has no known pose; an object with
+        no pose cannot be attached (``unknown_object_pose``)."""
+        declared = tuple(sorted(attachments, key=lambda a: a.object))
+        held = {a.object for a in declared}
+        objects = []
+        for o in self.objects:
+            if o.status is ObjectStatus.MEASURED:
+                objects.append(o)
+            elif o.name in held:
+                if o.pose is None:
+                    raise ValidationError(
+                        "unknown_object_pose",
+                        f"{o.name!r} has no pose to attach",
+                        path="attachments",
+                    )
+                objects.append(replace(o, status=ObjectStatus.ATTACHED))
+            elif o.status is ObjectStatus.ATTACHED:
+                objects.append(ObjectState(name=o.name, status=ObjectStatus.UNKNOWN))
+            else:
+                objects.append(o)
+        return replace(self, attachments=declared, objects=tuple(objects))
 
     def position(self, joint: str) -> float:
         """The snapshot's position of ``joint``."""
