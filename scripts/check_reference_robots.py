@@ -25,8 +25,7 @@ For each robot in references/robots.toml, this script:
    from the same move where there is nothing to touch, and the same command where there
    is nothing to touch, twice;
 9. runs the joint-rest proof on it (#221, #224), ``rested``: for every joint-position
-   channel whose rest criteria the robot's MuJoCo profile declares, or, where it declares
-   none, the robot's ``scenario.rest`` does (#236), a small move, then a
+   channel whose rest criteria the robot's MuJoCo profile declares, a small move, then a
    ``JointRest`` watch from the end of its execution, checked against the readings
    recorded every tick, which must equal the simulated state, twice.
 
@@ -1195,17 +1194,9 @@ def _range_within(run: list[list[float]], variation: tuple[float, ...]) -> bool:
     )
 
 
-def rested(
-    package: Any,
-    keyframe: str | None,
-    scene: Path | None,
-    out: Path,
-    supplied: list[dict[str, Any]],
-) -> dict[str, Any]:
+def rested(package: Any, keyframe: str | None, scene: Path | None, out: Path) -> dict[str, Any]:
     """The joint-rest proof (#221, #224): for every joint-position channel whose rest
-    criteria the robot's MuJoCo profile declares, or, where it declares none, the robot's
-    ``[[robots.scenario.rest]]`` in robots.toml (``supplied``, #236), passed to the watch
-    explicitly, move the channel's group a small step
+    criteria the robot's MuJoCo profile declares, move the channel's group a small step
     toward the middle of each joint's range over one second, and when its execution ends,
     as a client does after a transfer, watch ``JointRest`` on the group by the declared
     criteria. With the scenario's scene, so its object is observed too. Every tick, until
@@ -1214,14 +1205,7 @@ def rested(
     change them. The watch's window must be recorded readings spanning the dwell within the
     variation, and the readings from the window's start to the end must stay within it: the
     group came to rest and stayed there. Writes ``rested.json``."""
-    from ssrobot import (
-        JointRest,
-        JointTrajectory,
-        ObservationRequest,
-        Quantity,
-        RestCriteria,
-        RobotContext,
-    )
+    from ssrobot import JointRest, JointTrajectory, ObservationRequest, Quantity, RobotContext
     from ssrobot.mujoco import MujocoRuntime
 
     out.mkdir(parents=True, exist_ok=True)
@@ -1234,10 +1218,6 @@ def rested(
     with RobotContext(description, runtime()) as ctx:
         declared = {r.channel: r.criteria for r in ctx.info.rest}
         objects = [c.name for c in ctx.info.scene_channels if c.quantity is Quantity.POSE]
-    explicit = {r["channel"]: RestCriteria(**r) for r in supplied}
-    # A references entry stands in only where the package's profile declares none.
-    assert not explicit.keys() & declared.keys(), "rest criteria in the package and robots.toml"
-    declared.update(explicit)
     channels = [
         c
         for c in description.channels
@@ -1267,8 +1247,7 @@ def rested(
             end_ns = ctx.now.time_ns + move.time_from_start_ns[-1]
             status = ctx.run_until(ctx.submit(move), max_ticks=5_000)
             watch = ctx.watch_rest(
-                JointRest(spec.source, criteria=explicit.get(spec.name)),
-                deadline_ns=ctx.now.time_ns + REST_DEADLINE_NS,
+                JointRest(spec.source), deadline_ns=ctx.now.time_ns + REST_DEADLINE_NS
             )
             samples: list[tuple[int, list[float]]] = []
             exact = True
@@ -1302,7 +1281,6 @@ def rested(
             "dwell_ns": criteria.dwell_ns,
             "variation": list(criteria.variation),
             "source": criteria.source,
-            "declared_in": "robots.toml" if spec.name in explicit else "profile",
             "observed_exactly": exact,
             "objects_observed": objects,
             "window_is_recorded": first is not None
@@ -1424,10 +1402,8 @@ def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] |
             }
     # Twice, to show the rest proof's artifact is deterministic.
     rest_scene = ROOT / spec["scene"] if spec is not None and "scene" in spec else None
-    supplied = [] if spec is None else spec.get("rest", [])
     runs = [
-        rested(package, keyframe, rest_scene, out.parent / "rested" / f"run-{i}", supplied)
-        for i in (1, 2)
+        rested(package, keyframe, rest_scene, out.parent / "rested" / f"run-{i}") for i in (1, 2)
     ]
     record["rested"] = runs[0]
     record["rested_identical"] = (out.parent / "rested" / "run-1" / "rested.json").read_bytes() == (

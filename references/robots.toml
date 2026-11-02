@@ -76,7 +76,7 @@ quat_in_frame_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
 [[robots]]
 name = "ada"
 repository = "personalrobotics/ada_assets"
-commit = "8ddf90643bd1793f7de130ea10963fcf0b6ca8df"
+commit = "9f5cfacd8d14ba5b298599ee57125c47ed93f8ea"
 module = "ada_assets"
 package_root = "src/ada_assets"
 # No keyframe: the package's MuJoCo profile starts it at "resting" (#95,
@@ -151,11 +151,12 @@ duration_ns = 3_000_000_000
 # ADA with an empty hand (#236, personalrobotics/ada_assets#43): the same arm and gripper
 # without the articutool, its end effector the palm grasp site, sstsr's canonical
 # parallel-jaw frame (z along the approach, y along the fingers' opening). The package is
-# the models/ directory of the same repository.
+# the models/ directory of the same repository; its MuJoCo profile declares its rest
+# criteria (personalrobotics/ada_assets#45).
 [[robots]]
 name = "ada_hand"
 repository = "personalrobotics/ada_assets"
-commit = "8ddf90643bd1793f7de130ea10963fcf0b6ca8df"
+commit = "9f5cfacd8d14ba5b298599ee57125c47ed93f8ea"
 module = "ada_assets.models"
 package_root = "src/ada_assets/models"
 # No keyframe: the package's MuJoCo profile starts it at "resting", fingers open.
@@ -227,23 +228,3 @@ radius = 0.025
 half_length = 0.05
 position_in_frame = [0.0, 0.0, 0.0641]
 quat_in_frame_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
-
-# When arm_q counts as at rest in MuJoCo: every joint within its variation for 370 ms,
-# read every 2 ms control tick with none dropped. The package's profile declares no rest
-# criteria (ADA's were measured with the articutool, a different load), so they are
-# declared here until the package declares its own; the checks refuse both. The
-# variation is declared, the bound on what counts as still: ADA's, each joint within 2
-# steps of 2*pi/2^17 rad, for the same JACO2 joints. The dwell is measured against it
-# on the readings exactly as observed: one tick longer than the longest interval they
-# stayed within it and then moved (368 ms), over reaches, out-and-backs, pauses, and
-# single-joint moves from the keyframe and the four named configurations, judged from
-# each trajectory's end, 28 of 28 judged trials passing. The arm cannot raise the
-# cylinder by its first joint, so no payload trial is judged. MuJoCo source's values;
-# the hardware is unmeasured. Evidence: references/evidence/ada_hand-mujoco-rest.json,
-# written by scripts/calibrate_rest.py --robot ada_hand at ssrobot 8711dd8bf5bd.
-[[robots.scenario.rest]]
-channel = "arm_q"
-max_gap_ns = 2_000_000
-dwell_ns = 370_000_000
-variation = [9.587379924285257e-05, 9.587379924285257e-05, 9.587379924285257e-05, 9.587379924285257e-05, 9.587379924285257e-05, 9.587379924285257e-05]
-source = "MuJoCo source's values: variation declared per joint ([9.587379924285257e-05, 9.587379924285257e-05, 9.587379924285257e-05, 9.587379924285257e-05, 9.587379924285257e-05, 9.587379924285257e-05]), the bound on what counts as still; dwell one tick longer than the longest interval that looked still and then moved, 368000000 ns, judged from each trajectory's end; measured by ssrobot scripts/calibrate_rest.py at ssrobot 8711dd8bf5bd on personalrobotics/ada_assets@8ddf90643bd1; the hardware is unmeasured; references/evidence/ada_hand-mujoco-rest.json sha256 65a9494032daa5454a442b1baef20db7c4b1b3e947a6e17119223e418933d1dc"

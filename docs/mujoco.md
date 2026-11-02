@@ -489,9 +489,7 @@ interval in which the readings stay within that variation and then move beyond i
 again, after a commanded motion ends, over isolated traces of the motions the stack
 commands (`scripts/calibrate_rest.py`). `max_gap_ns` is the control tick. The evidence
 belongs with the profile that declares the values, cited from it with its command and
-commits. For a reference robot whose profile declares none, `references/robots.toml`
-may declare them in its scenario's `[[robots.scenario.rest]]`, with their evidence under
-`references/evidence/`, until the package declares its own (#236).
+commits.
 
 ## Execution
 
