@@ -37,6 +37,7 @@ from ssrobot.continuation import (
     ContinuationReport,
     ContinuationResult,
     Discrepancy,
+    DiscrepancyKind,
     PlanProjection,
     PredictedSnapshot,
     check_tolerance,
@@ -79,6 +80,7 @@ from ssrobot.planning_contracts import (
     PlanResult,
     PoseGoal,
     PreparedTrajectory,
+    RebasingPlanner,
     TrajectoryProcessor,
     Tsr,
     TsrGoal,
@@ -89,6 +91,7 @@ from ssrobot.planning_contracts import (
     check_result,
     check_validation,
     negotiate,
+    planned,
     state_subject,
 )
 from ssrobot.preparation import prepare
@@ -127,8 +130,7 @@ from ssrobot.validation import (
 )
 
 if TYPE_CHECKING:
-    from ssrobot.alternatives import Alternative, AlternativesRun
-    from ssrobot.chains import Chain, ChainsRun
+    from ssrobot.chains import Chain, Chains, ChainsRun
 
 
 class ContextState(enum.StrEnum):
@@ -159,6 +161,7 @@ ALLOWED_STATES: dict[str, frozenset[ContextState]] = {
     "snapshot": frozenset({_S.OPEN, _S.FAULTED}),
     "planning_scene": frozenset({_S.OPEN, _S.FAULTED}),
     "detach": frozenset({_S.OPEN, _S.FAULTED}),
+    "set_attachment_allowances": frozenset({_S.OPEN}),
     "register": frozenset({_S.OPEN, _S.FAULTED}),
     "remove": frozenset({_S.OPEN, _S.FAULTED}),
     "predict": frozenset({_S.OPEN}),
@@ -333,32 +336,38 @@ def _scene_changes(
     object_tolerance_rad: float,
 ) -> list[Discrepancy]:
     """How ``actual`` differs from ``prediction`` beyond the joints: a scene change (a new
-    revision, other attachments or fixtures), or a free object moved or turned beyond
-    tolerance. Held objects move with their hand, which the joints already account for;
-    an attachment no longer held is a free object. Unsettled and released ones are not
-    compared by pose. The expected releases, removals and allowance changes are the only
-    allowed scene changes: with them, the scene is compared by content rather than by
-    revision. With registered object poses, every object must also be in the state the
-    prediction expects: a release unknown, a removal removed, and every other object as
-    predicted."""
+    revision, other attachments or fixtures), or a free object moved or turned
+    beyond tolerance. Held objects move with their hand, which the joints already
+    account for; an attachment no longer held is a free object. Unsettled and
+    released ones are not compared by pose. The expected releases and removals are
+    the only allowed scene changes: with them, the scene is compared by content
+    rather than by revision. With registered object poses, every object must also be
+    in the state the prediction expects: a release unknown, a removal removed, and
+    every other object as predicted."""
     predicted = prediction.state
     changes = []
-    # Without releases or allowance changes the scene must not have changed at all. With
-    # them it has, so it is compared by content instead: the attachments less the
-    # released ones, each changed one with exactly its expected allow set, the same
-    # fixtures, every object.
+    # Without releases or removals the scene must not have changed at all. With them it
+    # has, so it is compared by content instead: the attachments less the released ones,
+    # the same fixtures, every object.
     base = prediction.base_revision
-    expects = prediction.releases or prediction.allowances or prediction.removals
+    expects = prediction.releases or prediction.removals
     if actual.revision < base or (not expects and actual.revision != base):
         changes.append(
             Discrepancy(
-                what="revision", predicted=float(base), actual=float(actual.revision), tolerance=0.0
+                kind=DiscrepancyKind.REVISION,
+                predicted=float(base),
+                actual=float(actual.revision),
+                tolerance=0.0,
             )
         )
     if actual.attachments != predicted.attachments:
-        changes.append(Discrepancy(what="attachments", predicted=0.0, actual=1.0, tolerance=0.0))
+        changes.append(
+            Discrepancy(kind=DiscrepancyKind.ATTACHMENTS, predicted=0.0, actual=1.0, tolerance=0.0)
+        )
     if actual.fixtures != predicted.fixtures:
-        changes.append(Discrepancy(what="fixtures", predicted=0.0, actual=1.0, tolerance=0.0))
+        changes.append(
+            Discrepancy(kind=DiscrepancyKind.FIXTURES, predicted=0.0, actual=1.0, tolerance=0.0)
+        )
     held = {o.name for o in prediction.held}
     held |= {a.object for a in predicted.attachments if a.held}
     held |= {a.object for a in actual.attachments if a.held}
@@ -375,7 +384,11 @@ def _scene_changes(
             if there.status is not expected:
                 changes.append(
                     Discrepancy(
-                        what=f"object {o.name} state", predicted=0.0, actual=1.0, tolerance=0.0
+                        kind=DiscrepancyKind.OBJECT_STATE,
+                        subject=o.name,
+                        predicted=0.0,
+                        actual=1.0,
+                        tolerance=0.0,
                     )
                 )
                 continue
@@ -384,7 +397,8 @@ def _scene_changes(
         if there is None:
             changes.append(
                 Discrepancy(
-                    what=f"object {o.name}",
+                    kind=DiscrepancyKind.OBJECT_POSITION,
+                    subject=o.name,
                     predicted=0.0,
                     actual=-1.0,
                     tolerance=object_tolerance_m,
@@ -397,7 +411,8 @@ def _scene_changes(
         if moved > object_tolerance_m:
             changes.append(
                 Discrepancy(
-                    what=f"object {o.name}",
+                    kind=DiscrepancyKind.OBJECT_POSITION,
+                    subject=o.name,
                     predicted=0.0,
                     actual=moved,
                     tolerance=object_tolerance_m,
@@ -408,7 +423,8 @@ def _scene_changes(
         if turned > object_tolerance_rad:
             changes.append(
                 Discrepancy(
-                    what=f"object {o.name} rotation",
+                    kind=DiscrepancyKind.OBJECT_ROTATION,
+                    subject=o.name,
                     predicted=0.0,
                     actual=turned,
                     tolerance=object_tolerance_rad,
@@ -925,6 +941,33 @@ class RobotContext:
         remaining = tuple(a for a in scene.attachments if a.object != object)
         return self._commit(replace(scene, attachments=remaining), source)
 
+    def set_attachment_allowances(
+        self,
+        object: str,
+        *,
+        allow: Iterable[str],
+        revision: int | None = None,
+        source: str = "client",
+    ) -> SceneState:
+        """Replace what the held ``object`` may touch with ``allow``, validated as
+        ``attach`` validates it, and return the new scene. Only the allow set changes: the
+        end effector, the transform, whether it is held, and the transform the runtime
+        tracks for it stay exactly as they are. It is a change to the declared world, not
+        a new physical attachment, so the runtime is not consulted. It is a new scene
+        revision, traced, so a snapshot or plan from before it is stale."""
+        self._require("set_attachment_allowances")
+        check_name(source, path="source")
+        scene = self._current_scene(revision)
+        current = scene.attachment(object)
+        if current is None:
+            raise ValidationError("not_attached", f"{object!r} is not attached", path="object")
+        effector = self._description.end_effector(current.end_effector)
+        allowed = self._allowed(effector, scene, allow)
+        attachments = tuple(
+            replace(a, allow=allowed) if a is current else a for a in scene.attachments
+        )
+        return self._commit(replace(scene, attachments=attachments), source)
+
     def violation(self, object: str) -> AttachmentViolation | None:
         """The runtime's report that ``object`` left its current attachment's transform,
         if it made one: privileged reference data, for evaluation. It never changes a
@@ -1174,11 +1217,7 @@ class RobotContext:
         (``continuation``, ``execute_continuation``).
         """
         scene = self._negotiated_scene(request, snapshot, planner, processor)
-        result = planner.plan(request, scene, abort=abort)
-        if not isinstance(result, PlanResult):
-            raise ValidationError("planner_contract", f"the planner answered {result!r}")
-        check_result(request, result)
-        return result
+        return planned(planner, request, scene, abort)
 
     def plan_async(
         self,
@@ -1197,15 +1236,7 @@ class RobotContext:
         scene = self._negotiated_scene(request, snapshot, planner, processor)
         if self._planning_pool is None:
             self._planning_pool = ThreadPoolExecutor(thread_name_prefix="ssrobot-plan")
-
-        def run() -> PlanResult:
-            result = planner.plan(request, scene, abort=abort)
-            if not isinstance(result, PlanResult):
-                raise ValidationError("planner_contract", f"the planner answered {result!r}")
-            check_result(request, result)
-            return result
-
-        return self._planning_pool.submit(run)
+        return self._planning_pool.submit(planned, planner, request, scene, abort)
 
     def _negotiated_scene(
         self,
@@ -1225,28 +1256,6 @@ class RobotContext:
         negotiate(request, planner.capabilities(request), processor)
         return self.planning_scene(state, request.group, clearance_m=request.clearance_m)
 
-    def start_alternatives(
-        self,
-        alternatives: Sequence[Alternative],
-        *,
-        snapshot: SceneSnapshot,
-        workers: int = 1,
-        cancel_lower: bool = True,
-        abort: Callable[[], bool] | None = None,
-    ) -> AlternativesRun:
-        """``ssrobot.start_alternatives`` in this context: ``plan_alternatives``'s run,
-        advanced by the caller so the context can keep stepping while it plans."""
-        from ssrobot.alternatives import start_alternatives
-
-        return start_alternatives(
-            self,
-            alternatives,
-            snapshot=snapshot,
-            workers=workers,
-            cancel_lower=cancel_lower,
-            abort=abort,
-        )
-
     def start_chains(
         self,
         chains: Sequence[Chain],
@@ -1256,13 +1265,56 @@ class RobotContext:
         cancel_lower: bool = True,
         abort: Callable[[], bool] | None = None,
     ) -> ChainsRun:
-        """``ssrobot.start_chains`` in this context: a race of staged prefixes, advanced
-        by the caller so the context can keep stepping while it plans."""
-        from ssrobot.chains import start_chains
+        """Start racing ``chains`` of staged prefixes from ``snapshot`` without waiting
+        (``ssrobot.chains``): every first stage is built, and its scene made, here; nothing
+        plans until the run is advanced, so the context can keep stepping meanwhile."""
+        from ssrobot.chains import ChainsRun
 
-        return start_chains(
+        return ChainsRun(
             self, chains, snapshot=snapshot, workers=workers, cancel_lower=cancel_lower, abort=abort
         )
+
+    def plan_portfolio(
+        self,
+        request: PlanningRequest,
+        *,
+        snapshot: SceneSnapshot,
+        planners: Sequence[Planner],
+        seeds: Sequence[int] | None = None,
+        processor: TrajectoryProcessor | None = None,
+        workers: int = 1,
+        abort: Callable[[], bool] | None = None,
+    ) -> Chains:
+        """Plan ``request`` with each of ``planners``, each in its own scene of
+        ``snapshot``, and select one: a race of one-stage chains, one per planner, in
+        order, blocking until every planner has ended. Each planner plans the request's
+        seed, or with ``seeds``, its own. ``processor`` times a path-only result. Planners
+        that may run at once (``workers`` above 1) must be distinct instances. The
+        selection is the shortest valid motion, then the earliest planner; the selected
+        plan, ``result.selected[2][0].plan``, executes with
+        ``planners[result.report.selected]``."""
+        from ssrobot.chains import Chain, ChainsRun, Stage, StageRequest, _until_done
+
+        planners = tuple(planners)
+        chosen = tuple(seeds) if seeds is not None else (request.seed,) * len(planners)
+        if not planners or len(chosen) != len(planners):
+            raise ValidationError(
+                "out_of_limits", "at least one planner, and one seed per planner", path="seeds"
+            )
+
+        def stage(planner: Planner) -> Stage:
+            return Stage(
+                name="plan",
+                build=lambda previous: StageRequest(
+                    snapshot=snapshot, request=request, planner=planner, processor=processor
+                ),
+            )
+
+        chains = [
+            Chain(label=p.name, stages=(stage(p),), seeds=(seed,))
+            for p, seed in zip(planners, chosen, strict=True)
+        ]
+        return _until_done(ChainsRun(self, chains, snapshot=snapshot, workers=workers, abort=abort))
 
     # -- Interleaving planning and execution -----------------------------------------
 
@@ -1273,7 +1325,6 @@ class RobotContext:
         unsettled: Iterable[str] = (),
         releases: Mapping[str, Pose] | None = None,
         removals: Iterable[str] = (),
-        allowances: Mapping[str, Iterable[str]] | None = None,
         joints: Mapping[str, float] | None = None,
     ) -> PredictedSnapshot:
         """The state expected if ``execution`` succeeds: its joints at its last waypoint,
@@ -1296,12 +1347,7 @@ class RobotContext:
         ``removals`` names held objects expected to be released and then removed from the
         scene, as an application does with one it assumes landed; only with registered
         object poses. In the predicted state each is removed; on arrival each must be.
-        ``allowances`` names held objects whose attachment is
-        expected to be re-declared, after ``execution`` and before the plan runs, with
-        another allow set and the same transform, such as a grasp narrowing what a lifted
-        object may touch to the hand. In the predicted state each attachment has that
-        allow set, checked as ``attach`` checks it; on arrival each must have exactly it.
-        Releases, removals and allowance changes are the only scene changes allowed. ``joints``
+        Releases and removals are the only scene changes allowed. ``joints``
         sets joints the motion does not move to the positions expected when the plan
         runs, such as a gripper's, opened by that release; for planning only."""
         self._require("predict")
@@ -1367,17 +1413,6 @@ class RobotContext:
                 "an object is either released or removed, not both",
                 path="removals",
             )
-        changed: dict[str, tuple[str, ...]] = {}
-        for name, allow in (allowances or {}).items():
-            current = next((a for a in base.attachments if a.object == name), None)
-            if current is None or name in releases or name in removing:
-                raise ValidationError(
-                    "unknown_reference",
-                    f"{name!r} is not held, or is released, so its allowance cannot change",
-                    path="allowances",
-                )
-            effector = self._description.end_effector(current.end_effector)
-            changed[name] = self._allowed(effector, base, allow)
         moved.update(releases)
         released = ObjectStatus.REGISTERED if registered else ObjectStatus.MEASURED
 
@@ -1390,9 +1425,7 @@ class RobotContext:
 
         objects = tuple(predicted(o) for o in base.objects)
         attachments = tuple(
-            replace(a, allow=changed[a.object]) if a.object in changed else a
-            for a in base.attachments
-            if a.object not in releases and a.object not in removing
+            a for a in base.attachments if a.object not in releases and a.object not in removing
         )
         # It ends its duration after the runtime accepted it, not after the snapshot it
         # was planned on: time may pass in between.
@@ -1419,7 +1452,6 @@ class RobotContext:
             expected=tuple(sorted(expected)),
             releases=tuple(sorted(releases)),
             removals=removing,
-            allowances=tuple(sorted(changed)),
             world=base.model,
             lineage=(base_id,),
         )
@@ -1673,7 +1705,7 @@ class RobotContext:
         the line the plan was made on: one with no ``reference_pose`` gets the frame's
         pose at the plan's start; an explicit one is kept. Then the plan's planner rebases
         it onto the actual state, that goal included
-        (``Planner.rebase``), and the rebased motion is compiled with ``prepare``,
+        (``RebasingPlanner.rebase``), and the rebased motion is compiled with ``prepare``,
         validated whole under the plan's validation policy, and submitted with the actual
         snapshot, as a ``GuardedJointTrajectory`` with ``guard`` if one is given. A refusal
         submits nothing; its code says which check failed. The report is the evidence
@@ -1765,7 +1797,13 @@ class RobotContext:
             )
 
         off = tuple(
-            Discrepancy(what=j, predicted=p, actual=a, tolerance=arrival_tolerance)
+            Discrepancy(
+                kind=DiscrepancyKind.JOINT,
+                subject=j,
+                predicted=p,
+                actual=a,
+                tolerance=arrival_tolerance,
+            )
             for j, p, a, g in zip(request.joints, predicted_start, actual_start, gaps, strict=True)
             if g > arrival_tolerance
         )
@@ -1780,7 +1818,7 @@ class RobotContext:
         if changed:
             return refuse(
                 "unpredicted_scene_change",
-                "; ".join(d.what for d in changed),
+                "; ".join(str(d) for d in changed),
                 discrepancies=tuple(changed),
             )
 
@@ -1790,8 +1828,7 @@ class RobotContext:
                 "continuation_invalid",
                 f"no pose is known for {', '.join(unknown)}: register or remove them",
             )
-        rebase = getattr(planner, "rebase", None)
-        if rebase is None:
+        if not isinstance(planner, RebasingPlanner):
             return refuse("rebase_unsupported", f"planner {planner.name!r} cannot rebase a plan")
         scene = self.planning_scene(actual, request.group, clearance_m=request.clearance_m)
         goal = request.goal
@@ -1840,7 +1877,7 @@ class RobotContext:
                     "the robot arrived outside the motion's path constraint",
                 )
         try:
-            rebased = rebase(plan, rebased_request, scene)
+            rebased = planner.rebase(plan, rebased_request, scene)
         except SsrobotError as e:
             return refuse("rebase_failed", f"{e.code}: {e.message}")
         if not isinstance(rebased, PlanResult):

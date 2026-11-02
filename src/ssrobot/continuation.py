@@ -13,7 +13,7 @@ only as a ``Continuation``, through ``RobotContext.execute_continuation``, which
    that the scene changed only as predicted: no change but the release of the objects it
    names in ``releases``, and no free object moved or turned but those and the ones it
    names ``unsettled``;
-3. asks the plan's planner to rebase it onto the actual state (``Planner.rebase``); a
+3. asks the plan's planner to rebase it onto the actual state (``RebasingPlanner.rebase``); a
    planner without it cannot continue;
 4. compiles the rebased motion with ``prepare``, validating it whole under the original
    validation policy, in a fresh scene;
@@ -26,6 +26,7 @@ One-motion lookahead: a prediction extends a captured snapshot by one execution.
 
 from __future__ import annotations
 
+import enum
 import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -83,7 +84,7 @@ class PredictedSnapshot(Record):
     """The state expected if ``source`` succeeds and every recorded assumption holds."""
 
     SCHEMA = "ssrobot.PredictedSnapshot"
-    VERSION = 3
+    VERSION = 4
 
     state: SceneSnapshot = field(
         metadata=meta("The predicted state, as a snapshot value; never a captured one.")
@@ -136,15 +137,6 @@ class PredictedSnapshot(Record):
             "on arrival each must be."
         ),
     )
-    allowances: tuple[str, ...] = field(
-        default=(),
-        metadata=meta(
-            "Held objects whose attachment is expected to be re-declared after it and "
-            "before the plan made on it runs, with another allow set and the same "
-            "transform. In the state each attachment has the expected allow set; on "
-            "arrival each must have exactly it."
-        ),
-    )
     world: str = field(metadata=meta("The world identity (model and scene) it is a state of."))
     lineage: tuple[str, ...] = field(
         metadata=meta("Fingerprints it was predicted from, oldest first: the captured base.")
@@ -157,8 +149,8 @@ class PredictedSnapshot(Record):
         if self.state.revision != self.base_revision:
             raise ValidationError(
                 "inconsistent_prediction",
-                "a prediction's state keeps the base's revision; releases and allowance "
-                "changes are expected after it",
+                "a prediction's state keeps the base's revision; releases and removals are "
+                "expected after it",
                 path="state.revision",
             )
         if self.state.model != self.world:
@@ -204,30 +196,57 @@ class PredictedSnapshot(Record):
                 "removals names objects removed in the state, sorted, once each",
                 path="removals",
             )
-        attached = {a.object for a in self.state.attachments}
-        if (
-            list(self.allowances) != sorted(set(self.allowances))
-            or not set(self.allowances) <= attached
-        ):
-            raise ValidationError(
-                "inconsistent_prediction",
-                "allowances names objects attached in the state, sorted, once each",
-                path="allowances",
-            )
+
+
+class DiscrepancyKind(enum.StrEnum):
+    """What differs between a prediction and the state it is checked against."""
+
+    JOINT = "joint"
+    """A joint's position, against the plan's start."""
+    REVISION = "revision"
+    """The scene's revision."""
+    ATTACHMENTS = "attachments"
+    """The declared attachments."""
+    FIXTURES = "fixtures"
+    """The scene's fixtures."""
+    OBJECT_POSITION = "object_position"
+    """An object's position (actual -1 when it is missing)."""
+    OBJECT_ROTATION = "object_rotation"
+    """An object's orientation."""
+    OBJECT_STATE = "object_state"
+    """An object's ``ObjectStatus``: registered, attached, unknown or removed."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Discrepancy(Value):
-    """One way the actual state differs from the prediction."""
+    """One way the actual state differs from the prediction: what differs, and of what."""
 
-    what: str = field(metadata=meta("A joint, an object or its rotation, or 'revision'."))
+    kind: DiscrepancyKind = field(metadata=meta("What differs."))
+    subject: str | None = field(
+        default=None, metadata=meta("The joint or object it is of; none for a scene's own.")
+    )
     predicted: float = field(metadata=meta("The predicted value.", unit="1"))
     actual: float = field(metadata=meta("The actual value.", unit="1"))
     tolerance: float = field(metadata=meta("The tolerance it was held to.", unit="1"))
 
     def _validate(self) -> None:
-        check_name(self.what, path="what")
+        scene = self.kind in (
+            DiscrepancyKind.REVISION,
+            DiscrepancyKind.ATTACHMENTS,
+            DiscrepancyKind.FIXTURES,
+        )
+        if scene != (self.subject is None):
+            raise ValidationError(
+                "inconsistent_outcome",
+                f"a {self.kind.value} discrepancy {'has no' if scene else 'names its'} subject",
+                path="subject",
+            )
+        if self.subject is not None:
+            check_name(self.subject, path="subject")
         check_tolerance(self.tolerance, "tolerance")
+
+    def __str__(self) -> str:
+        return self.kind.value if self.subject is None else f"{self.kind.value} {self.subject}"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -235,7 +254,7 @@ class ContinuationReport(Record):
     """Whether a continuation ran, and the evidence for that decision."""
 
     SCHEMA = "ssrobot.ContinuationReport"
-    VERSION = 5
+    VERSION = 6
 
     prediction: str = field(metadata=meta("Fingerprint of the prediction it was planned on."))
     source: str = field(metadata=meta("The source execution's identifier."))

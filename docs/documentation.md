@@ -69,7 +69,7 @@ their readers need and link to that owner for the rest.
 | `docs/packages.md` | The exact package and manifest format, loading rules, inference, and file identity |
 | `docs/contracts.md` | Normative public behavior, schemas, lifecycle, ownership, refusal semantics, and runtime conformance |
 | `docs/mujoco.md` | MuJoCo-specific construction, mapping, simulation behavior, scenes, observations, and evidence |
-| `docs/planning.md` | Planning calls, planner adaptation, validation, preparation, alternatives, chains, projections, and continuations |
+| `docs/planning.md` | Planning calls, planner adaptation, validation, preparation, chains and portfolios, projections, and continuations |
 | `docs/traces.md` | The practical distinction between traces, run bundles, visual reconstruction, and `ReplayRuntime` |
 | `docs/decisions/` | The reason for a durable design choice when that history remains useful after the implementation lands |
 | `docs/figures/README.md` | Figure sources, visual conventions, ownership, and reproduction instructions |

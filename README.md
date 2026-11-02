@@ -79,8 +79,8 @@ specific reason. The plan is never adjusted silently.
 *Several computations may use the same captured state. Only a result that passes the
 context's preparation and validation checks may affect the live robot.*
 
-This structure supports ordinary planning, deterministic planner portfolios, races
-between arms or goals, multi-stage candidates, and continuations planned during an
+This structure supports ordinary planning, races of planners, arms, goals, or
+multi-stage candidates, selected deterministically, and continuations planned during an
 earlier motion. [Planning](docs/planning.md) specifies these mechanisms and the
 conditions under which a speculative result remains applicable to the live context.
 
@@ -176,7 +176,7 @@ execution choices.
 | Portable robot packages from MJCF, URDF/SRDF, or ssrobot kinematics | Implemented; Geodude and ADA packages are checked in CI | [Authoring](docs/authoring.md) |
 | MuJoCo execution, scenes, attachments, observations, snapshots, and guarded commands | Implemented | [MuJoCo](docs/mujoco.md) |
 | Configuration, pose, offset, and TSR planning through sscbirrt, ssik, and sstsr | Implemented; exercised on Geodude and ADA | [Planning](docs/planning.md) |
-| Planner portfolios, alternative requests, staged candidates, and interleaved planning and execution | Implemented; used by ssgrasping and Geodude | [Planning](docs/planning.md) |
+| Racing staged candidates (and planners, as portfolios), and interleaved planning and execution | Implemented; chains and interleaving are used by ssgrasping and Geodude | [Planning](docs/planning.md) |
 | Versioned traces, portable run bundles, strict reading, and replay | Implemented | [Traces and replay](docs/traces.md) |
 | Live visualization and bundle replay | Provided by [mj_viser](https://github.com/personalrobotics/mj_viser)'s optional ssrobot integration | mj_viser |
 | Robot-neutral grasp, place, and drop skills | Provided by [ssgrasping](https://github.com/personalrobotics/ssgrasping), demonstrated on Geodude in MuJoCo | ssgrasping |
@@ -210,7 +210,7 @@ that all of them must share.
 | Bring up and distribute a robot | [Authoring a robot package](docs/authoring.md) |
 | Understand the package format precisely | [Robot packages](docs/packages.md) |
 | Simulate scenes, commands, observations, and attachments | [MuJoCo integration](docs/mujoco.md) |
-| Plan, race alternatives, validate, and plan ahead | [Planning](docs/planning.md) |
+| Plan, race candidates, validate, and plan ahead | [Planning](docs/planning.md) |
 | Record, bundle, inspect, and replay a run | [Traces and replay](docs/traces.md) |
 | Implement a runtime or consume exact public records | [Contracts](docs/contracts.md) |
 | Understand scope and dependency ownership | [Architecture and charter](docs/architecture.md) |

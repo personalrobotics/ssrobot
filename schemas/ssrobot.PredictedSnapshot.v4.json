@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.PredictedSnapshot v3",
+  "title": "ssrobot.PredictedSnapshot v4",
   "$ref": "#/$defs/PredictedSnapshot",
   "$defs": {
     "Attachment": {
@@ -135,7 +135,7 @@
           "const": "ssrobot.PredictedSnapshot"
         },
         "version": {
-          "const": 3
+          "const": 4
         },
         "state": {
           "$ref": "#/$defs/SceneSnapshot",
@@ -199,13 +199,6 @@
             "type": "string"
           },
           "description": "Objects held by the source, expected to be released after it and then removed from the scene before the plan made on it runs. In the state each is removed; on arrival each must be."
-        },
-        "allowances": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Held objects whose attachment is expected to be re-declared after it and before the plan made on it runs, with another allow set and the same transform. In the state each attachment has the expected allow set; on arrival each must have exactly it."
         },
         "world": {
           "type": "string",

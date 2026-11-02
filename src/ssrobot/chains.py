@@ -2,11 +2,13 @@
 
 A ``Chain`` is one candidate's prefix of motions: a first stage, then stages each built
 from the validated result of the one before, such as a pregrasp, then the approach from
-where it ends, then a lift holding the object. Every stage is planned on a worker of the
-alternatives engine (``ssrobot.alternatives``), and validated on a fresh scene of its own
-snapshot and clearance before the next stage is built: a stage's ``StageResult`` carries
-that validated plan and its ``PlanProjection`` (``RobotContext.project``), on which the
-next stage may plan. A projection confers no validity by itself.
+where it ends, then a lift holding the object. Every stage plans on a worker in its own
+planning scene, built on the context's thread; once it has planned, its motion is
+validated on a worker again, on a fresh scene of its own snapshot and clearance, and
+compiled for the runtime's contract, before the next stage is built: a stage's
+``StageResult`` carries that validated plan and its ``PlanProjection``
+(``RobotContext.project``), on which the next stage may plan. A projection confers no
+validity by itself.
 
 Selection is two-level:
 1. Within each chain, its seeds are attempts at the whole chain, in declared order; the
@@ -25,46 +27,83 @@ Selection is two-level:
 Selection and the selected chain's evidence are deterministic. Whether stopped work was
 never started or stopped running depends on scheduling: it is reported, not claimed.
 
-The run is passive, as ``AlternativesRun`` is: ``start_chains`` builds it, ``advance``
-never waits, and ``cancel`` and ``close`` may be called again. ``plan_chains`` advances it
-until it is done. Choosing what the chains are (arms, grasps, stages) is the caller's.
+The run is passive: ``RobotContext.start_chains`` builds it, ``advance`` never waits, and
+``cancel`` and ``close`` may be called again. ``RobotContext.plan_portfolio`` is the one
+blocking use: a race of planners at one request, as one-stage chains. Choosing what the
+chains are (arms, grasps, stages) is the caller's.
 """
 
 from __future__ import annotations
 
 import enum
 import math
+import re
+import threading
 from collections.abc import Callable, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from ssrobot._wire import Record, Value, fingerprint, meta
+from ssrobot.commands import TrajectoryContract
 from ssrobot.continuation import PlanProjection, PredictedSnapshot
 from ssrobot.conventions import check_name
+from ssrobot.description import RobotDescription
 from ssrobot.errors import SsrobotError, ValidationError
 from ssrobot.planning_contracts import (
+    MotionValidation,
+    MotionValidator,
     Planner,
     PlanningRequest,
     PlanResult,
     PlanStatus,
+    PreparedTrajectory,
     TrajectoryProcessor,
+    check_bound,
+    check_planned_in,
+    check_validation,
+    negotiate,
+    planned,
+    trajectory_subject,
 )
-from ssrobot.portfolio import (
-    MAX_ATTEMPTS,
-    OUTRANKED,
-    PlanAttempt,
-    StopReason,
-    _check_fingerprint,
-    _End,
-    _Ended,
-    _Job,
-    _JobRun,
-)
-from ssrobot.scene import Attachment, SceneSnapshot
+from ssrobot.preparation import compile_plan
+from ssrobot.scene import Attachment, PlanningScene, SceneSnapshot
 
 if TYPE_CHECKING:
     from ssrobot.context import RobotContext
+
+MAX_ATTEMPTS = 32
+"""The most seeds the chains of one run may declare in all."""
+
+OUTRANKED = "a higher priority is valid"
+"""Why work was stopped because a strictly higher priority is valid."""
+
+_FINGERPRINT = re.compile(r"[0-9a-f]{64}")
+
+
+class StopReason(enum.StrEnum):
+    """Why a run stopped its remaining work."""
+
+    ABORTED = "aborted"
+
+
+class _Ended(enum.Enum):
+    """How one plan the engine ran ended."""
+
+    REFUSED = "refused"
+    NOT_STARTED = "not_started"
+    CANCELED_BY_PRIORITY = "canceled_by_priority"
+    FAILED = "failed"
+    INVALID = "invalid"
+    VALID = "valid"
+
+
+def _check_fingerprint(value: str | None, path: str) -> None:
+    if value is not None and not _FINGERPRINT.fullmatch(value):
+        raise ValidationError(
+            "invalid_fingerprint", f"{path} must be a SHA-256 hex digest", path=path
+        )
+
 
 CHAIN_SELECTION = (
     "first feasible seed within each chain; then highest priority, lowest cost (the sum of "
@@ -505,7 +544,7 @@ class ChainsReport(Record):
     """Every chain's attempts and stages, and the selection; no wall-clock time."""
 
     SCHEMA = "ssrobot.ChainsReport"
-    VERSION = 1
+    VERSION = 2
 
     snapshot: str = field(metadata=meta("Fingerprint of the state every chain started in."))
     chains: tuple[ChainRecord, ...] = field(metadata=meta("Every chain, in declared order."))
@@ -573,10 +612,6 @@ class ChainsReport(Record):
                         "a stage fails only once every seed of its own has",
                         path=f"chains[{i}].attempts[{a.index}].stages",
                     )
-        if self.stopped not in (None, StopReason.ABORTED):
-            raise ValidationError(
-                "unsupported_value", "only an abort stops a run of chains", path="stopped"
-            )
         if self.rule != CHAIN_SELECTION:
             raise ValidationError("unsupported_value", "the rule is CHAIN_SELECTION", path="rule")
         if self.selected != select_chain(self.chains):
@@ -717,17 +752,7 @@ class ChainsRun:
         self._chains = chains
         self._basis = _state(snapshot)
         self._cancel_lower = cancel_lower
-        self._run = _JobRun(
-            ctx,
-            self._basis,
-            [],
-            workers=workers,
-            timeout_s=None,
-            abort=abort,
-            cutoff=False,
-            path="chains",
-            sealed=False,
-        )
+        self._run = _JobRun(ctx, self._basis, workers=workers, abort=abort)
         self._chosen: dict[int, int] = {}
         self._taken = 0
         """How many tries have been taken: whether a reaction made progress."""
@@ -785,14 +810,7 @@ class ChainsRun:
             request = replace(request, seed=attempt.seed)
         elif attempt_try.seed is not None:
             request = replace(request, seed=attempt_try.seed)
-        job = _Job(
-            attempt.chain,
-            attempt.index,
-            self._chains[attempt.chain].priority,
-            request,
-            PlanAttempt(planner=built.planner, processor=built.processor),
-            snapshot=state,
-        )
+        job = _Job(request, built.planner, built.processor, snapshot=state)
         try:
             (attempt_try.job,) = self._run.add([job])
         except SsrobotError as e:
@@ -1097,39 +1115,454 @@ def _stage_attempt(
     )
 
 
-def start_chains(
-    ctx: RobotContext,
-    chains: Sequence[Chain],
-    *,
-    snapshot: SceneSnapshot | PredictedSnapshot,
-    workers: int = 1,
-    cancel_lower: bool = True,
-    abort: Callable[[], bool] | None = None,
-) -> ChainsRun:
-    """Start racing ``chains`` without waiting: every first stage is built, and its scene
-    made, here; nothing plans until the run is advanced."""
-    return ChainsRun(
-        ctx, chains, snapshot=snapshot, workers=workers, cancel_lower=cancel_lower, abort=abort
-    )
-
-
-def plan_chains(
-    ctx: RobotContext,
-    chains: Sequence[Chain],
-    *,
-    snapshot: SceneSnapshot | PredictedSnapshot,
-    workers: int = 1,
-    cancel_lower: bool = True,
-    abort: Callable[[], bool] | None = None,
-) -> Chains:
-    """Race ``chains`` from ``snapshot`` and select one; see the module. This blocks
-    until every stage has ended: it is ``start_chains``, advanced until it is done."""
-    run = start_chains(
-        ctx, chains, snapshot=snapshot, workers=workers, cancel_lower=cancel_lower, abort=abort
-    )
+def _until_done(run: ChainsRun) -> Chains:
+    """Advance ``run`` until it is done, waiting at most 10 ms at a time for a plan to
+    finish so that ``abort`` is checked in between; close it however it ends."""
     try:
         while not run.advance():
             wait(run.planning, timeout=0.01, return_when=FIRST_COMPLETED)
     finally:
         run.close()
     return run.result
+
+
+# ---------------------------------------------------------------------------
+# The engine: isolated plans on a bounded pool, each with its own planning scene built
+# on the context's thread, each validated again on a fresh scene, on a worker, as its
+# result arrives.
+
+
+@dataclass(frozen=True, slots=True)
+class _Job:
+    request: PlanningRequest
+    planner: Planner
+    processor: TrajectoryProcessor | None
+    snapshot: SceneSnapshot | None = None
+    """The state it plans and is validated in, when not the run's own snapshot."""
+
+
+@dataclass(slots=True)
+class _End:
+    job: _Job
+    ended: _Ended = _Ended.NOT_STARTED
+    status: PlanStatus | None = None
+    detail: str = ""
+    duration_s: float | None = None
+    result: str | None = None
+    validation: str | None = None
+    raw: PlanResult | None = None
+    candidate: PlanResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Run:
+    ends: tuple[_End, ...]
+    stopped: StopReason | None
+
+
+class _JobRun:
+    """Jobs, each in its own scene of ``snapshot``, on at most ``workers`` threads, in the
+    order added (the caller's scheduling order), advanced by the caller. Each job runs on
+    a worker in two phases: it plans, then, if it succeeded, its motion is validated on a
+    fresh scene, built for it on the context's thread once planning succeeded. The worker
+    touches neither the context nor the runtime, and the planning and validation scenes
+    are distinct. Its planner and worker stay occupied until the validation ends: a
+    planner plans one job at a time.
+
+    Negotiation and each planning scene are made on the context's thread as a job is
+    added. ``advance`` never waits: it hands queued jobs to free workers, starts the
+    validation of each plan that succeeded, and takes each validation that ended. The run
+    ends once it is sealed (``seal``) and every job has ended. ``cancel`` stops queued and
+    running work (``aborted``); ``close`` also waits for the workers and releases the
+    scenes. Both may be called again."""
+
+    def __init__(
+        self,
+        ctx: RobotContext,
+        snapshot: SceneSnapshot,
+        *,
+        workers: int,
+        abort: Callable[[], bool] | None,
+    ) -> None:
+        if workers < 1:
+            raise ValidationError("out_of_limits", "workers must be at least 1", path="workers")
+        if not isinstance(snapshot, SceneSnapshot):
+            raise ValidationError("wrong_type", "snapshot must be a SceneSnapshot", path="snapshot")
+        self._ctx, self._snapshot = ctx, snapshot
+        # Each valid motion is also compiled for the runtime's contract, and the command
+        # validated, so a candidate is one it can execute. Without a contract, nothing
+        # executes, and a candidate is validated as the planner's motion alone.
+        self._contract = ctx.info.trajectory
+        self._workers, self._abort = workers, abort
+        self._sealed = False
+        self._jobs: list[_Job] = []
+        self._ends: list[_End] = []
+        self._scenes: dict[int, PlanningScene] = {}
+        self._everything = threading.Event()
+        self._stops: dict[int, threading.Event] = {}
+        # Running jobs told to stop by ``cancel_jobs``, with the detail their end records.
+        self._told: dict[int, str] = {}
+        self._queue: list[int] = []
+        self._running: dict[Future[PlanResult], int] = {}
+        # Jobs being validated on a worker, after planning: their planners stay busy.
+        self._checking: dict[Future[_Checked], int] = {}
+        # One lock per processor, by identity: processing is serialized per processor,
+        # since processors need not be thread-safe (only planners must be distinct).
+        self._processing: dict[int, threading.Lock] = {}
+        self._result: _Run | None = None
+        self._stopped: StopReason | None = None
+        self._pool: ThreadPoolExecutor | None = ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="ssrobot-race"
+        )
+
+    @property
+    def done(self) -> bool:
+        return self._result is not None
+
+    @property
+    def planning(self) -> tuple[Future[Any], ...]:
+        """The plans and validations running now."""
+        return (*self._running, *self._checking)
+
+    @property
+    def result(self) -> _Run:
+        if self._result is None:
+            raise ValidationError("not_done", "the run has not finished", path="result")
+        return self._result
+
+    @property
+    def ends(self) -> tuple[_End, ...]:
+        """Every job's end so far, in the order added; final once ``settled``."""
+        return tuple(self._ends)
+
+    def settled(self, k: int) -> bool:
+        """Whether job ``k`` has ended: refused, never started, or planned, validated if it
+        succeeded, and recorded."""
+        return (
+            k not in self._queue
+            and k not in self._running.values()
+            and k not in self._checking.values()
+        )
+
+    def add(self, jobs: Sequence[_Job]) -> list[int]:
+        """Negotiate each job and build its scene here, on the context's thread (the
+        context is not shared with workers), then queue it; the indices given. On a
+        stopped run they are recorded as never started."""
+        if self._sealed or self._result is not None:
+            raise ValidationError("sealed", "jobs are added only to an unsealed run", path="jobs")
+        for job in jobs:
+            check_planned_in(job.request, self._ctx.description, job.snapshot or self._snapshot)
+        added = []
+        for job in jobs:
+            k = len(self._jobs)
+            self._jobs.append(job)
+            self._ends.append(_End(job))
+            added.append(k)
+            try:
+                negotiate(job.request, job.planner.capabilities(job.request), job.processor)
+            except SsrobotError as e:
+                self._ends[k].ended, self._ends[k].detail = _Ended.REFUSED, e.code
+                continue
+            if self._stopped is not None:
+                self._ends[k].ended = _Ended.NOT_STARTED
+                self._ends[k].detail = self._stopped.value
+                continue
+            self._scenes[k] = self._ctx.planning_scene(
+                job.snapshot or self._snapshot,
+                job.request.group,
+                clearance_m=job.request.clearance_m,
+            )
+            self._stops[k] = threading.Event()
+            # Jobs are handed to the pool only as workers free up, and only after every
+            # finished job has been validated.
+            self._queue.append(k)
+        return added
+
+    def seal(self) -> None:
+        """No more jobs will be added: the run ends once every job has."""
+        self._sealed = True
+
+    def cancel_jobs(self, jobs: Sequence[int], detail: str) -> None:
+        """Stop ``jobs``: queued, never started (``not_started``); planning or being
+        validated, told to stop (``canceled_by_priority``, its result unused); either way
+        recording ``detail``."""
+        for k in jobs:
+            if k in self._queue:
+                self._queue.remove(k)
+                self._ends[k].ended, self._ends[k].detail = _Ended.NOT_STARTED, detail
+            elif (
+                k in self._running.values() or k in self._checking.values()
+            ) and k not in self._told:
+                self._told[k] = detail
+                self._stops[k].set()
+
+    def _plan(self, k: int) -> PlanResult:
+        job = self._jobs[k]
+        stop = self._stops[k]
+        return planned(
+            job.planner,
+            job.request,
+            self._scenes[k],
+            lambda: self._everything.is_set() or stop.is_set(),
+        )
+
+    def advance(self) -> bool:
+        """Start queued jobs on free workers, check ``abort``, take every plan and
+        validation that has finished, and start the queued jobs that freed; never waits.
+        True once the run is sealed and every job has ended. Until then, work is in
+        flight whenever any job is queued: none waits for a worker or planner that is
+        free."""
+        if self._result is not None:
+            return True
+        try:
+            self._start_queued()
+            if self._stopped is None and self._abort is not None and self._abort():
+                self._stop(StopReason.ABORTED)
+            for future in [f for f in self._running if f.done()]:
+                self._finished(self._running.pop(future), future)
+            for checked in [f for f in self._checking if f.done()]:
+                self._validated(self._checking.pop(checked), checked)
+            self._start_queued()
+            if self._sealed and not self._queue and not self._running and not self._checking:
+                self._finish()
+        except BaseException:
+            self._shutdown()
+            raise
+        return self._result is not None
+
+    def _start_queued(self) -> None:
+        """Hand queued jobs, in order, to free workers whose planners are free."""
+        if self._stopped is not None:
+            return
+        assert self._pool is not None
+        busy = {
+            id(self._jobs[k].planner) for k in (*self._running.values(), *self._checking.values())
+        }
+        for k in list(self._queue):
+            if len(self._running) + len(self._checking) >= self._workers:
+                break
+            if id(self._jobs[k].planner) in busy:
+                continue  # a planner plans one job at a time
+            self._queue.remove(k)
+            busy.add(id(self._jobs[k].planner))
+            self._running[self._pool.submit(self._plan, k)] = k
+
+    def _stop(self, reason: StopReason) -> None:
+        self._stopped = reason
+        self._everything.set()
+        for k in self._queue:
+            self._ends[k].ended, self._ends[k].detail = _Ended.NOT_STARTED, reason.value
+        self._queue.clear()
+
+    def _finished(self, k: int, future: Future[PlanResult]) -> None:
+        end = self._ends[k]
+        try:
+            end.raw = future.result()
+        except SsrobotError as e:
+            # Told to stop, it was outranked however it stopped: by a canceled result
+            # or by an expected error. Any other exception propagates.
+            if k in self._told:
+                end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, self._told[k]
+            else:
+                end.ended, end.detail = _Ended.FAILED, f"{e.code}: {e.message}"
+            return
+        end.status, end.result = end.raw.status, fingerprint(end.raw)
+        if k in self._told:
+            end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, self._told[k]
+            return
+        if not end.raw.succeeded:
+            end.ended, end.detail = _Ended.FAILED, end.raw.status.value
+            return
+        if self._stopped is not None:
+            # Once the run has stopped, nothing becomes valid: a result that arrives
+            # after the stop is not validated.
+            end.ended = _Ended.FAILED
+            end.detail = f"{self._stopped.value}: stopped before it was validated"
+            return
+        # The validation scene is built here, on the context's thread; everything else
+        # (processing, validation, its checks) runs on a worker, from the job and its
+        # result alone, both immutable.
+        job = end.job
+        request = job.request
+        scene = self._ctx.planning_scene(
+            job.snapshot or self._snapshot, request.group, clearance_m=request.clearance_m
+        )
+        lock = (
+            None
+            if job.processor is None
+            else self._processing.setdefault(id(job.processor), threading.Lock())
+        )
+        assert self._pool is not None
+        checking = self._pool.submit(
+            _check, job, end.raw, scene, lock, self._ctx.description, self._contract
+        )
+        self._checking[checking] = k
+
+    def _validated(self, k: int, future: Future[_Checked]) -> None:
+        """Record job ``k``'s validation."""
+        end = self._ends[k]
+        assert end.raw is not None
+        checked = future.result()  # an unexpected error propagates
+        end.status, end.result = end.raw.status, checked.result
+        if k in self._told:
+            # Told to stop while it was validated: its validation is not used, as a
+            # result that arrives after it was told is not validated.
+            end.ended, end.detail = _Ended.CANCELED_BY_PRIORITY, self._told[k]
+            return
+        if self._stopped is not None:
+            # The run stopped before this validation was taken: it is not used, so
+            # nothing becomes valid after the stop.
+            end.ended = _Ended.FAILED
+            end.detail = f"{self._stopped.value}: stopped while it was validated"
+            return
+        if checked.error is not None:
+            end.ended, end.detail = _Ended.FAILED, checked.error
+            return
+        assert checked.fresh is not None
+        end.validation = checked.validation
+        if checked.candidate is None:
+            end.ended = _Ended.INVALID
+            if checked.unready is not None:
+                end.detail = checked.unready
+                return
+            witness = checked.fresh.witness
+            assert witness is not None
+            end.detail = f"{witness.failure.value} at t = {witness.time_s} s"
+            return
+        assert checked.candidate.trajectory is not None
+        end.candidate = checked.candidate
+        # Kept only while its snapshot is current: a scene change during validation
+        # has already cleared the context's evidence, and must not see it restored.
+        if checked.prepared is not None and (
+            checked.candidate.request.snapshot in self._ctx._captured
+        ):
+            self._ctx._prepared[fingerprint(checked.candidate)] = checked.prepared
+        end.ended, end.detail = _Ended.VALID, "valid"
+        end.duration_s = checked.candidate.trajectory.duration
+
+    def _finish(self) -> None:
+        self._shutdown()
+        self._result = _Run(ends=tuple(self._ends), stopped=self._stopped)
+
+    def _shutdown(self) -> None:
+        self._everything.set()
+        if self._pool is not None:
+            self._pool.shutdown(wait=True, cancel_futures=True)
+            self._pool = None
+        self._scenes.clear()
+
+    def cancel(self) -> None:
+        """Stop the run: queued jobs never start, running planners are told to stop
+        (``aborted``). Nothing is waited for; may be called again."""
+        if self._result is None and self._stopped is None:
+            self._stop(StopReason.ABORTED)
+
+    def close(self) -> None:
+        """Cancel the run if it has not finished, wait for every running planner to stop,
+        record how each ended, and release the scenes; may be called again."""
+        if self._result is not None:
+            return
+        self.cancel()
+        try:
+            for future in list(self._running):
+                wait([future])
+                self._finished(self._running.pop(future), future)
+            for checked in list(self._checking):
+                wait([checked])
+                self._validated(self._checking.pop(checked), checked)
+        finally:
+            self._finish()
+
+
+@dataclass(frozen=True, slots=True)
+class _Checked:
+    """A successful result's validation, made on a worker: its fingerprint, and either
+    the fresh validation with the candidate (none if the motion is invalid), or why it
+    could not be validated."""
+
+    result: str
+    fresh: MotionValidation | None = None
+    validation: str | None = None
+    candidate: PlanResult | None = None
+    prepared: PreparedTrajectory | None = None
+    """The candidate's command for the runtime's contract, if it has one."""
+    unready: str | None = None
+    """Why the motion, valid as planned, is not ready to execute as compiled: then
+    ``fresh`` is the command's validation."""
+    error: str | None = None
+
+
+def _check(
+    job: _Job,
+    result: PlanResult,
+    scene: PlanningScene,
+    processing: threading.Lock | None,
+    description: RobotDescription,
+    contract: TrajectoryContract | None,
+) -> _Checked:
+    """On a worker, with no context and nothing mutable of the run: ``result``'s fresh
+    validation on ``scene``, processing it under its processor's lock, and, with a
+    ``contract``, the preparation of its command for it."""
+    hashed = fingerprint(result)
+    prepared = unready = None
+    try:
+        validator = job.planner.validator(job.request, scene)
+        candidate, fresh = _candidate(job, result, processing, validator)
+        if candidate is not None and contract is not None:
+            preparation = compile_plan(
+                candidate, scene, validator=validator, description=description, contract=contract
+            )
+            prepared = preparation.prepared
+            if prepared is None:
+                candidate, fresh = None, preparation.compiled_validation
+                unready = preparation.refusal
+    except SsrobotError as e:
+        return _Checked(result=hashed, error=f"{e.code}: {e.message}")
+    return _Checked(
+        result=hashed,
+        fresh=fresh,
+        validation=fingerprint(fresh),
+        candidate=candidate,
+        prepared=prepared,
+        unready=unready,
+    )
+
+
+def _candidate(
+    job: _Job,
+    result: PlanResult,
+    processing: threading.Lock | None,
+    validator: MotionValidator,
+) -> tuple[PlanResult | None, MotionValidation]:
+    """The fresh validation of ``result``'s motion as it would execute, by its planner's
+    validator on a fresh scene of the state it was planned in, and the candidate plan
+    carrying exactly that motion and report; no candidate if the motion is invalid. The
+    report is checked to come from that validator, bound to the request, about exactly
+    that motion with its path as evidence."""
+    request = job.request
+    check_bound(validator.identity, request, path="validator")
+    path = result.path
+    timed = result.trajectory
+    if timed is None:
+        assert path is not None and job.processor is not None  # negotiated
+        assert processing is not None  # a processor is used under its own lock
+        with processing:
+            timed = job.processor.process(path, request.limits)  # once: the candidate's
+    report = validator.validate_trajectory(timed, path)
+    check_validation(
+        report, validator=validator.identity, subject=trajectory_subject(timed), evidence=path
+    )
+    if not report.valid:
+        return None, report
+    if result.trajectory is None:
+        # The processor validated the rates; the planner's validator, just now, the rest
+        # of what the planner offers (negotiation required that they cover the request).
+        offered = job.planner.capabilities(request).constraints
+        validated = set(timed.validated) | (set(request.constraints) & set(offered))
+        timed = replace(
+            timed,
+            validated=tuple(sorted(validated)),
+            provenance=(*timed.provenance, ("validation", fingerprint(report))),
+        )
+    reports = (result.validation[0], report) if path is not None else (report,)
+    return replace(result, trajectory=timed, validation=reports), report
