@@ -76,14 +76,14 @@ quat_in_frame_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
 [[robots]]
 name = "ada"
 repository = "personalrobotics/ada_assets"
-commit = "e7798beac3eb70145b8d606f4d71720fb75c7ae2"
+commit = "8ddf90643bd1793f7de130ea10963fcf0b6ca8df"
 module = "ada_assets"
 package_root = "src/ada_assets"
 # No keyframe: the package's MuJoCo profile starts it at "resting" (#95,
 # personalrobotics/ada_assets#17).
 
 [robots.expect]
-fingerprint = "a7d317f47f8e4cd56d9ddd4eef8c4024bb8d4c9da0685b9c30d9698c8eed470b"
+fingerprint = "d0346b1373ef3bfe3e294bdf9dc09b4517b5618df0471f42e777a04aedb71c1d"
 model_format = "mjcf"
 license = "MIT"
 manipulators = 1
@@ -143,8 +143,97 @@ direction_in_world = [0.0, 0.0, -1.0]
 distance = 0.10
 duration_ns = 3_000_000_000
 
-# No gripper-contact proof (#219) yet: this package mounts the articutool in the hand,
-# its handle where the fingers close, with the fingers' contacts with it excluded, so no
-# object can be placed in ADA's grasp. Closing on an object waits for mounted-tool
-# composition (#121), which lets the hand run without its tool. Its empty close and
+# No gripper-contact proof (#219) for this package: it mounts the articutool in the hand,
+# its handle where the fingers close, with the fingers' contacts with it excluded. The
+# bare-hand package below, ada_hand, closes on a cylinder instead. Its empty close and
 # unobstructed open are still driven, and each must end reached_target.
+
+# ADA with an empty hand (#236, personalrobotics/ada_assets#43): the same arm and gripper
+# without the articutool, its end effector the palm grasp site, sstsr's canonical
+# parallel-jaw frame (z along the approach, y along the fingers' opening). The package is
+# the models/ directory of the same repository.
+[[robots]]
+name = "ada_hand"
+repository = "personalrobotics/ada_assets"
+commit = "8ddf90643bd1793f7de130ea10963fcf0b6ca8df"
+module = "ada_assets.models"
+package_root = "src/ada_assets/models"
+# No keyframe: the package's MuJoCo profile starts it at "resting", fingers open.
+
+[robots.expect]
+fingerprint = "25ed82d83091521bcff1021df2a0a7debac7ac82b3febad2c054677ef8ad643e"
+model_format = "mjcf"
+license = "MIT"
+manipulators = 1
+grippers = 1
+end_effectors = 1
+prismatic_joints = 0
+# The JACO2's six joints and four finger joints.
+revolute_or_continuous_joints = 10
+# Arm joint position and trajectory, and the gripper; arm position, velocity, and
+# effort, and the gripper's opening.
+confirmed_commands = 3
+confirmed_channels = 4
+
+[robots.scenario]
+manipulator = "arm"
+scene = "references/scenes/ada-cylinder.xml"
+object = "cylinder"
+configuration = "above_plate"
+# A side-grasp band, as Geodude's: the palm grasp site 10 cm from the cylinder's axis,
+# pointing at it, level, at any angle around it. The hand is turned half a turn about its
+# approach axis from Geodude's, as sstsr 4.2.0's KinovaJaco2TwoFinger side grasp turns
+# it: turned as Geodude's, every sampled goal near the table is in collision or out of
+# reach.
+frame = "palm_grasp_site"
+offset_position = [-0.10, 0.0, 0.0]
+offset_quat_wxyz = [0.0, 0.7071067811865476, 0.0, 0.7071067811865476]
+position_bounds = [[0.0, 0.0], [0.0, 0.0], [-0.02, 0.02]]
+rotation_bounds = [[0.0, 0.0], [0.0, 0.0], [-3.141592653589793, 3.141592653589793]]
+
+# The guarded-contact proof (#236): the open hand palm down over the table, beside the
+# cylinder, then a straight 10 cm descent onto the table, guarded by the arm's joint
+# actuator effort. The open fingertips reach 3.7 cm past the palm grasp site, which
+# starts 2.7 cm above the cylinder's centre (8.7 cm above the table's top), so they
+# start 5 cm above the table, and the descent is meant to make contact. Its region
+# keeps the open hand, 10.6 cm across its fingers, 25 cm from the cylinder's axis.
+[robots.scenario.guard]
+frame = "palm_grasp_site"
+channel = "arm_qf"
+# Joint actuator effort, not contact torque: the thresholds are derived, not declared.
+# The same descent first runs where nothing is touched, and every joint's threshold is
+# this margin times the largest tared change of any joint's effort over it.
+margin = 2.0
+origin_position = [-0.20, 0.15, 0.027]
+offset_position = [0.0, 0.0, 0.0]
+offset_quat_wxyz = [0.0, 1.0, 0.0, 0.0]
+position_bounds = [[-0.005, 0.005], [-0.005, 0.005], [-0.005, 0.005]]
+rotation_bounds = [[0.0, 0.0], [0.0, 0.0], [-3.141592653589793, 3.141592653589793]]
+direction_in_world = [0.0, 0.0, -1.0]
+distance = 0.10
+duration_ns = 3_000_000_000
+
+# The gripper-contact proof (#219): a fixed cylinder of the size ada_assets' own grasp
+# test uses, 5 cm across and 10 cm long, between the open fingers at the start, where
+# sstsr 4.2.0's KinovaJaco2TwoFinger mid side grasp puts its centre, 6.41 cm ahead of the
+# palm grasp site along its approach axis (z). Its axis is the site's x, across the
+# fingers, which close along y. Closing on it must stop short. (On the scene's 4 cm
+# cylinder the closed fingers' opening varies by about 3e-4 for as long as they press,
+# more than the stall bound in the package's completion detector, so the close never
+# ends.)
+[robots.scenario.grip]
+frame = "palm_grasp_site"
+radius = 0.025
+half_length = 0.05
+position_in_frame = [0.0, 0.0, 0.0641]
+quat_in_frame_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
+
+# When arm_q counts as at rest in MuJoCo. The package's profile declares no rest criteria
+# (its ADA's were measured with the articutool, a different load), so they are declared
+# here until the package declares its own; the checks refuse both. The variation is
+# declared, the bound on what counts as still: ADA's, each joint within 2 steps of
+# 2*pi/2^17 rad, for the same JACO2 joints. The dwell is measured against it by
+# scripts/calibrate_rest.py.
+[[robots.scenario.rest]]
+channel = "arm_q"
+variation = [9.587379924285257e-05, 9.587379924285257e-05, 9.587379924285257e-05, 9.587379924285257e-05, 9.587379924285257e-05, 9.587379924285257e-05]

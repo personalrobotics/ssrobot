@@ -4,12 +4,14 @@ A signal is at rest when its observed position stays within a variation for a dw
 MuJoCo's joints, the variation is declared, not measured: once settled, the simulated
 state converges to within float or solver tolerance, so there is no sensor chatter to set
 it by (#224). Each robot's MuJoCo profile declares it, per joint, as the bound on what
-counts as still, and this script measures the dwell that makes that bound safe.
+counts as still, and this script measures the dwell that makes that bound safe. For a
+channel its profile declares no criteria for, a robot's ``[[robots.scenario.rest]]`` in
+references/robots.toml may declare the variation instead (#236).
 
 For each robot in references/robots.toml, at its pinned commit or at ``--commit
 NAME=SHA``, it downloads the asset repository as check_reference_robots.py does, loads the
-package, and, for each arm's joint-position channel whose profile declares rest criteria,
-records isolated traces of the readings exactly as ``observe`` returns them.
+package, and, for each arm's joint-position channel whose profile or references entry
+declares rest criteria, records isolated traces of the readings exactly as ``observe`` returns them.
 
 The traces. From each start configuration (the profile's keyframe, the package's named
 configurations of the channel's group, and for a robot with no other, a second start
@@ -444,7 +446,8 @@ def joint_trials(robot: Robot, arm: Arm, keyframe: tuple[float, ...]) -> list[Tr
 
 def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
     """The arm carrying the scenario's object, where it can grasp it: the open hand in
-    the side-grasp band of the guarded-contact proof, moved straight along its approach
+    the side-grasp band of the guarded-contact proof if that proof moves along the hand's
+    approach axis, or else of the planning proof, moved straight along its approach
     axis until the object is where the grip table puts one between the fingers; the
     gripper closed on it; and the arm raised by its prismatic joint, if any, or its first
     joint. Then three motions."""
@@ -461,7 +464,10 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
     group = manipulator.group
     joints = description.group(group).joints
     held: dict[str, Any] = {}
-    band = spec.get("guard", spec)  # the guarded proof's band, which leaves the object standing
+    # The guarded proof's band, which leaves the object standing, if it is a side grasp:
+    # one moving along the hand's approach axis. ADA's bare hand descends onto the table.
+    guard = spec.get("guard", {})
+    band = guard if "direction_in_frame" in guard else spec
 
     def where(ctx: RobotContext) -> list[float]:
         pose = next(o.known_pose() for o in ctx.snapshot().objects if o.name == spec["object"])
@@ -691,7 +697,18 @@ def calibrate_robot(
     robot = Robot(name, load_package(source), spec, scene)
     description = robot.package.description
     with RobotContext(description, robot.runtime()) as ctx:
-        declared = {r.channel: r.criteria for r in ctx.info.rest}
+        # Each channel's declared variation, and where it is declared: only the variation
+        # is read; the dwell is what this script measures.
+        declared = {
+            r.channel: (list(r.criteria.variation or ()), r.criteria.source) for r in ctx.info.rest
+        }
+    for rest in spec.get("rest", ()):
+        # A references entry stands in only where the package's profile declares none.
+        if rest["channel"] in declared:
+            raise SystemExit(
+                f"{name} {rest['channel']}: declared by the package and in robots.toml"
+            )
+        declared[rest["channel"]] = (list(rest["variation"]), "references/robots.toml")
     report: dict[str, Any] = {
         "robot": name,
         "provenance": prov,
@@ -712,7 +729,7 @@ def calibrate_robot(
         if channel not in declared:
             print(f"{name} {channel}: no declared criteria, skipped", flush=True)
             continue
-        variation = list(declared[channel].variation or ())
+        variation = declared[channel][0]
         arm = Arm(robot.package, group)
         trials = joint_trials(robot, arm, keyframe) + payload_trials(robot, arm, channel)
         print(f"{name} {channel}: {len(trials)} trials", flush=True)
@@ -757,7 +774,7 @@ def calibrate_robot(
         report["channels"][channel] = {
             "group": group,
             "joints": list(description.group(group).joints),
-            "declared": {"variation": variation, "source": declared[channel].source},
+            "declared": {"variation": variation, "source": declared[channel][1]},
             "criteria": {
                 "max_gap_ns": tick,
                 "dwell_ns": dwell,

@@ -19,11 +19,14 @@ For each robot in references/robots.toml, this script:
    to show its artifacts are byte-identical. Every snapshot it takes is then applied to
    the world rebuilt without a runtime (#155), which must put every body where the
    runtime had it;
-8. runs the guarded-contact proof on it (#124), ``guarded``: one function, given the
-   robot's ``scenario.guard`` data, moves a frame straight into the object under a
-   force-torque guard, and the same command where there is nothing to touch, twice;
+8. runs the guarded-contact proof on it (#124, #236), ``guarded``: one function, given
+   the robot's ``scenario.guard`` data, moves a frame straight into the object or the
+   table under a force-torque guard, or a joint-effort guard whose thresholds it derives
+   from the same move where there is nothing to touch, and the same command where there
+   is nothing to touch, twice;
 9. runs the joint-rest proof on it (#221, #224), ``rested``: for every joint-position
-   channel whose rest criteria the robot's MuJoCo profile declares, a small move, then a
+   channel whose rest criteria the robot's MuJoCo profile declares, or, where it declares
+   none, the robot's ``scenario.rest`` does (#236), a small move, then a
    ``JointRest`` watch from the end of its execution, checked against the readings
    recorded every tick, which must equal the simulated state, twice.
 
@@ -813,13 +816,20 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
     ``GuardedJointTrajectory``. The descent is not geometrically validated: it is meant
     to make contact (see #143). The same command then runs in a runtime without the
     scene, from the same setpoint, where nothing is touched. Each tick the script reads
-    the wrench itself, so the tick the runtime stopped can be compared with the first
-    tick the guard's condition held. Writes ``guarded.json`` and the command under
-    ``out``.
+    the guarded channel itself, so the tick the runtime stopped can be compared with the
+    first tick the guard's condition held, and, as ground truth only, whether the robot
+    touches the scene. Writes ``guarded.json`` and the command under ``out``.
+
+    The guard reads the table's channel: a wrench, under a ``WrenchGuard`` with the
+    table's threshold, or a joint effort, under an ``EffortGuard`` (#236). An effort
+    guard's thresholds are derived, never declared: the same descent first runs
+    unguarded where nothing is touched, and every joint's threshold is the table's
+    ``margin`` times the largest tared change of any joint's effort over it.
     """
     import numpy as np
 
     from ssrobot import (
+        EffortGuard,
         GripperCommand,
         GuardedJointTrajectory,
         JointCommand,
@@ -827,6 +837,7 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
         JointTrajectory,
         ObservationRequest,
         Pose,
+        Quantity,
         RobotContext,
         Tsr,
         WrenchGuard,
@@ -840,16 +851,19 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
     description = package.description
     manipulator = description.manipulator(spec["manipulator"])
     joints = description.group(manipulator.group).joints
-    guard = WrenchGuard(
-        channel=g["channel"],
-        part=WrenchPart(g["part"]),
-        threshold=float(g["threshold"]),
-        tare=True,
-    )
-    channel = ObservationRequest(channels=(guard.channel,))
+    channel = description.channel(g["channel"])
+    guard: Any = None
+    if channel.quantity is Quantity.WRENCH:
+        guard = WrenchGuard(
+            channel=channel.name,
+            part=WrenchPart(g["part"]),
+            threshold=float(g["threshold"]),
+            tare=True,
+        )
+    request = ObservationRequest(channels=(channel.name,))
 
-    def wrench(ctx: Any) -> tuple[float, ...]:
-        return tuple(ctx.observe(channel).readings[0].value)
+    def read(ctx: Any) -> tuple[float, ...]:
+        return tuple(ctx.observe(request).readings[0].value)
 
     def arm_q(ctx: Any) -> tuple[float, ...]:
         snapshot = ctx.snapshot()
@@ -875,20 +889,49 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
         for _ in range(GUARD_SETTLE_TICKS):
             ctx.step()
 
-    def run(ctx: Any, command: Any) -> dict[str, Any]:
-        baseline = wrench(ctx)
+    def touching(ctx: Any, runtime: Any) -> list[str]:
+        """Ground truth from the simulation, never read by the guard: what the robot
+        touches of what the scene composed in, sorted."""
+        model, data = runtime._model, runtime._data
+        scene = {model.body(name).id for name in (*ctx.info.objects, *ctx.info.fixtures)}
+        roots = model.body_rootid
+        touched = set()
+        for contact in data.contact[: data.ncon]:
+            first, second = (roots[model.geom_bodyid[g]] for g in (contact.geom1, contact.geom2))
+            if (first in scene) != (second in scene):
+                touched.add(model.body(first if first in scene else second).name)
+        return sorted(touched)
+
+    def run(ctx: Any, runtime: Any, command: Any) -> dict[str, Any]:
+        """Run ``command`` to its end, reading the guarded channel every tick: the tared
+        peak of each of its values, and, under a guard, the guard's measure."""
+        guarding = command.guard if isinstance(command, GuardedJointTrajectory) else None
+        baseline = read(ctx)
         execution = ctx.submit(command, source="guarded")
-        first_over, tick, peak, profile = None, 0, 0.0, []
+        first_over, first_contact, tick, peak, profile = None, None, 0, 0.0, []
+        first_touched: list[str] = []
+        tared = [0.0] * len(baseline)
         while not execution.done:
             ctx.step()
             tick += 1
-            reading = wrench(ctx)
-            measure = guard.measure(reading, baseline)
-            peak = max(peak, measure)
+            reading = read(ctx)
+            tared = [max(t, abs(r - b)) for t, r, b in zip(tared, reading, baseline, strict=True)]
+            if first_contact is None and (touched := touching(ctx, runtime)):
+                first_contact, first_touched = tick, touched
+            measure = None
+            if guarding is not None:
+                measure = guarding.measure(reading, baseline)
+                peak = max(peak, measure)
+                if first_over is None and guarding.trips(measure):
+                    first_over = tick
             if tick % 25 == 0:
-                profile.append([tick, round(measure, 3), [round(v, 2) for v in reading]])
-            if first_over is None and measure >= guard.threshold:
-                first_over = tick
+                profile.append(
+                    [
+                        tick,
+                        None if measure is None else round(measure, 3),
+                        [round(v, 2) for v in reading],
+                    ]
+                )
         status = execution.status
         outcome = status.guard
         return {
@@ -898,12 +941,56 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
             "measure": None if outcome is None else outcome.measure,
             "ended_tick": tick,
             "first_tick_over_threshold": first_over,
+            "first_contact_tick": first_contact,
+            "first_touched": first_touched,
             "peak_measure": peak,
+            "tared_peak": tared,
             "profile": profile,
         }
 
-    record: dict[str, Any] = {"guard": json.loads(dumps(guard))}
+    record: dict[str, Any] = {"channel": channel.name}
     planner = CBiRRT(description, kinematics=SsikKinematics.from_package(package, manipulator.name))
+
+    def unobstructed(command: Any) -> dict[str, Any]:
+        """``command`` where there is nothing to touch: no scene, the same setpoint."""
+        runtime = MujocoRuntime(package, keyframe=keyframe)
+        with RobotContext(description, runtime) as ctx:
+            open_grippers(ctx)
+            arm = ctx.manipulator(manipulator.name)
+            snapshot = ctx.snapshot()
+            move = arm.plan_to_configuration(setpoint, snapshot=snapshot, planner=planner)
+            record["no_surface_move"] = move.status.value
+            turns = [0.0] * len(joints)
+            if move.succeeded:
+                assert move.trajectory is not None
+                ctx.run_until(ctx.execute(move, planner=planner), max_ticks=20_000)
+                # A continuous joint may arrive whole turns from the setpoint: the same
+                # pose. Hold and descend from where it is, shifted by those turns.
+                continuous = {j.name for j in description.joints if j.kind is JointKind.CONTINUOUS}
+                turns = [
+                    2 * math.pi * round((r - s) / (2 * math.pi)) if j in continuous else 0.0
+                    for j, r, s in zip(joints, move.trajectory.goal, setpoint, strict=True)
+                ]
+            record["no_surface_turns"] = [round(t / (2 * math.pi)) for t in turns]
+            hold(ctx, tuple(s + t for s, t in zip(setpoint, turns, strict=True)))
+            trajectory = command.trajectory if guard is not None else command
+            free = JointTrajectory(
+                group=manipulator.group,
+                joints=joints,
+                time_from_start_ns=trajectory.time_from_start_ns,
+                positions=tuple(
+                    tuple(v + t for v, t in zip(row, turns, strict=True))
+                    for row in trajectory.positions
+                ),
+            )
+            shifted = tuple(s + t for s, t in zip(start, turns, strict=True))
+            record["free_start_gap"] = max(
+                abs(a - b) for a, b in zip(arm_q(ctx), shifted, strict=True)
+            )
+            if guard is not None:
+                return run(ctx, runtime, GuardedJointTrajectory(trajectory=free, guard=guard))
+            return run(ctx, runtime, free)
+
     runtime = MujocoRuntime(package, keyframe=keyframe, scene=spec["scene"])
     with RobotContext(description, runtime) as ctx:
         open_grippers(ctx)
@@ -956,53 +1043,36 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
             previous = q
         error = _pose_error(_matrix(scene.forward_kinematics(rows[-1], g["frame"])), T)
         record["descent_end_error"] = float(np.abs(error).max())
-        command = GuardedJointTrajectory(
-            trajectory=JointTrajectory(
-                group=manipulator.group,
-                joints=joints,
-                time_from_start_ns=tuple(n * period for n in range(steps + 1)),
-                positions=tuple(rows),
-            ),
-            guard=guard,
+        descent = JointTrajectory(
+            group=manipulator.group,
+            joints=joints,
+            time_from_start_ns=tuple(n * period for n in range(steps + 1)),
+            positions=tuple(rows),
         )
+        if guard is None:
+            # The effort guard's thresholds, from the same descent where nothing is
+            # touched: the margin over the largest change of any joint's effort.
+            calibration = unobstructed(descent)
+            drift = max(calibration["tared_peak"])
+            margin = float(g["margin"])
+            record["calibration"] = {
+                "state": calibration["state"],
+                "first_contact_tick": calibration["first_contact_tick"],
+                "tared_peak": calibration["tared_peak"],
+                "largest_drift": drift,
+                "margin": margin,
+            }
+            guard = EffortGuard(
+                channel=channel.name,
+                thresholds=(margin * drift,) * len(calibration["tared_peak"]),
+                tare=True,
+            )
+        record["guard"] = json.loads(dumps(guard))
+        command = GuardedJointTrajectory(trajectory=descent, guard=guard)
         (out / "guarded.command.json").write_text(dumps(command) + "\n")
         record["descent"] = {"waypoints": len(rows), "distance_m": g["distance"]}
-        record["contact"] = run(ctx, command)
-    # The same command where there is nothing to touch: no scene, the same setpoint.
-    with RobotContext(description, MujocoRuntime(package, keyframe=keyframe)) as ctx:
-        open_grippers(ctx)
-        arm = ctx.manipulator(manipulator.name)
-        snapshot = ctx.snapshot()
-        move = arm.plan_to_configuration(setpoint, snapshot=snapshot, planner=planner)
-        record["no_surface_move"] = move.status.value
-        turns = [0.0] * len(joints)
-        if move.succeeded:
-            assert move.trajectory is not None
-            ctx.run_until(ctx.execute(move, planner=planner), max_ticks=20_000)
-            # A continuous joint may arrive whole turns from the setpoint: the same pose.
-            # Hold and descend from where it is, shifted by those turns.
-            continuous = {j.name for j in description.joints if j.kind is JointKind.CONTINUOUS}
-            turns = [
-                2 * math.pi * round((r - s) / (2 * math.pi)) if j in continuous else 0.0
-                for j, r, s in zip(joints, move.trajectory.goal, setpoint, strict=True)
-            ]
-        record["no_surface_turns"] = [round(t / (2 * math.pi)) for t in turns]
-        hold(ctx, tuple(s + t for s, t in zip(setpoint, turns, strict=True)))
-        free = GuardedJointTrajectory(
-            trajectory=JointTrajectory(
-                group=manipulator.group,
-                joints=joints,
-                time_from_start_ns=command.trajectory.time_from_start_ns,
-                positions=tuple(
-                    tuple(v + t for v, t in zip(row, turns, strict=True))
-                    for row in command.trajectory.positions
-                ),
-            ),
-            guard=guard,
-        )
-        shifted = tuple(s + t for s, t in zip(start, turns, strict=True))
-        record["free_start_gap"] = max(abs(a - b) for a, b in zip(arm_q(ctx), shifted, strict=True))
-        record["no_surface"] = run(ctx, free)
+        record["contact"] = run(ctx, runtime, command)
+    record["no_surface"] = unobstructed(command)
     return finish(record)
 
 
@@ -1125,9 +1195,17 @@ def _range_within(run: list[list[float]], variation: tuple[float, ...]) -> bool:
     )
 
 
-def rested(package: Any, keyframe: str | None, scene: Path | None, out: Path) -> dict[str, Any]:
+def rested(
+    package: Any,
+    keyframe: str | None,
+    scene: Path | None,
+    out: Path,
+    supplied: list[dict[str, Any]],
+) -> dict[str, Any]:
     """The joint-rest proof (#221, #224): for every joint-position channel whose rest
-    criteria the robot's MuJoCo profile declares, move the channel's group a small step
+    criteria the robot's MuJoCo profile declares, or, where it declares none, the robot's
+    ``[[robots.scenario.rest]]`` in robots.toml (``supplied``, #236), passed to the watch
+    explicitly, move the channel's group a small step
     toward the middle of each joint's range over one second, and when its execution ends,
     as a client does after a transfer, watch ``JointRest`` on the group by the declared
     criteria. With the scenario's scene, so its object is observed too. Every tick, until
@@ -1136,7 +1214,14 @@ def rested(package: Any, keyframe: str | None, scene: Path | None, out: Path) ->
     change them. The watch's window must be recorded readings spanning the dwell within the
     variation, and the readings from the window's start to the end must stay within it: the
     group came to rest and stayed there. Writes ``rested.json``."""
-    from ssrobot import JointRest, JointTrajectory, ObservationRequest, Quantity, RobotContext
+    from ssrobot import (
+        JointRest,
+        JointTrajectory,
+        ObservationRequest,
+        Quantity,
+        RestCriteria,
+        RobotContext,
+    )
     from ssrobot.mujoco import MujocoRuntime
 
     out.mkdir(parents=True, exist_ok=True)
@@ -1149,6 +1234,10 @@ def rested(package: Any, keyframe: str | None, scene: Path | None, out: Path) ->
     with RobotContext(description, runtime()) as ctx:
         declared = {r.channel: r.criteria for r in ctx.info.rest}
         objects = [c.name for c in ctx.info.scene_channels if c.quantity is Quantity.POSE]
+    explicit = {r["channel"]: RestCriteria(**r) for r in supplied}
+    # A references entry stands in only where the package's profile declares none.
+    assert not explicit.keys() & declared.keys(), "rest criteria in the package and robots.toml"
+    declared.update(explicit)
     channels = [
         c
         for c in description.channels
@@ -1178,7 +1267,8 @@ def rested(package: Any, keyframe: str | None, scene: Path | None, out: Path) ->
             end_ns = ctx.now.time_ns + move.time_from_start_ns[-1]
             status = ctx.run_until(ctx.submit(move), max_ticks=5_000)
             watch = ctx.watch_rest(
-                JointRest(spec.source), deadline_ns=ctx.now.time_ns + REST_DEADLINE_NS
+                JointRest(spec.source, criteria=explicit.get(spec.name)),
+                deadline_ns=ctx.now.time_ns + REST_DEADLINE_NS,
             )
             samples: list[tuple[int, list[float]]] = []
             exact = True
@@ -1212,6 +1302,7 @@ def rested(package: Any, keyframe: str | None, scene: Path | None, out: Path) ->
             "dwell_ns": criteria.dwell_ns,
             "variation": list(criteria.variation),
             "source": criteria.source,
+            "declared_in": "robots.toml" if spec.name in explicit else "profile",
             "observed_exactly": exact,
             "objects_observed": objects,
             "window_is_recorded": first is not None
@@ -1333,8 +1424,10 @@ def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] |
             }
     # Twice, to show the rest proof's artifact is deterministic.
     rest_scene = ROOT / spec["scene"] if spec is not None and "scene" in spec else None
+    supplied = [] if spec is None else spec.get("rest", [])
     runs = [
-        rested(package, keyframe, rest_scene, out.parent / "rested" / f"run-{i}") for i in (1, 2)
+        rested(package, keyframe, rest_scene, out.parent / "rested" / f"run-{i}", supplied)
+        for i in (1, 2)
     ]
     record["rested"] = runs[0]
     record["rested_identical"] = (out.parent / "rested" / "run-1" / "rested.json").read_bytes() == (
@@ -1564,16 +1657,22 @@ def check(
     if spec is not None and "guard" in spec:
         guarded = startup_record.get("guarded", {})
         contact, free = guarded.get("contact", {}), guarded.get("no_surface", {})
+        # An effort guard's thresholds come from the descent where nothing is touched.
+        calibration = guarded.get("calibration", {"state": "succeeded"})
         add(
             "guarded_contact",
             contact.get("cause") == "guard_triggered"
             and contact.get("ended_tick") == contact.get("first_tick_over_threshold")
+            and contact.get("first_contact_tick") is not None
+            and contact["ended_tick"] >= contact["first_contact_tick"]
             and free.get("cause") == "trajectory_completed"
-            and free.get("first_tick_over_threshold") is None,
+            and free.get("first_tick_over_threshold") is None
+            and calibration.get("state") == "succeeded",
             "contact: "
             + json.dumps({k: v for k, v in contact.items() if k != "profile"})
             + "; no surface: "
             + json.dumps({k: v for k, v in free.items() if k != "profile"})
+            + f"; calibration {json.dumps(guarded.get('calibration'))}"
             + f"; approach {guarded.get('approach')}, descent {guarded.get('descent')}",
         )
         identical = startup_record.get("guarded_identical", {})

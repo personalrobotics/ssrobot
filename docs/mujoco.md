@@ -489,7 +489,9 @@ interval in which the readings stay within that variation and then move beyond i
 again, after a commanded motion ends, over isolated traces of the motions the stack
 commands (`scripts/calibrate_rest.py`). `max_gap_ns` is the control tick. The evidence
 belongs with the profile that declares the values, cited from it with its command and
-commits.
+commits. For a reference robot whose profile declares none, `references/robots.toml`
+may declare them in its scenario's `[[robots.scenario.rest]]`, with their evidence under
+`references/evidence/`, until the package declares its own (#236).
 
 ## Execution
 
@@ -610,7 +612,7 @@ the returned model or data reaches no other materialization and no runtime.
 | `artifacts/test_a_recorded_world_materializes_without_a_runtime/materialized.json` | The example arm in the #111 scene tree, its cylinder dropped 5 cm so it moves, snapshotted every 10 ticks (52 snapshots, 5 mid-fall) with the runtime's own body poses from a render handle. The run is bundled and reopened; each snapshot record is applied to `materialize_world(bundle)` and followed by `mj_kinematics`, and every body's pose matches the runtime's (largest difference 0.0). The world equals the runtime's. A bundled scene edited after verification and a package of another world are refused with `world_mismatch`, and a snapshot of another world with `incompatible_snapshot`. Changing one materialization's model and data leaves another's poses unchanged, and materializing and applying never step or forward physics. A second run is byte-identical. The reference-robot check does the same for Geodude and ADA in their reference scenes. With registered object states, a removed object is placed from the snapshot alone, whatever the data held, exactly where planning places it; an unknown one is refused (`unknown_object_pose`), leaving the data unchanged. |
 | `artifacts/test_planning_refuses_what_does_not_apply/refusals.json`, `trace.jsonl` | Each refusal with its code: a snapshot of the same robot without the scene, materialized or submitted (`incompatible_snapshot`); decoded snapshots with a renamed joint, a missing object, or an unknown allow name (`incompatible_snapshot`); an unknown group or frame; a zero edge resolution; and short, non-finite, string, or boolean configurations. A snapshot with altered attachments at the current revision is `stale_snapshot` at submit. A configuration outside limits is invalid. A plan submitted with its snapshot runs and is linked to it in the trace. After a detach, the same snapshot is `stale_snapshot`. |
 | `installed-conformance` (CI) | The `[mujoco]` wheel, in a clean environment, builds a planning scene on sscbirrt's native checker. |
-| `reference-robots/<robot>/mujoco-startup.json` (CI) | Geodude and ADA opened from their installed wheels: mapping, runtime version, and exact time after 10 steps. |
+| `reference-robots/<robot>/mujoco-startup.json` (CI) | Geodude, ADA, and ADA's bare hand opened from their installed wheels: mapping, runtime version, and exact time after 10 steps. |
 | `installed-conformance/imports-mujoco.json` (CI) | The `[mujoco]` wheel in a clean environment: what importing the integration loads, and that the gate passes. |
 
 The example package `examples/packages/mujoco_arm` uses primitive geoms only, so it
