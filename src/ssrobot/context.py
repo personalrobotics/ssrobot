@@ -80,6 +80,7 @@ from ssrobot.planning_contracts import (
     PlanResult,
     PoseGoal,
     PreparedTrajectory,
+    RebasingPlanner,
     TrajectoryProcessor,
     Tsr,
     TsrGoal,
@@ -90,6 +91,7 @@ from ssrobot.planning_contracts import (
     check_result,
     check_validation,
     negotiate,
+    planned,
     state_subject,
 )
 from ssrobot.preparation import prepare
@@ -1188,11 +1190,7 @@ class RobotContext:
         (``continuation``, ``execute_continuation``).
         """
         scene = self._negotiated_scene(request, snapshot, planner, processor)
-        result = planner.plan(request, scene, abort=abort)
-        if not isinstance(result, PlanResult):
-            raise ValidationError("planner_contract", f"the planner answered {result!r}")
-        check_result(request, result)
-        return result
+        return planned(planner, request, scene, abort)
 
     def plan_async(
         self,
@@ -1211,15 +1209,7 @@ class RobotContext:
         scene = self._negotiated_scene(request, snapshot, planner, processor)
         if self._planning_pool is None:
             self._planning_pool = ThreadPoolExecutor(thread_name_prefix="ssrobot-plan")
-
-        def run() -> PlanResult:
-            result = planner.plan(request, scene, abort=abort)
-            if not isinstance(result, PlanResult):
-                raise ValidationError("planner_contract", f"the planner answered {result!r}")
-            check_result(request, result)
-            return result
-
-        return self._planning_pool.submit(run)
+        return self._planning_pool.submit(planned, planner, request, scene, abort)
 
     def _negotiated_scene(
         self,
@@ -1708,7 +1698,7 @@ class RobotContext:
         the line the plan was made on: one with no ``reference_pose`` gets the frame's
         pose at the plan's start; an explicit one is kept. Then the plan's planner rebases
         it onto the actual state, that goal included
-        (``Planner.rebase``), and the rebased motion is compiled with ``prepare``,
+        (``RebasingPlanner.rebase``), and the rebased motion is compiled with ``prepare``,
         validated whole under the plan's validation policy, and submitted with the actual
         snapshot, as a ``GuardedJointTrajectory`` with ``guard`` if one is given. A refusal
         submits nothing; its code says which check failed. The report is the evidence
@@ -1831,8 +1821,7 @@ class RobotContext:
                 "continuation_invalid",
                 f"no pose is known for {', '.join(unknown)}: register or remove them",
             )
-        rebase = getattr(planner, "rebase", None)
-        if rebase is None:
+        if not isinstance(planner, RebasingPlanner):
             return refuse("rebase_unsupported", f"planner {planner.name!r} cannot rebase a plan")
         scene = self.planning_scene(actual, request.group, clearance_m=request.clearance_m)
         goal = request.goal
@@ -1881,7 +1870,7 @@ class RobotContext:
                     "the robot arrived outside the motion's path constraint",
                 )
         try:
-            rebased = rebase(plan, rebased_request, scene)
+            rebased = planner.rebase(plan, rebased_request, scene)
         except SsrobotError as e:
             return refuse("rebase_failed", f"{e.code}: {e.message}")
         if not isinstance(rebased, PlanResult):

@@ -61,9 +61,9 @@ from ssrobot.planning_contracts import (
     TrajectoryProcessor,
     check_bound,
     check_planned_in,
-    check_result,
     check_validation,
     negotiate,
+    planned,
     trajectory_subject,
 )
 from ssrobot.preparation import compile_plan
@@ -1298,15 +1298,13 @@ class _JobRun:
 
     def _plan(self, k: int) -> PlanResult:
         job = self._jobs[k]
-        result = job.planner.plan(
+        stop = self._stops[k]
+        return planned(
+            job.planner,
             job.request,
             self._scenes[k],
-            abort=lambda: self._everything.is_set() or self._stops[k].is_set(),
+            lambda: self._everything.is_set() or stop.is_set(),
         )
-        if not isinstance(result, PlanResult):
-            raise ValidationError("planner_contract", f"the planner answered {result!r}")
-        check_result(job.request, result)
-        return result
 
     def advance(self) -> bool:
         """Start queued jobs on free workers, check ``abort``, take every plan and

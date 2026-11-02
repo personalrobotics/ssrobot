@@ -125,9 +125,16 @@ class _Misreporting:
 
     def __init__(self, inner: CBiRRT, other: tuple[float, ...]) -> None:
         self._inner, self._other = inner, other
+        self.name = inner.name
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
+    def capabilities(self, request: Any) -> Any:
+        return self._inner.capabilities(request)
+
+    def plan(self, request: Any, scene: Any, *, abort: Any = None) -> Any:
+        return self._inner.plan(request, scene, abort=abort)
+
+    def rebase(self, plan: Any, request: Any, scene: Any) -> Any:
+        return self._inner.rebase(plan, request, scene)
 
     def validator(self, request: Any, scene: Any) -> Any:
         honest, other = self._inner.validator(request, scene), self._other

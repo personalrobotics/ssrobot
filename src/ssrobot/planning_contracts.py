@@ -26,7 +26,7 @@ import numbers
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from ssrobot._wire import Record, Value, fingerprint, memo, meta
 from ssrobot.commands import JointTrajectory, TrajectoryContract, TrajectoryInterpolation
@@ -906,6 +906,37 @@ class Planner(Protocol):
         reports come from, and the one runtime compilation must ask about a changed
         motion."""
         ...
+
+
+@runtime_checkable
+class RebasingPlanner(Planner, Protocol):
+    """A planner that can also rebase its plan onto where the robot actually is, as
+    ``RobotContext.execute_continuation`` requires; a planner that cannot is refused there
+    (``rebase_unsupported``)."""
+
+    def rebase(
+        self, plan: PlanResult, request: PlanningRequest, scene: PlanningScene
+    ) -> PlanResult:
+        """``plan``, the same motion, from ``request``'s start: the actual state, within
+        the continuation's arrival tolerance. An expected failure raises an
+        ``SsrobotError``, which the continuation records as ``rebase_failed``."""
+        ...
+
+
+def planned(
+    planner: Planner,
+    request: PlanningRequest,
+    scene: PlanningScene,
+    abort: Callable[[], bool] | None = None,
+) -> PlanResult:
+    """``planner``'s plan for ``request`` in ``scene``, checked to answer exactly that
+    request (``check_result``); anything but a ``PlanResult`` is a planner contract
+    breach (``planner_contract``)."""
+    result = planner.plan(request, scene, abort=abort)
+    if not isinstance(result, PlanResult):
+        raise ValidationError("planner_contract", f"the planner answered {result!r}")
+    check_result(request, result)
+    return result
 
 
 def negotiate(

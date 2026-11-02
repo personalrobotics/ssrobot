@@ -573,9 +573,9 @@ it when the robot arrives. Three pieces make that safe:
         bound to it (`check_bound`) and whose report must be about that state
         (`check_validation`); only a path-constraint failure refuses here;
    3. asks the plan's planner to rebase it onto the actual state:
-      `planner.rebase(plan, request, scene)`, an optional planner method
-      (`rebase_unsupported` without it; `rebase_failed`). ssrobot core never splices
-      trajectories;
+      `planner.rebase(plan, request, scene)`, declared by the `RebasingPlanner`
+      protocol. A planner that is not one is refused (`rebase_unsupported`), and an
+      expected failure is `rebase_failed`. ssrobot core never splices trajectories;
    4. compiles the rebased motion with `prepare`, validating it whole under the plan's
       validation policy in a fresh scene of the actual state, not the one the planner
       rebased in (`continuation_invalid`);
