@@ -13,7 +13,7 @@ only as a ``Continuation``, through ``RobotContext.execute_continuation``, which
    that the scene changed only as predicted: no change but the release of the objects it
    names in ``releases``, and no free object moved or turned but those and the ones it
    names ``unsettled``;
-3. asks the plan's planner to rebase it onto the actual state (``Planner.rebase``); a
+3. asks the plan's planner to rebase it onto the actual state (``RebasingPlanner.rebase``); a
    planner without it cannot continue;
 4. compiles the rebased motion with ``prepare``, validating it whole under the original
    validation policy, in a fresh scene;
