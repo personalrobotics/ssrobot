@@ -35,6 +35,13 @@ as the test's registration source and as the reference the snapshot is compared 
 
 The evidence is ``registered_scene.json``, written twice and byte-identical.
 
+``allowances.json`` (#233): in both pose modes, the box grasped on the pedestal is in
+contact with it until ``set_attachment_allowances`` allows the pedestal too. That is a
+new scene revision, so an older snapshot is stale, and it keeps the end effector, the
+transform, whether the box is held, and the runtime's tracked reference. In a live
+context the box is first pulled sideways out of the hand: the monitor reports it, and
+the allow set changes all the same. Run twice, byte-identical.
+
 Reproduce with ``uv run pytest tests/test_registered_scene.py``.
 """
 
@@ -53,6 +60,7 @@ from ssrobot import (
     AttachmentReference,
     ConfigurationGoal,
     JointRest,
+    JointTrajectory,
     ObjectPoses,
     ObjectState,
     ObjectStatus,
@@ -462,3 +470,90 @@ def test_registered_object_poses_hold_until_registered_again(artifacts: Path) ->
         "unknown_with_pose": "inconsistent_scene",
         "registered_without_pose": "inconsistent_scene",
     }
+
+
+def _box_contacts(ctx: RobotContext, q: tuple[float, ...]) -> list[str]:
+    """What the held box touches at ``q``, by name."""
+    scene = ctx.planning_scene(ctx.snapshot(), "arm")
+    pairs = {(c.first, c.second) for c in scene.contacts(q)}
+    return sorted({a if b == "box" else b for a, b in pairs if "box" in (a, b)})
+
+
+def _allowed_in_place(object_poses: ObjectPoses) -> dict[str, Any]:
+    """The box grasped where it stands on the pedestal and attached with the hand's
+    default allow set, then the pedestal allowed too, in place; in a live context the box
+    is first pulled out of the hand, past the monitor's tolerance."""
+    records: list[TraceRecord] = []
+    package = load_package(PACKAGE)
+    runtime = MujocoRuntime(package, scene=PEDESTAL, **OPTIONS)
+    with RobotContext(
+        package.description, runtime, sinks=[records.append], object_poses=object_poses
+    ) as ctx:
+        if object_poses is ObjectPoses.REGISTERED:
+            _register(ctx)
+        _move(ctx, ABOVE)
+        _grip(ctx, runtime, 1.0)
+        _move(ctx, LEVEL)
+        _grip(ctx, runtime, 0.0)
+        ctx.attach("box", "hand")
+        here = tuple(ctx.snapshot().position(j) for j in ARM)
+        # The hand 2 cm lower: the box it carries reaches into the pedestal.
+        lowered = (here[0], here[1] + 0.02, here[2])
+        if object_poses is ObjectPoses.LIVE:
+            box = runtime._model.body("box").id
+            for _ in range(100):  # pulled sideways out of the hand
+                runtime._data.xfrc_applied[box, 1] = 20.0
+                ctx.step()
+            runtime._data.xfrc_applied[box, 1] = 0.0
+        before = ctx.scene.attachment("box")
+        assert before is not None
+        stale = ctx.snapshot()
+        references = sum(r.kind is TraceKind.ATTACHED for r in records)
+        contacts_before = _box_contacts(ctx, lowered)
+        ctx.set_attachment_allowances("box", allow=(*before.allow, "pedestal"))
+        after = ctx.scene.attachment("box")
+        assert after is not None
+        hold = JointTrajectory(
+            group="arm", joints=ARM, time_from_start_ns=(0, LIFT_NS), positions=(here, here)
+        )
+        return {
+            "allow": [list(before.allow), list(after.allow)],
+            "contacts": [contacts_before, _box_contacts(ctx, lowered)],
+            "kept": {
+                "end_effector": after.end_effector == before.end_effector,
+                "transform": after.transform == before.transform,
+                "held": [before.held, after.held],
+                "violation_kept": ctx.violation("box") is not None,
+                "no_new_reference": sum(r.kind is TraceKind.ATTACHED for r in records)
+                == references,
+            },
+            "revision": after is not None and ctx.scene.revision == stale.revision + 1,
+            "older_snapshot": _code(lambda: ctx.submit(hold, snapshot=stale)),
+        }
+
+
+def test_an_attachments_allow_set_changes_in_place(artifacts: Path) -> None:
+    """``set_attachment_allowances`` (#233): only the allow set of an attachment changes.
+    In both pose modes the box, grasped on the pedestal, is in contact with the pedestal
+    until the pedestal is allowed, which is a new scene revision, so an older snapshot is
+    stale. The transform, the end effector, whether it is held, and the runtime's tracked
+    reference stay as they were. In a live context the box is first pulled out of the
+    hand: the monitor reports it, and the change succeeds all the same, since nothing is
+    asked of the runtime."""
+    first = json.dumps({mode.value: _allowed_in_place(mode) for mode in ObjectPoses}, indent=2)
+    (artifacts / "allowances.json").write_text(first + "\n")
+    assert (
+        json.dumps({mode.value: _allowed_in_place(mode) for mode in ObjectPoses}, indent=2) == first
+    )
+    evidence = json.loads(first)
+    for mode, run in evidence.items():
+        before, after = run["allow"]
+        assert after == sorted([*before, "pedestal"]), mode
+        assert run["contacts"] == [["pedestal"], []], mode
+        kept = run["kept"]
+        assert kept["end_effector"] and kept["transform"] and kept["no_new_reference"], mode
+        assert run["revision"] and run["older_snapshot"] == "stale_snapshot", mode
+    # Live: the monitor reported the box leaving, and the allow set changed all the same.
+    assert evidence["live"]["kept"]["held"] == [False, False]
+    assert evidence["live"]["kept"]["violation_kept"]
+    assert evidence["registered"]["kept"]["held"] == [True, True]

@@ -161,6 +161,7 @@ ALLOWED_STATES: dict[str, frozenset[ContextState]] = {
     "snapshot": frozenset({_S.OPEN, _S.FAULTED}),
     "planning_scene": frozenset({_S.OPEN, _S.FAULTED}),
     "detach": frozenset({_S.OPEN, _S.FAULTED}),
+    "set_attachment_allowances": frozenset({_S.OPEN}),
     "register": frozenset({_S.OPEN, _S.FAULTED}),
     "remove": frozenset({_S.OPEN, _S.FAULTED}),
     "predict": frozenset({_S.OPEN}),
@@ -335,22 +336,21 @@ def _scene_changes(
     object_tolerance_rad: float,
 ) -> list[Discrepancy]:
     """How ``actual`` differs from ``prediction`` beyond the joints: a scene change (a new
-    revision, other attachments or fixtures), or a free object moved or turned beyond
-    tolerance. Held objects move with their hand, which the joints already account for;
-    an attachment no longer held is a free object. Unsettled and released ones are not
-    compared by pose. The expected releases, removals and allowance changes are the only
-    allowed scene changes: with them, the scene is compared by content rather than by
-    revision. With registered object poses, every object must also be in the state the
-    prediction expects: a release unknown, a removal removed, and every other object as
-    predicted."""
+    revision, other attachments or fixtures), or a free object moved or turned
+    beyond tolerance. Held objects move with their hand, which the joints already
+    account for; an attachment no longer held is a free object. Unsettled and
+    released ones are not compared by pose. The expected releases and removals are
+    the only allowed scene changes: with them, the scene is compared by content
+    rather than by revision. With registered object poses, every object must also be
+    in the state the prediction expects: a release unknown, a removal removed, and
+    every other object as predicted."""
     predicted = prediction.state
     changes = []
-    # Without releases or allowance changes the scene must not have changed at all. With
-    # them it has, so it is compared by content instead: the attachments less the
-    # released ones, each changed one with exactly its expected allow set, the same
-    # fixtures, every object.
+    # Without releases or removals the scene must not have changed at all. With them it
+    # has, so it is compared by content instead: the attachments less the released ones,
+    # the same fixtures, every object.
     base = prediction.base_revision
-    expects = prediction.releases or prediction.allowances or prediction.removals
+    expects = prediction.releases or prediction.removals
     if actual.revision < base or (not expects and actual.revision != base):
         changes.append(
             Discrepancy(
@@ -941,6 +941,33 @@ class RobotContext:
         remaining = tuple(a for a in scene.attachments if a.object != object)
         return self._commit(replace(scene, attachments=remaining), source)
 
+    def set_attachment_allowances(
+        self,
+        object: str,
+        *,
+        allow: Iterable[str],
+        revision: int | None = None,
+        source: str = "client",
+    ) -> SceneState:
+        """Replace what the held ``object`` may touch with ``allow``, validated as
+        ``attach`` validates it, and return the new scene. Only the allow set changes: the
+        end effector, the transform, whether it is held, and the transform the runtime
+        tracks for it stay exactly as they are. It is a change to the declared world, not
+        a new physical attachment, so the runtime is not consulted. It is a new scene
+        revision, traced, so a snapshot or plan from before it is stale."""
+        self._require("set_attachment_allowances")
+        check_name(source, path="source")
+        scene = self._current_scene(revision)
+        current = scene.attachment(object)
+        if current is None:
+            raise ValidationError("not_attached", f"{object!r} is not attached", path="object")
+        effector = self._description.end_effector(current.end_effector)
+        allowed = self._allowed(effector, scene, allow)
+        attachments = tuple(
+            replace(a, allow=allowed) if a is current else a for a in scene.attachments
+        )
+        return self._commit(replace(scene, attachments=attachments), source)
+
     def violation(self, object: str) -> AttachmentViolation | None:
         """The runtime's report that ``object`` left its current attachment's transform,
         if it made one: privileged reference data, for evaluation. It never changes a
@@ -1298,7 +1325,6 @@ class RobotContext:
         unsettled: Iterable[str] = (),
         releases: Mapping[str, Pose] | None = None,
         removals: Iterable[str] = (),
-        allowances: Mapping[str, Iterable[str]] | None = None,
         joints: Mapping[str, float] | None = None,
     ) -> PredictedSnapshot:
         """The state expected if ``execution`` succeeds: its joints at its last waypoint,
@@ -1321,12 +1347,7 @@ class RobotContext:
         ``removals`` names held objects expected to be released and then removed from the
         scene, as an application does with one it assumes landed; only with registered
         object poses. In the predicted state each is removed; on arrival each must be.
-        ``allowances`` names held objects whose attachment is
-        expected to be re-declared, after ``execution`` and before the plan runs, with
-        another allow set and the same transform, such as a grasp narrowing what a lifted
-        object may touch to the hand. In the predicted state each attachment has that
-        allow set, checked as ``attach`` checks it; on arrival each must have exactly it.
-        Releases, removals and allowance changes are the only scene changes allowed. ``joints``
+        Releases and removals are the only scene changes allowed. ``joints``
         sets joints the motion does not move to the positions expected when the plan
         runs, such as a gripper's, opened by that release; for planning only."""
         self._require("predict")
@@ -1392,17 +1413,6 @@ class RobotContext:
                 "an object is either released or removed, not both",
                 path="removals",
             )
-        changed: dict[str, tuple[str, ...]] = {}
-        for name, allow in (allowances or {}).items():
-            current = next((a for a in base.attachments if a.object == name), None)
-            if current is None or name in releases or name in removing:
-                raise ValidationError(
-                    "unknown_reference",
-                    f"{name!r} is not held, or is released, so its allowance cannot change",
-                    path="allowances",
-                )
-            effector = self._description.end_effector(current.end_effector)
-            changed[name] = self._allowed(effector, base, allow)
         moved.update(releases)
         released = ObjectStatus.REGISTERED if registered else ObjectStatus.MEASURED
 
@@ -1415,9 +1425,7 @@ class RobotContext:
 
         objects = tuple(predicted(o) for o in base.objects)
         attachments = tuple(
-            replace(a, allow=changed[a.object]) if a.object in changed else a
-            for a in base.attachments
-            if a.object not in releases and a.object not in removing
+            a for a in base.attachments if a.object not in releases and a.object not in removing
         )
         # It ends its duration after the runtime accepted it, not after the snapshot it
         # was planned on: time may pass in between.
@@ -1444,7 +1452,6 @@ class RobotContext:
             expected=tuple(sorted(expected)),
             releases=tuple(sorted(releases)),
             removals=removing,
-            allowances=tuple(sorted(changed)),
             world=base.model,
             lineage=(base_id,),
         )

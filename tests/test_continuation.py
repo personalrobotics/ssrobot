@@ -21,11 +21,9 @@ A prediction that names that falling block ``unsettled`` makes no claim about it
 so the same arrival continues. A block carried through the source and predicted
 released (``releases``) continues once it is detached, and is refused, as an
 unpredicted scene change, when it was not. A block carried through the source, allowed
-to touch both of the arm's links, and predicted narrowed to its tool's link after it
-(``allowances``, as a grasp restricts a lifted object to the hand) continues once it is
-re-declared exactly so. It is refused, as an unpredicted scene change, when it is
-re-declared to another allow set or another transform, not re-declared, or re-declared
-without the prediction expecting it.
+to touch both of the arm's links, continues when its allow set is unchanged, and is
+refused, as an unpredicted scene change, when it is narrowed to the tool's link
+(``set_attachment_allowances``) before the continuation: no prediction expects it.
 - ``rebase_unsupported``: the planner cannot rebase.
 Every continuation is given the result of a ``JointRest`` watch on the right arm, started
 once its source has finished, with the test's own criteria (``REST``): the fixture's
@@ -383,12 +381,10 @@ def _releasing(ctx: RobotContext, planner: CBiRRT, *, release: bool) -> dict[str
     }
 
 
-def _allowing(ctx: RobotContext, planner: CBiRRT, *, redeclare: str, expect: bool = True) -> Any:
+def _allowing(ctx: RobotContext, planner: CBiRRT, *, narrow: bool) -> Any:
     """The block held by the right arm through rest -> A, allowed to touch both of its
-    links; its allowance predicted narrowed to the tool's link after it (unless not
-    ``expect``), then re-declared before the continuation: as predicted (``narrowed``),
-    to another allow set (``other_allow``), with another transform (``moved``), or not at
-    all (``kept``)."""
+    links; with ``narrow``, its allow set narrowed to the tool's link once the source has
+    run, before the continuation."""
     tool = ctx.description.end_effector(TOOL).frame
     wide = ctx.attach("block", TOOL, allow=("right_link1", tool)).attachment("block")
     assert wide is not None
@@ -396,32 +392,17 @@ def _allowing(ctx: RobotContext, planner: CBiRRT, *, redeclare: str, expect: boo
     plan = ctx.plan(_request(ctx, A, snapshot), snapshot=snapshot, planner=planner)
     assert plan.succeeded, plan.status
     source = ctx.execute(plan, planner=planner)
-    expected = {"block": (tool,)} if expect else None
-    prediction = ctx.predict(source, allowances=expected)
+    prediction = ctx.predict(source)
     ahead = CBiRRT(ctx.description)
     after = ctx.plan(_request(ctx, B, prediction), snapshot=prediction, planner=ahead)
     assert after.succeeded, after.status
     ctx.run_until(source, max_ticks=MAX_TICKS)
-    if redeclare != "kept":
-        held = ctx.scene.attachment("block")
-        assert held is not None
-        transform = held.transform
-        allow_: tuple[str, ...] = (tool,)
-        if redeclare == "other_allow":
-            allow_ = ("left_link1", tool)
-        if redeclare == "moved":
-            x, y, z = transform.position
-            transform = replace(transform, position=(x + 0.01, y, z))
-        ctx.detach("block")
-        ctx.attach("block", TOOL, transform=transform, allow=allow_)
+    if narrow:
+        ctx.set_attachment_allowances("block", allow=(tool,))
     result = ctx.execute_continuation(
         ctx.continuation(after, planner=ahead, prediction=prediction), rest=_rested(ctx)
     )
     return {
-        "prediction_allowances": list(prediction.allowances),
-        "predicted_allow": [
-            list(a.allow) for a in prediction.state.attachments if a.object == "block"
-        ],
         "carried": [o.name for o in prediction.held],
         "report": json.loads(dumps(result.report)),
     }
@@ -493,24 +474,19 @@ def _evidence(tmp_path: Path) -> dict[str, Any]:
             tmp_path / "kept", lambda c, p: _releasing(c, p, release=False), block=BLOCK
         ),
     }
-    # The same block expected to have its allowance narrowed after the source. It is
-    # declared, not carried (nothing grips it), so the attachment monitor's tolerance is
-    # relaxed for these sessions: the declared transform stands, as it does for an object
-    # a gripper holds, and can be re-declared exactly.
+    # The same block, its allow set narrowed after the source or not. It is declared, not
+    # carried (nothing grips it), so the attachment monitor's tolerance is relaxed for
+    # these sessions: the declared transform stands, as it does for an object a gripper
+    # holds.
     loose = {"attach_tolerance_m": 10.0, "attach_tolerance_rad": 10.0}
     allowed = {
         name: _session(
             tmp_path / f"allowance-{name}",
-            lambda c, p, name=name: _allowing(
-                c,
-                p,
-                redeclare="narrowed" if name == "unexpected" else name,
-                expect=name != "unexpected",
-            ),
+            lambda c, p, name=name: _allowing(c, p, narrow=name == "narrowed"),
             block=BLOCK,
             runtime_options=loose,
         )
-        for name in ("narrowed", "other_allow", "moved", "kept", "unexpected")
+        for name in ("unchanged", "narrowed")
     }
     return {
         "accepted": accepted,
@@ -575,19 +551,12 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
     assert [d["kind"] for d in kept["discrepancies"]] == ["attachments"]
 
     allowed = evidence["allowances"]
-    narrowed = allowed["narrowed"]
-    assert narrowed["prediction_allowances"] == ["block"]
-    assert narrowed["predicted_allow"] == [["right_link2"]]  # as it will be declared
-    assert narrowed["carried"] == ["block"]  # still held, carried with the hand
-    assert narrowed["report"]["accepted"], narrowed["report"]
-    for name in ("other_allow", "moved", "kept"):
-        report = allowed[name]["report"]
-        assert report["refusal"] == "unpredicted_scene_change", (name, report)
-        assert [d["kind"] for d in report["discrepancies"]] == ["attachments"], (name, report)
-    unexpected = allowed["unexpected"]
-    assert unexpected["prediction_allowances"] == []
-    assert unexpected["report"]["refusal"] == "unpredicted_scene_change", unexpected["report"]
-    assert [d["kind"] for d in unexpected["report"]["discrepancies"]] == [
+    unchanged, narrowed = allowed["unchanged"], allowed["narrowed"]
+    assert unchanged["carried"] == ["block"]  # held, carried with the hand
+    assert unchanged["report"]["accepted"], unchanged["report"]
+    # A narrowed allow set is a new scene revision no prediction expected.
+    assert narrowed["report"]["refusal"] == "unpredicted_scene_change", narrowed["report"]
+    assert [d["kind"] for d in narrowed["report"]["discrepancies"]] == [
         "revision",
         "attachments",
     ]

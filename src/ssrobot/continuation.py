@@ -84,7 +84,7 @@ class PredictedSnapshot(Record):
     """The state expected if ``source`` succeeds and every recorded assumption holds."""
 
     SCHEMA = "ssrobot.PredictedSnapshot"
-    VERSION = 3
+    VERSION = 4
 
     state: SceneSnapshot = field(
         metadata=meta("The predicted state, as a snapshot value; never a captured one.")
@@ -137,15 +137,6 @@ class PredictedSnapshot(Record):
             "on arrival each must be."
         ),
     )
-    allowances: tuple[str, ...] = field(
-        default=(),
-        metadata=meta(
-            "Held objects whose attachment is expected to be re-declared after it and "
-            "before the plan made on it runs, with another allow set and the same "
-            "transform. In the state each attachment has the expected allow set; on "
-            "arrival each must have exactly it."
-        ),
-    )
     world: str = field(metadata=meta("The world identity (model and scene) it is a state of."))
     lineage: tuple[str, ...] = field(
         metadata=meta("Fingerprints it was predicted from, oldest first: the captured base.")
@@ -158,8 +149,8 @@ class PredictedSnapshot(Record):
         if self.state.revision != self.base_revision:
             raise ValidationError(
                 "inconsistent_prediction",
-                "a prediction's state keeps the base's revision; releases and allowance "
-                "changes are expected after it",
+                "a prediction's state keeps the base's revision; releases and removals are "
+                "expected after it",
                 path="state.revision",
             )
         if self.state.model != self.world:
@@ -204,16 +195,6 @@ class PredictedSnapshot(Record):
                 "inconsistent_prediction",
                 "removals names objects removed in the state, sorted, once each",
                 path="removals",
-            )
-        attached = {a.object for a in self.state.attachments}
-        if (
-            list(self.allowances) != sorted(set(self.allowances))
-            or not set(self.allowances) <= attached
-        ):
-            raise ValidationError(
-                "inconsistent_prediction",
-                "allowances names objects attached in the state, sorted, once each",
-                path="allowances",
             )
 
 
