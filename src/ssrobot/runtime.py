@@ -35,7 +35,7 @@ class RuntimeInfo(Record):
     """What an opened runtime reports about itself."""
 
     SCHEMA = "ssrobot.RuntimeInfo"
-    VERSION = 8
+    VERSION = 9
 
     runtime: str = field(metadata=meta("Runtime implementation name."))
     runtime_version: str = field(metadata=meta("Runtime implementation and backend versions."))

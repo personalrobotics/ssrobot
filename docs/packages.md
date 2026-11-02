@@ -381,7 +381,9 @@ malformed packages; see the evidence table in [contracts.md](contracts.md).
 
 Geodude and ADA are the two full reference robots. Each owns its manifest in its asset
 repository. [`references/robots.toml`](../references/robots.toml) pins the first commit
-that carries it, with the structure the robot's report must show.
+that carries it, with the structure the robot's report must show. ADA's repository has a
+second package, `ada_hand`: the same arm and gripper without the articutool, so its
+fingers can close on an object. It is pinned as a robot of its own.
 
 ```sh
 uv run python scripts/check_reference_robots.py --out artifacts/reference-robots
@@ -464,26 +466,36 @@ the uv version. The script then runs two public commands, and opens the runtime:
   name. In CI, the whole check runs with the built ssrobot wheel, installed with the
   locked extras into a clean environment (`--require-installed-ssrobot`, which fails
   unless ssrobot is loaded from outside the checkout).
-- The **guarded-contact proof** (#124), when the scenario has a `guard` table. One
-  function, `guarded`, serves every robot. The table gives:
+- The **guarded-contact proof** (#124, #236), when the scenario has a `guard` table.
+  One function, `guarded`, serves every robot. The table gives:
   - the frame and its region relative to the object;
   - the direction and distance of the move, and its duration;
-  - the wrench channel, and a force threshold.
+  - the guarded channel: a wrench channel and a force threshold, or a joint-effort
+    channel and a margin.
 
   It plans with sscbirrt to the region, executes, and settles. It then builds the
   straight move of the frame from the planning scene's forward kinematics, one waypoint
   per control tick on a cosine profile. It submits that as a `GuardedJointTrajectory`
-  with a tared force-magnitude guard. The move is meant to make contact, so it is not
-  geometrically validated (#143). The same command then runs in a runtime without the
-  scene, held at the same setpoint first.
+  with a tared guard: on a wrench channel, a force-magnitude `WrenchGuard`; on a
+  joint-effort channel, an `EffortGuard`. An effort guard's thresholds are derived, not
+  declared: the same move first runs unguarded in a runtime without the scene, and
+  every joint's threshold is the margin times the largest tared change of any joint's
+  effort over it. The move is meant to make contact, so it is not geometrically
+  validated (#143). The same command then runs in a runtime without the scene, held at
+  the same setpoint first.
 
   It passes when contact ends with `guard_triggered` on the first tick the script's
-  own wrench reading crosses the threshold, and the free run ends with
-  `trajectory_completed`. Both runs must give the same `guarded.json` and
-  `guarded.command.json`, byte for byte.
+  own reading of the channel trips the guard, no sooner than the robot first touches
+  the scene, and the free run ends with `trajectory_completed`. The touch is read from
+  the simulation as ground truth only; the guard never reads it. Both runs must give
+  the same `guarded.json` and `guarded.command.json`, byte for byte.
   - **Geodude:** the open hand moves along its approach axis from the side-grasp band
     into the cylinder.
   - **ADA:** the fork tip moves down onto the cylinder's top.
+  - **ADA's bare hand:** the open hand, palm down beside the cylinder, moves down onto
+    the table, guarded by the arm's joint actuator effort (`arm_qf`). The effort is what
+    the actuators exert, not a contact torque: the guard sees the table because the
+    obstructed servos push harder.
 - The **gripper-contact proof** (#219), when the scenario has a `grip` table. One
   function, `gripped`, serves every robot. The table gives the hand frame, a cylinder's
   radius and half-length, and its pose in that frame. The function finds where the
@@ -497,10 +509,11 @@ the uv version. The script then runs two public commands, and opens the runtime:
   from the simulation as ground truth only; the detector never reads them. Both runs
   must give the same `grip.json` and scene, byte for byte.
   - **Geodude:** a 4 cm cylinder across the open fingers, 2.5 cm ahead of the TCP.
-  - **ADA:** none yet. Its package mounts the articutool in the hand, with the tool's
+  - **ADA:** none. Its package mounts the articutool in the hand, with the tool's
     handle where the fingers close and the fingers' contacts with it excluded, so no
-    object can be placed in its grasp. Closing on an object waits for mounted-tool
-    composition (#121).
+    object can be placed in its grasp.
+  - **ADA's bare hand:** a 5 cm cylinder across the open fingers, where sstsr's side
+    grasp for the JACO2 hand puts it, 6.41 cm ahead of the palm grasp site.
 
 It then checks that the report is a valid `ssrobot.PackageReport`, that its fingerprint
 matches its description, that nothing is ambiguous, and that the description

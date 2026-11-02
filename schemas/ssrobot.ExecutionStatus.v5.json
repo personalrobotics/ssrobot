@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.ExecutionStatus v4",
+  "title": "ssrobot.ExecutionStatus v5",
   "$ref": "#/$defs/ExecutionStatus",
   "$defs": {
     "Diagnostic": {
@@ -41,7 +41,7 @@
           "const": "ssrobot.ExecutionStatus"
         },
         "version": {
-          "const": 4
+          "const": 5
         },
         "execution": {
           "type": "string",
@@ -186,11 +186,11 @@
               "type": "null"
             }
           ],
-          "description": "Which half of the wrench was measured; None for an opening guard."
+          "description": "Which half of the wrench was measured; None for an opening or effort guard."
         },
         "measure": {
           "type": "number",
-          "description": "The guarded measure at the deciding tick: the last of window. A wrench guard's is in N or N*m by part; an opening guard's is the opening, in 1.",
+          "description": "The guarded measure at the deciding tick: the last of window. A wrench guard's is in N or N*m by part; an opening guard's is the opening, in 1; an effort guard's is the largest effort change as a fraction of its joint's threshold, in 1.",
           "x-unit": "channel"
         },
         "baseline": {

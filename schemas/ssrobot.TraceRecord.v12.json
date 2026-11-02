@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.TraceRecord v11",
+  "title": "ssrobot.TraceRecord v12",
   "$ref": "#/$defs/TraceRecord",
   "$defs": {
     "ActionChunk": {
@@ -831,6 +831,46 @@
       ],
       "additionalProperties": false
     },
+    "EffortGuard": {
+      "type": "object",
+      "description": "A joint-effort condition a runtime evaluates at every control tick.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.EffortGuard"
+        },
+        "version": {
+          "const": 1
+        },
+        "channel": {
+          "type": "string",
+          "description": "The joint-effort channel it reads."
+        },
+        "thresholds": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Per joint, in the channel's group's canonical order, the effort change that trips the guard.",
+          "x-unit": "joint-effort"
+        },
+        "tare": {
+          "type": "boolean",
+          "description": "Measure from the reading when the motion started."
+        },
+        "samples": {
+          "type": "integer",
+          "description": "Consecutive ticks at or over a threshold.",
+          "x-unit": "count"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "channel",
+        "thresholds"
+      ],
+      "additionalProperties": false
+    },
     "ExecutionCheck": {
       "type": "object",
       "description": "One independent check of a runtime command.",
@@ -863,7 +903,7 @@
           "const": "ssrobot.ExecutionStatus"
         },
         "version": {
-          "const": 4
+          "const": 5
         },
         "execution": {
           "type": "string",
@@ -1019,11 +1059,11 @@
           "items": {
             "type": "string"
           },
-          "description": "Wrench and gripper-opening channels a guard may read, sorted."
+          "description": "Wrench, gripper-opening, and joint-effort channels a guard may read, sorted."
         },
         "tare": {
           "type": "boolean",
-          "description": "Whether a wrench guard may measure from the reading at the start."
+          "description": "Whether a wrench or effort guard may measure from the reading at the start."
         },
         "period_ns": {
           "type": "integer",
@@ -1075,11 +1115,11 @@
               "type": "null"
             }
           ],
-          "description": "Which half of the wrench was measured; None for an opening guard."
+          "description": "Which half of the wrench was measured; None for an opening or effort guard."
         },
         "measure": {
           "type": "number",
-          "description": "The guarded measure at the deciding tick: the last of window. A wrench guard's is in N or N*m by part; an opening guard's is the opening, in 1.",
+          "description": "The guarded measure at the deciding tick: the last of window. A wrench guard's is in N or N*m by part; an opening guard's is the opening, in 1; an effort guard's is the largest effort change as a fraction of its joint's threshold, in 1.",
           "x-unit": "channel"
         },
         "baseline": {
@@ -1125,7 +1165,7 @@
           "const": "ssrobot.GuardedJointTrajectory"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "trajectory": {
           "$ref": "#/$defs/JointTrajectory",
@@ -1138,6 +1178,9 @@
             },
             {
               "$ref": "#/$defs/OpeningGuard"
+            },
+            {
+              "$ref": "#/$defs/EffortGuard"
             }
           ],
           "description": "When to stop it."
@@ -2578,7 +2621,7 @@
           "const": "ssrobot.RuntimeInfo"
         },
         "version": {
-          "const": 8
+          "const": 9
         },
         "runtime": {
           "type": "string",
@@ -2842,7 +2885,7 @@
           "const": "ssrobot.Submission"
         },
         "version": {
-          "const": 3
+          "const": 4
         },
         "execution": {
           "type": "string",
@@ -2946,7 +2989,7 @@
           "const": "ssrobot.TraceRecord"
         },
         "version": {
-          "const": 11
+          "const": 12
         },
         "sequence": {
           "type": "integer",

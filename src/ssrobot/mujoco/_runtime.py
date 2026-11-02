@@ -21,6 +21,7 @@ from ssrobot.commands import (
     ActionChunk,
     Command,
     CommandKind,
+    EffortGuard,
     GripperCommand,
     Guard,
     GuardCapability,
@@ -378,10 +379,7 @@ class MujocoRuntime:
                 joints = d.group(spec.source).joints
                 value = tuple(float(data.qvel[self._joints[j].dof_address]) for j in joints)
             elif spec.quantity is Quantity.JOINT_EFFORT:
-                joints = d.group(spec.source).joints
-                value = tuple(
-                    float(data.qfrc_actuator[self._joints[j].dof_address]) for j in joints
-                )
+                value = self._effort(spec.source)
             elif spec.quantity is Quantity.GRIPPER_OPENING:
                 value = (self._opening(spec.source),)
             elif spec.quantity is Quantity.POSE:
@@ -815,10 +813,10 @@ class MujocoRuntime:
         guarded = sorted({c.component for c in confirmed if c.kind is CommandKind.JOINT_TRAJECTORY})
         scene = self._scene_channels(description)
         robot = tuple(b.name for b in channels if b.unavailable is None)
-        openings = {
+        guardable = {
             c.name
             for c in description.channels
-            if c.quantity is Quantity.GRIPPER_OPENING and c.name in robot
+            if c.quantity in (Quantity.GRIPPER_OPENING, Quantity.JOINT_EFFORT) and c.name in robot
         }
         rest = self._rest(description, profile, robot, profile_entry)
         privileged = sorted(
@@ -845,20 +843,20 @@ class MujocoRuntime:
                 fixed_period=True,
                 goal_tolerance=self._goal_tolerance,
             ),
-            # Every trajectory-driven group, on every bound wrench and gripper-opening
-            # channel. step() reads
-            # the guard after each tick's physics and sets the hold before the next tick,
-            # so the joints hold no later than one period after the triggering reading.
+            # Every trajectory-driven group, on every bound wrench, gripper-opening, and
+            # joint-effort channel. step() reads the guard after each tick's physics and
+            # sets the hold before the next tick, so the joints hold no later than one
+            # period after the triggering reading.
             guards=tuple(
                 GuardCapability(
                     component=component,
-                    channels=tuple(sorted({*self._wrenches, *openings})),
+                    channels=tuple(sorted({*self._wrenches, *guardable})),
                     tare=True,
                     period_ns=self._substeps * timestep_ns,
                     stop_latency_ns=self._substeps * timestep_ns,
                 )
                 for component in guarded
-                if self._wrenches or openings
+                if self._wrenches or guardable
             ),
         )
 
@@ -1445,11 +1443,23 @@ class MujocoRuntime:
             float(v) for v in data.sensordata[torque : torque + 3]
         )
 
+    def _effort(self, group: str) -> tuple[float, ...]:
+        """A joint group's actuator efforts now, in its canonical order: what its
+        actuators exert on each joint (``qfrc_actuator``), at the current state and
+        controls."""
+        data = self._current()
+        joints = self._described().group(group).joints
+        return tuple(float(data.qfrc_actuator[self._joints[j].dof_address]) for j in joints)
+
     def _guarded(self, guard: Guard) -> tuple[float, ...]:
-        """The reading ``guard`` measures now: its wrench, or its gripper's opening."""
+        """The reading ``guard`` measures now: its wrench, its gripper's opening, or its
+        group's actuator efforts."""
         if isinstance(guard, WrenchGuard):
             return self._wrench(guard.channel)
-        return (self._opening(self._described().channel(guard.channel).source),)
+        source = self._described().channel(guard.channel).source
+        if isinstance(guard, EffortGuard):
+            return self._effort(source)
+        return (self._opening(source),)
 
     def _outcome(
         self,

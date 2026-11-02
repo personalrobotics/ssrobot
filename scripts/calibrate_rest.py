@@ -444,7 +444,8 @@ def joint_trials(robot: Robot, arm: Arm, keyframe: tuple[float, ...]) -> list[Tr
 
 def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
     """The arm carrying the scenario's object, where it can grasp it: the open hand in
-    the side-grasp band of the guarded-contact proof, moved straight along its approach
+    the side-grasp band of the guarded-contact proof if that proof moves along the hand's
+    approach axis, or else of the planning proof, moved straight along its approach
     axis until the object is where the grip table puts one between the fingers; the
     gripper closed on it; and the arm raised by its prismatic joint, if any, or its first
     joint. Then three motions."""
@@ -461,7 +462,10 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
     group = manipulator.group
     joints = description.group(group).joints
     held: dict[str, Any] = {}
-    band = spec.get("guard", spec)  # the guarded proof's band, which leaves the object standing
+    # The guarded proof's band, which leaves the object standing, if it is a side grasp:
+    # one moving along the hand's approach axis. ADA's bare hand descends onto the table.
+    guard = spec.get("guard", {})
+    band = guard if "direction_in_frame" in guard else spec
 
     def where(ctx: RobotContext) -> list[float]:
         pose = next(o.known_pose() for o in ctx.snapshot().objects if o.name == spec["object"])
@@ -625,7 +629,9 @@ def run_joint(
 
 def completed(name: str) -> Callable[[dict[str, Any]], bool]:
     """Whether a joint trial is one the rule can judge: its trajectory succeeded, and a
-    held object is still raised, by at least half the lift, where the arm carried it."""
+    held object was raised and is still raised, by at least half the lift, where the arm
+    carried it. An arm whose first joint turns about the vertical, as ADA's, does not
+    raise it: the object is dragged on the table, and the trial is not judged."""
 
     def test(trial: dict[str, Any]) -> bool:
         if trial["execution"]["state"] != "succeeded":
@@ -633,6 +639,8 @@ def completed(name: str) -> Callable[[dict[str, Any]], bool]:
         held = trial.get("payload")
         if held is None:
             return True
+        if held["object_raised_m"] <= 0:
+            return False
         floor_z = held["object_raised_to_m"] - held["object_raised_m"] / 2
         return bool(trial["objects"][name][2] > floor_z)
 

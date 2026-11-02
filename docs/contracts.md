@@ -51,7 +51,7 @@ uses them:
 | --- | --- |
 | Anyone loading or reading a robot | `load_package`, `load_installed_package`, `RobotPackage`, `PackageReport`, `Diagnostic`, `ResolvedFile`, `SourceItem`, `RobotDescription`, `KinematicModel`, `Semantics`, `Frame`, `Joint`, `JointKind`, `JointLimits`, `JointLimitDeclaration`, `JointGroup`, `Manipulator`, `Gripper`, `EndEffector`, `MobileBase`, `Sensor`, `SensorKind`, `NamedConfiguration`, `CollisionAllowance`, `CommandCapability`, `CommandKind`, `ChannelSpec` |
 | Package manifests and inference | `PackageManifest`, `ModelEntry`, `ModelFormat`, `ProfileEntry`, `FileEntry`, `InferenceSettings`, `InferenceMode`, `CandidateChoice`, `InferenceReport`, `Candidate`, `CandidateKind`, `CandidateOutcome` |
-| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `GuardedJointTrajectory`, `WrenchGuard`, `WrenchPart`, `OpeningGuard`, `GuardOutcome`, `GuardCause`, `ActionChunk`, `GripperCommand`, `GripperResult`, `GripperTermination`, `GripperDirection`, `GripperEvidence`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `JointRest`, `ObjectRest`, `RestCriteria`, `RestWatch`, `RestResult`, `RestOutcome`, `RestSample`, `RestChannel`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `AttachmentReference`, `Registration`, `ObjectPoses`, `ObjectStatus`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
+| Clients of a session | `RobotContext`, `ContextState`, `Execution`, `ExecutionState`, `ExecutionStatus`, `Ownership`, `Command`, `JointCommand`, `JointMode`, `JointTrajectory`, `GuardedJointTrajectory`, `WrenchGuard`, `WrenchPart`, `OpeningGuard`, `EffortGuard`, `GuardOutcome`, `GuardCause`, `ActionChunk`, `GripperCommand`, `GripperResult`, `GripperTermination`, `GripperDirection`, `GripperEvidence`, `BaseTwistCommand`, `ObservationRequest`, `Observation`, `Reading`, `Quantity`, `JointRest`, `ObjectRest`, `RestCriteria`, `RestWatch`, `RestResult`, `RestOutcome`, `RestSample`, `RestChannel`, `ArrayValue`, `DType`, `Pose`, `Timestamp`, `ClockMode`, `SceneState`, `Attachment`, `AttachmentReference`, `Registration`, `ObjectPoses`, `ObjectStatus`, `SceneSnapshot`, `ObjectState`, `PlanningScene`, `Contact`, `ContactKind` |
 | Runtimes, and those who write them | `Runtime`, `SceneRuntime`, `SnapshotRuntime`, `TrackedAttachment`, `RuntimeInfo`, `ChannelRest`, `GuardCapability`, `RuntimeUpdate`, `AttachmentViolation`, `RuntimeHealth`, `HealthState`, `Submission`, `AppliedCommand`, `Modification`, `ModificationKind`, `ReplayRuntime`, `ReplayScript`, `ReplayTick` |
 | Planners and their clients | `ManipulatorView`, `BaseView`, `PlanningRequest`, `Goal`, `GoalKind`, `ConfigurationGoal`, `PoseGoal`, `OffsetGoal`, `TsrGoal`, `BasePoseGoal`, `Tsr`, `ConstraintClass`, `EffectiveLimits`, `PlanResult`, `PlanStatus`, `GeometricPath`, `TimedTrajectory`, `Planner`, `PlannerCapabilities`, `ResultForm`, `TrajectoryProcessor`, `PreparedTrajectory`, `prepare`, `MotionValidator`, `MotionValidation`, `ChainsRun`, `Chain`, `Stage`, `StageRequest`, `StageResult`, `Chains`, `ChainsReport`, `ChainRecord`, `ChainAttempt`, `StageAttempt`, `StageOutcome`, `StopReason`, `PredictedSnapshot`, `PlanProjection`, `Continuation`, `ContinuationReport`, `ContinuationResult`, `Discrepancy`, `DiscrepancyKind`, `RebasingPlanner` |
 | Readers and writers of traces and wire forms | `JsonlTrace`, `read_trace`, `TraceRecord`, `TraceKind`, `Record`, `Value`, `AssetStore`, `dumps`, `loads` |
@@ -178,13 +178,14 @@ or task logic.
   channels (see *Scene channels and privilege*). In `RuntimeInfo` (version 4),
   `trajectory` is the runtime's trajectory-execution contract, or None when it cannot
   declare one (see *Runtime commands*). `guards` lists, per component, a
-  `GuardCapability`: the wrench and gripper-opening channels it evaluates guards on,
-  whether it can tare a wrench guard, how often it evaluates them (`period_ns`), and
-  the longest time from a triggering reading to the hold (`stop_latency_ns`). It is
-  empty when the runtime cannot execute a `GuardedJointTrajectory` (see *Guarded
-  trajectories*). Each component must be one the runtime confirms for joint
-  trajectories, and each channel a confirmed wrench or gripper-opening channel
-  (`undeclared_capability`); before version 8, only wrench channels. In version 6, `rest` lists the
+  `GuardCapability`: the wrench, gripper-opening, and joint-effort channels it evaluates
+  guards on, whether it can tare a wrench or effort guard, how often it evaluates them
+  (`period_ns`), and the longest time from a triggering reading to the hold
+  (`stop_latency_ns`). It is empty when the runtime cannot execute a
+  `GuardedJointTrajectory` (see *Guarded trajectories*). Each component must be one the
+  runtime confirms for joint trajectories, and each channel a confirmed wrench,
+  gripper-opening, or joint-effort channel (`undeclared_capability`); before version 9,
+  no joint-effort channel, and before version 8, only wrench channels. In version 6, `rest` lists the
   rest criteria the runtime declares for channels it sources, sorted by channel. Each
   must be a confirmed joint-position or pose channel, with criteria of the matching
   kind (`undeclared_capability`). See *Rest watches*.
@@ -903,23 +904,23 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`KinematicModel`](../schemas/ssrobot.KinematicModel.v1.json) | A robot's frames and joints, as a model loader produces them. |
 | [`ssrobot.package`](../schemas/ssrobot.package.v1.json) | A package manifest, `ssrobot.toml`. See [packages.md](packages.md). |
 | [`PackageReport`](../schemas/ssrobot.PackageReport.v1.json) | What loading a package resolved. |
-| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v8.json) | What an opened runtime binds and confirms, including its scene channels, which channels are privileged, and the rest criteria it declares. |
+| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v9.json) | What an opened runtime binds and confirms, including its scene channels, which channels are privileged, and the rest criteria it declares. |
 | [`JointRest`](../schemas/ssrobot.JointRest.v2.json), [`ObjectRest`](../schemas/ssrobot.ObjectRest.v2.json) | What a rest watch waits for: a component's joints, or a scene object, at rest. |
 | [`RestResult`](../schemas/ssrobot.RestResult.v2.json) | How a rest watch ended, with the readings that justify it. |
 | [`JointCommand`](../schemas/ssrobot.JointCommand.v1.json) | Instantaneous position, velocity, or effort targets for a group. |
 | [`GripperCommand`](../schemas/ssrobot.GripperCommand.v1.json) | Target opening. |
 | [`BaseTwistCommand`](../schemas/ssrobot.BaseTwistCommand.v1.json) | Planar base velocity. |
 | [`JointTrajectory`](../schemas/ssrobot.JointTrajectory.v1.json) | Timed waypoints from t = 0, strictly increasing. |
-| [`GuardedJointTrajectory`](../schemas/ssrobot.GuardedJointTrajectory.v2.json) | A joint trajectory and the guard that stops it. |
-| [`WrenchGuard`](../schemas/ssrobot.WrenchGuard.v1.json), [`OpeningGuard`](../schemas/ssrobot.OpeningGuard.v1.json) | A force-torque guard, or a gripper-opening guard. |
+| [`GuardedJointTrajectory`](../schemas/ssrobot.GuardedJointTrajectory.v3.json) | A joint trajectory and the guard that stops it. |
+| [`WrenchGuard`](../schemas/ssrobot.WrenchGuard.v1.json), [`OpeningGuard`](../schemas/ssrobot.OpeningGuard.v1.json), [`EffortGuard`](../schemas/ssrobot.EffortGuard.v1.json) | A force-torque guard, a gripper-opening guard, or a joint actuator effort guard. |
 | [`ActionChunk`](../schemas/ssrobot.ActionChunk.v1.json) | Fixed-period steps of instantaneous commands from a start time. Every step addresses the same components, joints, and modes. |
 | [`ObservationRequest`](../schemas/ssrobot.ObservationRequest.v2.json) | Channel names to observe, and whether only portable channels may be. |
 | [`Observation`](../schemas/ssrobot.Observation.v1.json) | Timestamped readings, one per requested channel. |
-| [`ExecutionStatus`](../schemas/ssrobot.ExecutionStatus.v4.json) | The state of a submitted command, and how a guarded trajectory ended. |
+| [`ExecutionStatus`](../schemas/ssrobot.ExecutionStatus.v5.json) | The state of a submitted command, and how a guarded trajectory ended. |
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
-| [`Submission`](../schemas/ssrobot.Submission.v3.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
+| [`Submission`](../schemas/ssrobot.Submission.v4.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
-| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v11.json) | One event in a trace. |
+| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v12.json) | One event in a trace. |
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`ChainsReport`](../schemas/ssrobot.ChainsReport.v2.json) | Every attempt and stage of a race of staged prefixes, each chain's choice and cost, and the selection. See planning.md. |
@@ -967,8 +968,9 @@ inspected before any runtime opens. The runtime confirms which are available in
 3. The capability is declared (`unsupported_command`).
 4. The capability is available now (`unavailable_command` or `unavailable_channel`).
 5. A guarded trajectory's guard reads a declared channel of its quantity, a wrench for a
-   `WrenchGuard` and a gripper opening for an `OpeningGuard` (`unknown_reference`,
-   `unsupported_quantity`), and the runtime guards the trajectory's group
+   `WrenchGuard`, a gripper opening for an `OpeningGuard`, and a joint effort for an
+   `EffortGuard` (`unknown_reference`, `unsupported_quantity`). An `EffortGuard` has one
+   threshold per joint of the channel's group (`shape_mismatch`). The runtime guards the trajectory's group
    (`guards_unavailable`) on that channel (`unavailable_guard_channel`) with every
    feature it asks for (`unsupported_guard_feature`). Its trajectory is checked as in steps 2 to 4.
 
@@ -1051,9 +1053,8 @@ limit, or safety override is listed as a `Modification`.
 
 ### Guarded trajectories
 
-A `GuardedJointTrajectory` is a `JointTrajectory` and a guard: a `WrenchGuard` or an
-`OpeningGuard`. The runtime
-executes the trajectory exactly as it would alone, and evaluates the guard every
+A `GuardedJointTrajectory` is a `JointTrajectory` and a guard: a `WrenchGuard`, an
+`OpeningGuard`, or an `EffortGuard`. The runtime executes the trajectory exactly as it would alone, and evaluates the guard every
 `GuardCapability.period_ns`, at its own rate; no client loop is involved. It owns only the
 guard and the stop: no IK, Cartesian interpolation, or force control.
 
@@ -1064,9 +1065,17 @@ guard and the stop: no IK, Cartesian interpolation, or force control.
     of that vector, or with `axis` (a unit vector in the sensor frame) its signed
     projection.
   - An `OpeningGuard`'s is its gripper-opening channel's reading, untared.
+  - An `EffortGuard`'s is `max_i |τ_i − τ_i(start)| / thresholds[i]` over its
+    joint-effort channel's joints, in the group's canonical order, with `τ(start)` the
+    reading when the motion started if it tares (the default), and zero otherwise.
+    `thresholds` are positive and finite, in N·m or N by joint type. The channel is the
+    joints' **actuator** effort, the generalized force their actuators exert, not a
+    measurement of external contact torque. The guard detects contact only because the
+    controller's effort changes when the joints are obstructed.
 - **The trigger.** For `samples` consecutive ticks, a `WrenchGuard`'s measure is at
-  least `threshold` (positive, in N or N·m), or an `OpeningGuard`'s is below `below`
-  (in (0, 1]): fingers that close past an object's width while the trajectory runs.
+  least `threshold` (positive, in N or N·m), an `OpeningGuard`'s is below `below`
+  (in (0, 1]): fingers that close past an object's width while the trajectory runs, or
+  an `EffortGuard`'s is at least 1: some joint's effort changed by its threshold.
 - **The stop.** When it triggers, the runtime holds the trajectory's joints where they
   are, with a joint position command recorded as `applied`, no later than
   `GuardCapability.stop_latency_ns` after the triggering reading.
@@ -1460,7 +1469,7 @@ artifact's `first-journey/`.
 | `artifacts/test_writes_are_safe/safety.json` | An existing manifest survives a refusal, an unknown answer, and an invalid result, with no temporary files left; `--force` replaces it. |
 | `artifacts/test_operational_errors_are_diagnostics/operational-errors.json` | Missing files, unwritable outputs, unreadable or corrupt wheels, and repeated answers each exit with status 1 and a message, never a traceback. |
 | `artifacts/test_doctor_verifies_the_built_wheel/` | `doctor --wheel` passing on a complete wheel and naming the missing texture in an incomplete one. |
-| `artifacts/reference-robots/` (CI job `reference-robots`, run with the built ssrobot wheel in a clean environment) | Geodude and ADA from their pinned asset commits: `doctor` and installed `inspect` reports for each, and `references.json` with commits, hashes, licenses, fingerprints, the build toolchain, and the Franka fixture's provenance. Each robot's `mujoco-startup.json` records what `MujocoRuntime` confirmed from the installed package and the result of driving it. Geodude: its four arm-group trajectories, and each gripper's close and open, each ending `reached_target` by its declared completion detector, with the opening measured from its spring-link joint (0.003 closed after 574 ms, 0.996 open after 996 ms). ADA: its arm and articutool trajectories, and its gripper (0.010 closed after 128 ms, 0.990 open after 1.49 s). The job renders with OSMesa, so ADA's wrist camera channels are confirmed. `scenario/run-{1,2}/` holds the two-robot planning proof (#24): the same function plans, prepares, and executes a region goal and a named configuration on each robot, byte-identically twice. `grip/run-{1,2}/` holds Geodude's gripper-contact proof (#219): a fixed 4 cm cylinder between the open fingers, closed on until the close ends `stopped_short` at 0.319 after 182 ticks; ADA's package has no space in its grasp until #121. `guarded/run-{1,2}/` holds the guarded-contact proof (#124), and `concise/run-{1,2}/` the concise planning journey (#142) with its cost report. `mujoco-startup.json` records where ssrobot itself was loaded from. See *Reference robots* in packages.md. |
+| `artifacts/reference-robots/` (CI job `reference-robots`, run with the built ssrobot wheel in a clean environment) | Geodude, ADA, and ADA's bare hand (`ada_hand`) from their pinned asset commits: `doctor` and installed `inspect` reports for each, and `references.json` with commits, hashes, licenses, fingerprints, the build toolchain, and the Franka fixture's provenance. Each robot's `mujoco-startup.json` records what `MujocoRuntime` confirmed from the installed package and the result of driving it. Geodude: its four arm-group trajectories, and each gripper's close and open, each ending `reached_target` by its declared completion detector, with the opening measured from its spring-link joint (0.003 closed after 574 ms, 0.996 open after 996 ms). ADA: its arm and articutool trajectories, and its gripper (0.010 closed after 128 ms, 0.990 open after 1.49 s). ADA's bare hand: its arm, and its gripper (0.010 closed after 1.67 s, 0.990 open after 1.49 s). The job renders with OSMesa, so ADA's wrist camera channels are confirmed. `scenario/run-{1,2}/` holds the two-robot planning proof (#24): the same function plans, prepares, and executes a region goal and a named configuration on each robot, byte-identically twice. `grip/run-{1,2}/` holds Geodude's gripper-contact proof (#219): a fixed 4 cm cylinder between the open fingers, closed on until the close ends `stopped_short` at 0.319 after 182 ticks, and ADA's bare hand's: a fixed 5 cm cylinder where sstsr's side grasp puts it, closed on until `stopped_short` at 0.226 after 1694 ticks; ADA's package has no space in its grasp. `guarded/run-{1,2}/` holds the guarded-contact proof (#124, #236). ADA's bare hand descends palm down onto the table under an `EffortGuard` on `arm_qf`, its thresholds twice the largest tared effort change over the same descent without the scene (0.115 N·m, joint 2): it first touches the table on tick 782 and stops on tick 784, joint 2's effort changed by 0.653 N·m; without the table the descent completes, its measure peaking at 0.5. and `concise/run-{1,2}/` the concise planning journey (#142) with its cost report. `mujoco-startup.json` records where ssrobot itself was loaded from. See *Reference robots* in packages.md. |
 | `artifacts/test_core_imports_no_backend/gate.txt` | Where `ssrobot` was imported from, and the gate's verdict. |
 | `artifacts/test_gate_finds_backend_imports_in_every_form/gate-forms.json` | Planted eager, lazy, `from`, aliased, multiline, dotted, and `import_module` backend imports, each failing the gate with its module, line, and dependency. An integration subpackage importing its own backend passes; one importing another backend, and a core module importing an integration, fail. |
 | `artifacts/test_planning_calls_requests_results_and_execution/planning_contracts.json` | On the example arm at its home snapshot: the request every planning call builds (configuration, configurations, pose at half speed and quarter acceleration, offset, and TSR with a path constraint), a scripted straight-line planner refused when it returns only geometry and no processor is selected (`untimed_result`), for a pose goal (`unsupported_goal`), and for effort limits (`unsupported_constraint`). Then `plan_to_configuration` returns a self-contained result (request, path, and a timed trajectory), which is sampled at 2 ms, checked against the effective limits, executed in MuJoCo, and reached, with nothing rebuilt. The result in wire form decodes equal. |
