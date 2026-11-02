@@ -631,7 +631,9 @@ def run_joint(
 
 def completed(name: str) -> Callable[[dict[str, Any]], bool]:
     """Whether a joint trial is one the rule can judge: its trajectory succeeded, and a
-    held object is still raised, by at least half the lift, where the arm carried it."""
+    held object was raised and is still raised, by at least half the lift, where the arm
+    carried it. An arm whose first joint turns about the vertical, as ADA's, does not
+    raise it: the object is dragged on the table, and the trial is not judged."""
 
     def test(trial: dict[str, Any]) -> bool:
         if trial["execution"]["state"] != "succeeded":
@@ -639,6 +641,8 @@ def completed(name: str) -> Callable[[dict[str, Any]], bool]:
         held = trial.get("payload")
         if held is None:
             return True
+        if held["object_raised_m"] <= 0:
+            return False
         floor_z = held["object_raised_to_m"] - held["object_raised_m"] / 2
         return bool(trial["objects"][name][2] > floor_z)
 
