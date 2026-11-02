@@ -1222,7 +1222,6 @@ def rested(
         RestCriteria,
         RobotContext,
     )
-    from ssrobot._wire import decode
     from ssrobot.mujoco import MujocoRuntime
 
     out.mkdir(parents=True, exist_ok=True)
@@ -1235,10 +1234,7 @@ def rested(
     with RobotContext(description, runtime()) as ctx:
         declared = {r.channel: r.criteria for r in ctx.info.rest}
         objects = [c.name for c in ctx.info.scene_channels if c.quantity is Quantity.POSE]
-    explicit = {
-        r["channel"]: decode({k: v for k, v in r.items() if k != "channel"}, RestCriteria)
-        for r in supplied
-    }
+    explicit = {r["channel"]: RestCriteria(**r) for r in supplied}
     # A references entry stands in only where the package's profile declares none.
     assert not explicit.keys() & declared.keys(), "rest criteria in the package and robots.toml"
     declared.update(explicit)
