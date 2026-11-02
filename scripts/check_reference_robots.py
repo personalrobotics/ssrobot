@@ -435,7 +435,7 @@ def scenario(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path
         frame = spec["frame"]
 
         def region(snapshot: Any) -> Tsr:
-            pose = next(o.pose for o in snapshot.objects if o.name == spec["object"])
+            pose = next(o.known_pose() for o in snapshot.objects if o.name == spec["object"])
             x, y, z = spec["offset_position"]
             w, i, j, k = spec["offset_quat_wxyz"]
             (a, b), (c, d), (e, f) = spec["position_bounds"]
@@ -909,7 +909,7 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
         open_grippers(ctx)
         arm = ctx.manipulator(manipulator.name)
         snapshot = ctx.snapshot()
-        pose = next(o.pose for o in snapshot.objects if o.name == spec["object"])
+        pose = next(o.known_pose() for o in snapshot.objects if o.name == spec["object"])
         x, y, z = g["offset_position"]
         w, i, j, k = g["offset_quat_wxyz"]
         (a, b), (c, d), (e, f) = g["position_bounds"]
@@ -1192,7 +1192,7 @@ def rested(package: Any, keyframe: str | None, scene: Path | None, out: Path) ->
                 exact = exact and list(arm.value) == [state.position(j) for j in joints]
                 for reading in poses:
                     pose = next(
-                        o.pose for o in state.objects if f"{o.name}.pose" == reading.channel
+                        o.known_pose() for o in state.objects if f"{o.name}.pose" == reading.channel
                     )
                     exact = exact and list(reading.value) == [*pose.position, *pose.quat_wxyz]  # type: ignore[arg-type]
                 if ended_ns is None and watch.done:

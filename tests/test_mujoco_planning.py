@@ -115,7 +115,7 @@ def _isolation(out: Path) -> dict[str, Any]:
             "snapshot": {
                 "fingerprint": identity,
                 "revision": snapshot.revision,
-                "box": [*snapshot.objects[0].pose.position],
+                "box": [*snapshot.objects[0].known_pose().position],
                 "allow": list(snapshot.attachments[0].allow),
             },
             "start": start,

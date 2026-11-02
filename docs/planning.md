@@ -552,7 +552,13 @@ it when the robot arrives. Three pieces make that safe:
      (`releases`, from `ctx.predict(execution, releases=...)`), such as a can dropped
      where the motion ends, each with the pose the caller expects it to rest at. In the
      predicted state the objects are detached and at those poses, for planning only,
-     and on arrival each must be detached; their poses aren't compared;
+     and on arrival each must be detached; their poses aren't compared. With registered
+     object poses, each must also be unknown on arrival;
+   - with registered object poses, held objects expected to be released and then removed
+     from the scene after the source and before the plan runs (`removals`, from
+     `ctx.predict(execution, removals=...)`), such as a can an application assumes has
+     landed where it was dropped. In the predicted state each is removed, and on arrival
+     each must be;
    - held objects whose attachment is expected to be re-declared after the source and
      before the plan runs, with another allow set and the same transform (`allowances`,
      from `ctx.predict(execution, allowances=...)`), such as a grasp narrowing what a
@@ -608,11 +614,16 @@ it when the robot arrives. Three pieces make that safe:
         ended before the arrival is never rest;
       - each joint is within `arrival_tolerance` of the plan's start, a continuous joint
         the short way round (`arrival_out_of_tolerance`);
-      - the scene changed only as predicted: the same revision, or, with expected releases
-        or allowance changes, a later one; the predicted attachments and the same fixtures;
-        and every free object within `object_tolerance_m` of its predicted position and
+      - the scene changed only as predicted: the same revision, or, with expected releases,
+        removals or allowance changes, a later one; the predicted attachments and the same
+        fixtures; with registered object poses, every object in the state the prediction
+        expects (``object <name> state``), so a removal or a registration nothing predicted
+        is refused; and every free object within `object_tolerance_m` of its predicted position and
         `object_tolerance_rad` of its predicted orientation
         (`unpredicted_scene_change`);
+      - with registered object poses, no object's pose is unknown: one released as
+        predicted, but neither registered again nor removed, leaves nothing to validate
+        the plan around (`continuation_invalid`);
       - for a constrained motion, the actual start satisfies its path constraint
         (`arrival_off_constraint`). An `OffsetGoal` keeps the line the plan was made on:
         its `reference_pose`, when it names none, is the frame's pose at the plan's own

@@ -14,7 +14,10 @@ by ``mj_kinematics``. The evidence is ``materialized.json``:
   of another world is refused by the mapping;
 - two materializations share nothing: changing one's model and data leaves the other's
   poses unchanged;
-- materializing and applying never steps or forwards physics.
+- materializing and applying never steps or forwards physics;
+- with registered object states, a removed object is placed from the snapshot alone,
+  whatever the data held before, exactly where planning places it (``object_qpos``), and
+  an unknown one is refused (``unknown_object_pose``) with the data left unchanged.
 
 Reproduce with ``pytest tests/test_materialize_world.py``. The file is written twice and
 must be byte-identical.
@@ -35,6 +38,8 @@ import pytest
 from ssrobot import (
     JointTrajectory,
     JsonlTrace,
+    ObjectState,
+    ObjectStatus,
     ObservationRequest,
     RobotContext,
     SceneSnapshot,
@@ -50,6 +55,7 @@ from ssrobot.mujoco import (
     materialize_world_from,
     render_handle,
 )
+from ssrobot.mujoco._materialize import object_qpos
 from tests.test_mujoco_scene import ARM, OPTIONS, PACKAGE
 from tests.test_mujoco_scene_assets import SCENE, _tree
 
@@ -141,7 +147,7 @@ def _evidence(work: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         per_snapshot.append(
             {
                 "time_ns": snapshot.stamp.time_ns,
-                "cylinder": [round(v, 6) for v in snapshot.objects[0].pose.position],
+                "cylinder": [round(v, 6) for v in snapshot.objects[0].known_pose().position],
                 "max_difference": difference,
                 "runtime": runtime,
                 "materialized": mine,
@@ -161,6 +167,27 @@ def _evidence(work: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         (edited / "scene" / "parts" / "table.xml").read_text().replace("0.005", "0.006")
     )
     another = dataclasses.replace(snapshots[0], model="0" * 64 + ":" + "0" * 64)
+
+    # Registered states: a removed object is placed from the snapshot alone, wherever the
+    # data had it, as planning places it; an unknown one refuses, changing nothing.
+    def stated(status: ObjectStatus) -> SceneSnapshot:
+        (cylinder,) = snapshots[-1].objects
+        return dataclasses.replace(
+            snapshots[-1], objects=(ObjectState(name=cylinder.name, status=status),)
+        )
+
+    removed, unknown = stated(ObjectStatus.REMOVED), stated(ObjectStatus.UNKNOWN)
+    placements = []
+    for prior in (0.0, 0.7):
+        data = world.data()
+        data.qpos[:] = prior
+        world.mapping.apply(removed, data)
+        placements.append([round(float(v), 9) for v in data.qpos])
+    refused_data = world.data()
+    refused_data.qpos[:] = 0.3
+    unknown_refusal = _refused(lambda: world.mapping.apply(unknown, refused_data))
+    (state,) = removed.objects
+    ((_, at),) = world.mapping.objects
     return {
         "snapshots": [
             {k: v for k, v in s.items() if k not in ("runtime", "materialized")}
@@ -187,6 +214,16 @@ def _evidence(work: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             ),
         },
         "isolated": unchanged,
+        "registered_states": {
+            "removed_independent_of_prior_data": placements[0] == placements[1],
+            "removed_as_planning_places_it": [round(v, 9) for v in object_qpos(world.model, state)]
+            == placements[0][at : at + 7],
+            "removed_below_world_m": round(
+                float(world.model.stat.center[2]) - placements[0][at + 2], 6
+            ),
+            "unknown": unknown_refusal,
+            "unknown_left_data_unchanged": bool((refused_data.qpos == 0.3).all()),
+        },
         "package_form_matches_bundle": materialize_world_from(
             package, world=runtime_world, scene=scene
         ).world
@@ -214,3 +251,11 @@ def test_a_recorded_world_materializes_without_a_runtime(
         "snapshot_of_another_world": "incompatible_snapshot",
     }
     assert report["isolated"]
+    assert report["registered_states"] == {
+        "removed_independent_of_prior_data": True,
+        "removed_as_planning_places_it": True,
+        "removed_below_world_m": report["registered_states"]["removed_below_world_m"],
+        "unknown": "unknown_object_pose",
+        "unknown_left_data_unchanged": True,
+    }
+    assert report["registered_states"]["removed_below_world_m"] > 0

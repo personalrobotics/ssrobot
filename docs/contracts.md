@@ -142,14 +142,17 @@ trace. It validates everything going into the runtime and everything coming out.
 | `run_until(execution, *, max_ticks=None, timeout_s=None)` | Returns a finished execution's status at once, with no step, poll, or bound. Otherwise it blocks until the execution finishes or the bound is reached: it steps a manual runtime, needing `max_ticks` or a deadline, and polls an external runtime, needing `timeout_s` of wall-clock time. A handle from another context fails with `unknown_reference`. |
 | `recover()` | Faulted only: asks the runtime to clear its fault, then returns the resulting state. Fails with `unrecoverable` after a runtime contract breach. |
 | `scene` | The current `SceneState`: its revision, the runtime's objects and fixtures, and the attachments. See *Scene*. |
-| `attach(object, end_effector, *, transform=None, allow=None, revision=None, source="client")` | Open only. Declares a scene object held by an end effector and returns the new scene. Changes nothing unless it succeeds. |
-| `detach(object, *, revision=None, source="client")` | Open or faulted. Removes the attachment and its allowances and returns the new scene. |
+| `attach(object, end_effector, *, transform=None, allow=None, revision=None, source="client")` | Open only. Declares a scene object held by an end effector and returns the new scene. Changes nothing unless it succeeds. With registered object poses, the default transform comes from the registration; see *Registered objects*. |
+| `detach(object, *, revision=None, source="client")` | Open or faulted. Removes the attachment and its allowances and returns the new scene. With registered object poses, the object's pose is then unknown. |
+| `violation(object)` | Open or faulted. The runtime's `AttachmentViolation` for the object's current attachment, if it reported one, else None: privileged reference data, for evaluation. Cleared when the attachment ends. |
+| `register(object, pose, *, stamp, source, revision=None)` | Open or faulted. Registered object poses only. Registers a free object at a pose observed at `stamp` by `source`, and returns the new scene. See *Registered objects*. |
+| `remove(object, *, source, revision=None)` | Open or faulted. Registered object poses only. Takes a free object out of the active scene, and returns the new scene. See *Registered objects*. |
 | `snapshot()` | Open or faulted. Captures a `SceneSnapshot` for planning. See *Snapshots and planning scenes*. |
 | `planning_scene(snapshot, group, *, clearance_m=0.0)` | Open or faulted. An isolated `PlanningScene` for one joint group over a snapshot, keeping `clearance_m` from the environment. |
 | `manipulator(name=None)`, `base(name=None)` | A planning view of one manipulator or mobile base. See *Planning requests and results*. |
 | `plan(request, *, snapshot, planner, processor=None, abort=None)` | Open or faulted. Negotiates, plans in an isolated planning scene, and checks the result against the request. |
 | `plan_async(request, *, snapshot, planner, processor=None, abort=None)` | `plan`, on a worker thread: negotiation and the planning scene happen on the context's thread, then only `planner.plan` and the check of its result run on the worker, so the context may keep stepping. Returns a `Future` of exactly what `plan` returns. The context itself stays single-threaded; nothing else may use the planner until the future is done. |
-| `predict(execution, *, unsettled=(), releases=None, allowances=None, joints=None)` | Open. The `PredictedSnapshot` expected if a joint trajectory, submitted with a snapshot captured at the current revision, succeeds; with the objects named `unsettled`, the held objects expected released and where, the held objects whose allow set is expected to be re-declared and to what, and the positions of joints the motion doesn't move, as planning.md describes. Plannable; a plan made on it executes only as a continuation (`predicted_plan` otherwise). |
+| `predict(execution, *, unsettled=(), releases=None, removals=(), allowances=None, joints=None)` | Open. The `PredictedSnapshot` expected if a joint trajectory, submitted with a snapshot captured at the current revision, succeeds; with the objects named `unsettled`, the held objects expected released and where, the held objects expected released and removed (registered object poses only), the held objects whose allow set is expected to be re-declared and to what, and the positions of joints the motion doesn't move, as planning.md describes. Plannable; a plan made on it executes only as a continuation (`predicted_plan` otherwise). |
 | `project(plan, *, snapshot)` | Open or faulted. The `PlanProjection` of a successful plan that has not run: where it would leave the robot, as a planning state with `snapshot`'s stamp. Plannable; a plan made on it executes only as a continuation of an execution of exactly that plan (`projected_plan` otherwise). It confers no validity. |
 | `continuation(plan, *, planner, prediction)`, `continuation(plan, *, planner, projection, source)`, `execute_continuation(continuation, ...)` | Open. Bind a plan made on a prediction, or on a projection together with the particular execution of the projected plan, to it and its planner. Then run it from the actual arrival state: checked against the prediction, rebased by the planner, validated whole, and submitted, or refused with a code. See *Interleaving planning and execution* in [planning.md](planning.md). |
 | `owners(component)`, `executions` | Every unfinished execution holding any of the component's resources, as `Ownership` entries; and every execution in submission order. |
@@ -283,22 +286,85 @@ Every committed change increments `revision` and is traced as a `scene` record.
 
 **Violations.** A runtime reports an `AttachmentViolation` once, in its update, when a
 held object leaves its declared transform. The context:
-- traces it;
+- traces it, and keeps it for `violation(object)` until the attachment ends;
 - marks the attachment `held: false` and increments the revision;
 - keeps the attachment until the client detaches it.
 
 A violation for an object that is not attached, or already marked, is a contract
-breach.
+breach. With registered object poses, a violation is only traced and kept; see
+*Registered objects*.
 
 **Lifetime.** Attachments are not owned by executions. `cancel`, `stop`, timeouts and
 faults leave them in place. Closing the context detaches every attachment, and that
 is traced, before executions are cancelled.
 
+### Registered objects
+
+By default a context's snapshots take each object's pose from the runtime, measured at
+each snapshot (`ObjectPoses.LIVE`). A simulator measures exactly; a physical robot
+has no such measurement. `RobotContext(..., object_poses=ObjectPoses.REGISTERED)`
+instead keeps the object state the context was told: what a robot knows from the
+registration of the objects on its table. Where a registration comes from, a
+simulator's pose channel or a perception system, is the caller's; the contract is the
+same.
+
+Each object is in exactly one state (`ObjectStatus`), kept in the `SceneState` and
+validated there, and reported per object in each snapshot:
+
+| State | Pose in a snapshot | How it is entered |
+| --- | --- | --- |
+| `registered` | its last registration's | `register` |
+| `attached` | its end effector's, at the snapshot's joints, composed with the declared transform | `attach` |
+| `unknown` | none | the context opening; `detach` |
+| `removed` | none | `remove` |
+| `measured` | the runtime's | live object poses only |
+
+- **`register(object, pose, *, stamp, source)`** records the pose, when it was
+  observed (on the runtime clock, not later than now), and its source (a name). The
+  object keeps that pose, however the world moves, until it is registered again,
+  attached, or removed. An attached object refuses (`already_attached`).
+- **`remove(object, *, source)`** takes a free object out of the active scene, as an
+  application does with one it assumes has landed where it was dropped. Planning
+  ignores it until it is registered again. A removed one refuses (`already_removed`).
+- **Every change is a scene change:** it increments the revision, so a snapshot or plan
+  from before it is stale, and it is traced as a `scene` record carrying the
+  registration, which is its provenance.
+- **Unknown poses refuse.** `planning_scene` refuses a snapshot or prediction with an
+  unknown object (`unknown_object_pose`), and `ObjectState.known_pose()` refuses one
+  without a pose; nothing falls back to the runtime's measurement.
+- **Hypothetical attachments.** `SceneSnapshot.with_attachments(attachments)` is a
+  snapshot with exactly those attachments, such as a grasp planned before it happens,
+  as `start_chains` stages declare them: a newly attached object is carried from where
+  it is in the snapshot, and one no longer attached has no known pose.
+- **Live object poses refuse registration:** `register`, `remove` and `predict`'s
+  `removals` fail with `registration_unavailable` (`CapabilityError`).
+
+**Attachments** keep two transforms apart:
+- **Declared.** The one `attach` is given or, by default, where the registered pose is
+  from the end effector at the measured joints. An object without a registration
+  refuses a default transform (`unknown_object_pose`), and a removed one refuses
+  attachment (`removed_object`). The declared transform is committed, so snapshots and
+  planning carry the object by it.
+- **Tracked.** The runtime still resolves and tracks the object's actual transform, as
+  it does with live poses: privileged reference data.
+
+`attach` traces the two together once, as an `attached` record (`AttachmentReference`),
+with the distance and angle between them: the registration's error at the grasp. A
+later `AttachmentViolation` is motion relative to the tracked transform. It is traced,
+and `violation(object)` returns it, but it never changes the registered scene: the
+attachment stays `held`. A re-declaration,
+a detach and attach with no step between, has the runtime resolve its reference again.
+
+Privileged pose channels stay readable, for evaluation. They never change registered
+state.
+
 ### Snapshots and planning scenes
 
 A `SceneSnapshot` is an immutable copy of everything a geometric query reads. It holds:
 - every description joint's position, in description order;
-- every scene object's world pose, as measured, not as declared;
+- every scene object, with its world pose as measured, not as declared, or, with
+  registered object poses, as registered (see *Registered objects*), and its
+  `ObjectStatus`;
 - the scene's fixtures and attachments, and its revision;
 - its provenance: the description fingerprint, the runtime's name, and `model`, the
   runtime's opaque identity for the simulated world.
@@ -803,8 +869,8 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 - **Description revision.** The description fingerprint. A runtime reports the
   fingerprint it bound, and a mismatch at open fails with `stale_description`.
 - **Scene revision.** `SceneState.revision`, an integer per context. It starts at 0
-  when the context opens and increments on every attach, detach, and violation. Passing
-  `revision=` to `attach` or `detach` makes the call fail with `stale_revision` if the
+  when the context opens and increments on every attach, detach, registration, removal,
+  and live violation. Passing `revision=` to `attach`, `detach`, `register` or `remove` makes the call fail with `stale_revision` if the
   scene changed since. A snapshot records the revision it was captured at, and
   `submit(snapshot=...)` refuses a stale one with `stale_snapshot`.
 
@@ -850,15 +916,16 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
 | [`Submission`](../schemas/ssrobot.Submission.v3.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
-| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v8.json) | One event in a trace. |
+| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v9.json) | One event in a trace. |
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`PortfolioReport`](../schemas/ssrobot.PortfolioReport.v1.json) | Every attempt of a planner portfolio and which was selected. See planning.md. |
 | [`ChainsReport`](../schemas/ssrobot.ChainsReport.v1.json) | Every attempt and stage of a race of staged prefixes, each chain's choice and cost, and the selection. See planning.md. |
 | [`ConformanceReport`](../schemas/ssrobot.ConformanceReport.v2.json) | The result of a conformance run, with the runtime, description, and clock it ran on. |
-| [`SceneState`](../schemas/ssrobot.SceneState.v1.json) | A context's scene: its objects and fixtures, what it holds, and its revision. |
+| [`SceneState`](../schemas/ssrobot.SceneState.v2.json) | A context's scene: its objects and fixtures, what it holds, what is registered or removed, and its revision. |
+| [`AttachmentReference`](../schemas/ssrobot.AttachmentReference.v1.json) | An attachment declared from registration, beside the transform the runtime tracks. |
 | [`AttachmentViolation`](../schemas/ssrobot.AttachmentViolation.v1.json) | A runtime's report that an attached object left its declared transform. |
-| [`SceneSnapshot`](../schemas/ssrobot.SceneSnapshot.v1.json) | An immutable copy of everything a geometric query reads, from which planning scenes are built. |
+| [`SceneSnapshot`](../schemas/ssrobot.SceneSnapshot.v2.json) | An immutable copy of everything a geometric query reads, from which planning scenes are built. |
 | [`PlanningRequest`](../schemas/ssrobot.PlanningRequest.v3.json) | Everything a planner needs, fully resolved from a description and a snapshot. |
 | [`ConfigurationGoal`](../schemas/ssrobot.ConfigurationGoal.v1.json) | Reach any one of these configurations. |
 | [`PoseGoal`](../schemas/ssrobot.PoseGoal.v1.json) | Bring a frame to a world pose, within tolerances. |
@@ -1136,10 +1203,10 @@ Every event becomes one `TraceRecord`, passed synchronously to each sink in orde
 | --- | --- |
 | `schema`, `version` | `ssrobot.TraceRecord`, 1 |
 | `sequence` | 0, 1, 2, … with no gaps |
-| `kind` | `opened`, `observed`, `compiled`, `submitted`, `status`, `applied`, `health`, `scene`, `violation`, `snapshot`, `predicted`, `continued`, `rested`, `stepped`, `closed` |
+| `kind` | `opened`, `observed`, `compiled`, `submitted`, `status`, `applied`, `health`, `scene`, `attached`, `violation`, `snapshot`, `predicted`, `continued`, `rested`, `stepped`, `closed` |
 | `clock`, `time_ns` | Runtime time of the event. Runtime events use their own stamps, and everything else uses the context's `now`. Never decreases along a trace. |
 | `source` | The submitter for `compiled`, `submitted`, `applied`, and `continued` and for a client's `scene` change, `runtime:<name>` for what the runtime reported, and `context` for the context's own decisions |
-| `payload` | `RuntimeInfo`, `Observation`, `PreparedTrajectory`, `Submission`, `ExecutionStatus`, `AppliedCommand`, `RuntimeHealth`, `SceneState`, `AttachmentViolation`, `SceneSnapshot`, `PredictedSnapshot`, `ContinuationReport`, or `RestResult` by kind; none for `stepped` and `closed` |
+| `payload` | `RuntimeInfo`, `Observation`, `PreparedTrajectory`, `Submission`, `ExecutionStatus`, `AppliedCommand`, `RuntimeHealth`, `SceneState`, `AttachmentReference`, `AttachmentViolation`, `SceneSnapshot`, `PredictedSnapshot`, `ContinuationReport`, or `RestResult` by kind; none for `stepped` and `closed` |
 
 `ctx.execute` traces `compiled` immediately before its `submitted` record; that
 `Submission.prepared` is the compiled record's fingerprint.

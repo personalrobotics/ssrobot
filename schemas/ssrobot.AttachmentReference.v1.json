@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.AttachmentReference v1",
+  "$ref": "#/$defs/AttachmentReference",
+  "$defs": {
+    "AttachmentReference": {
+      "type": "object",
+      "description": "An attachment declared from registration, beside the transform the runtime resolved",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.AttachmentReference"
+        },
+        "version": {
+          "const": 1
+        },
+        "object": {
+          "type": "string",
+          "description": "The attached object."
+        },
+        "declared": {
+          "$ref": "#/$defs/Pose",
+          "description": "The declared transform, in the end effector's frame."
+        },
+        "tracked": {
+          "$ref": "#/$defs/Pose",
+          "description": "The transform the runtime resolved and tracks."
+        },
+        "stamp": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the runtime resolved it."
+        },
+        "position_error": {
+          "type": "number",
+          "description": "Distance between the two.",
+          "x-unit": "m"
+        },
+        "rotation_error": {
+          "type": "number",
+          "description": "Angle between the two.",
+          "x-unit": "rad"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "object",
+        "declared",
+        "tracked",
+        "stamp",
+        "position_error",
+        "rotation_error"
+      ],
+      "additionalProperties": false
+    },
+    "Pose": {
+      "type": "object",
+      "description": "A rigid transform: the pose of a child frame expressed in a parent frame.",
+      "properties": {
+        "position": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Child origin in parent coordinates.",
+          "x-unit": "m"
+        },
+        "quat_wxyz": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Unit quaternion (w, x, y, z) rotating child axes into parent.",
+          "x-unit": "1"
+        }
+      },
+      "required": [
+        "position",
+        "quat_wxyz"
+      ],
+      "additionalProperties": false
+    },
+    "Timestamp": {
+      "type": "object",
+      "description": "A point in time on a named clock.",
+      "properties": {
+        "clock": {
+          "type": "string",
+          "description": "Clock identity, e.g. 'sim:geodude-1' or 'ros:/clock'."
+        },
+        "time_ns": {
+          "type": "integer",
+          "description": "Nanoseconds since the clock's epoch.",
+          "x-unit": "ns"
+        }
+      },
+      "required": [
+        "clock",
+        "time_ns"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

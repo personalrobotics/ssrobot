@@ -130,7 +130,7 @@ def _fall(work: Path) -> dict[str, Any]:
             readings = {r.channel: r.value for r in ctx.observe(request).readings}
             pose = readings["ball.pose"]
             assert isinstance(pose, tuple)
-            snapshot = next(o.pose for o in ctx.snapshot().objects if o.name == "ball")
+            snapshot = next(o.known_pose() for o in ctx.snapshot().objects if o.name == "ball")
             ticks.append(
                 {
                     "n": n,

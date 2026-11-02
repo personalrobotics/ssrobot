@@ -19,6 +19,7 @@ from ssrobot.conventions import Pose
 from ssrobot.description import RobotDescription
 from ssrobot.errors import CapabilityError, ValidationError
 from ssrobot.mujoco._compose import compile_world
+from ssrobot.mujoco._materialize import object_qpos
 from ssrobot.mujoco._model import FrameBinding, MujocoObject
 from ssrobot.mujoco._runtime import relative, world_pose
 from ssrobot.mujoco._scene import SceneSource
@@ -227,11 +228,10 @@ def materialize(
     data = mujoco.MjData(model)
     for joint, position in zip(snapshot.joints, snapshot.positions, strict=True):
         data.qpos[model.jnt_qposadr[resolve(_JOINT, joint, "snapshot.joints")]] = position
-    for state in snapshot.objects:
+    for state in snapshot.objects:  # a removed object out of the world; unknown refuses
         free = int(model.body_jntadr[resolve(_BODY, state.name, "snapshot.objects")])
         at = int(model.jnt_qposadr[free])
-        data.qpos[at : at + 3] = state.pose.position
-        data.qpos[at + 3 : at + 7] = state.pose.quat_wxyz
+        data.qpos[at : at + 7] = object_qpos(model, state)
     mujoco.mj_kinematics(model, data)
 
     bound = {}
