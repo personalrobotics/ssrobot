@@ -509,8 +509,8 @@ it when the robot arrives. Three pieces make that safe:
    duration.
 
    Only a joint trajectory submitted with a snapshot captured at the current revision is
-   predictable. A trajectory guarded by a `WrenchGuard` stops where it meets contact,
-   which isn't known in advance (`unpredictable_command`). One guarded by an
+   predictable. A trajectory guarded by a `WrenchGuard` or an `EffortGuard` stops where
+   it meets contact, which isn't known in advance (`unpredictable_command`). One guarded by an
    `OpeningGuard` is predicted to complete, since its guard triggering is a fault: if it
    triggers, the source has not succeeded as predicted, and neither `predict` nor a
    continuation accepts it (`source_not_succeeded`). A prediction extends a captured

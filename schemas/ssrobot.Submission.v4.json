@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.Submission v3",
+  "title": "ssrobot.Submission v4",
   "$ref": "#/$defs/Submission",
   "$defs": {
     "ActionChunk": {
@@ -97,6 +97,46 @@
       ],
       "additionalProperties": false
     },
+    "EffortGuard": {
+      "type": "object",
+      "description": "A joint-effort condition a runtime evaluates at every control tick.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.EffortGuard"
+        },
+        "version": {
+          "const": 1
+        },
+        "channel": {
+          "type": "string",
+          "description": "The joint-effort channel it reads."
+        },
+        "thresholds": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Per joint, in the channel's group's canonical order, the effort change that trips the guard.",
+          "x-unit": "joint-effort"
+        },
+        "tare": {
+          "type": "boolean",
+          "description": "Measure from the reading when the motion started."
+        },
+        "samples": {
+          "type": "integer",
+          "description": "Consecutive ticks at or over a threshold.",
+          "x-unit": "count"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "channel",
+        "thresholds"
+      ],
+      "additionalProperties": false
+    },
     "GripperCommand": {
       "type": "object",
       "description": "Target opening for a gripper.",
@@ -133,7 +173,7 @@
           "const": "ssrobot.GuardedJointTrajectory"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "trajectory": {
           "$ref": "#/$defs/JointTrajectory",
@@ -146,6 +186,9 @@
             },
             {
               "$ref": "#/$defs/OpeningGuard"
+            },
+            {
+              "$ref": "#/$defs/EffortGuard"
             }
           ],
           "description": "When to stop it."
@@ -384,7 +427,7 @@
           "const": "ssrobot.Submission"
         },
         "version": {
-          "const": 3
+          "const": 4
         },
         "execution": {
           "type": "string",

@@ -115,8 +115,10 @@ the position a control of 0 would give. A joint starting just past its stop, wit
 - the trajectory contract: a fixed period of `substeps × timestep`, one step, with
   `linear` interpolation.
 - guard support for every group it confirms for joint trajectories: every bound wrench
-  channel, with tare, and every confirmed gripper-opening channel, evaluated every
-  control tick, with a stop latency of one control tick (none if the model has neither).
+  channel, with tare, every confirmed gripper-opening channel, and every confirmed
+  joint-effort channel, with tare, read from `qfrc_actuator` as the channel is, evaluated
+  every control tick, with a stop latency of one control tick (none if the model has
+  none of them).
 
 ## Model
 
@@ -505,7 +507,7 @@ the runtime:
 | `JointCommand` | Applied on the next step, then `succeeded`. A setpoint stays in force until something replaces it. |
 | `GripperCommand` | Refused with `no_gripper_completion` if the gripper's profile declares no `completion`. Otherwise applied on the next step: the opening is clipped once, to the openings every one of its actuators can reach, and that one opening is sent to all of them and reported as applied. After every step's physics, the opening is read and the profile's detector updated, and the execution succeeds with its `GripperResult` once the motion has ended. The target stays applied afterwards, until something replaces it. |
 | `JointTrajectory` | Rejected with `start_mismatch` if its first waypoint is more than `START_TOLERANCE` (1e-3) from the current positions. Otherwise `active` from the next step, sampled by linear interpolation at runtime time. A setpoint past a joint's limits, which only a start from a joint resting on its stop produces, is clamped to the limit with a `clipped` modification. Waypoint velocities are accepted but not used. See *Trajectories*. |
-| `GuardedJointTrajectory` | Its trajectory runs exactly as a `JointTrajectory`. After each step's physics, the guard's channel is read, the same reading an observation gives: a wrench from the force and torque sensors' `sensordata`, an opening from the gripper's measure. The measure is compared with the guard's bound; with `tare`, a wrench against the reading taken before the first step. When it triggers, the group's position servos are set to the joints' current positions, recorded as an `applied` joint command, and the execution succeeds with a `guard_triggered` outcome; the following step already holds. Otherwise it succeeds with `trajectory_completed` once it settles. See *Guarded trajectories* in contracts.md. |
+| `GuardedJointTrajectory` | Its trajectory runs exactly as a `JointTrajectory`. After each step's physics, the guard's channel is read, the same reading an observation gives: a wrench from the force and torque sensors' `sensordata`, an opening from the gripper's measure, a group's joint efforts from `qfrc_actuator`. The measure is compared with the guard's bound; with `tare`, a wrench or the efforts against the reading taken before the first step. When it triggers, the group's position servos are set to the joints' current positions, recorded as an `applied` joint command, and the execution succeeds with a `guard_triggered` outcome; the following step already holds. Otherwise it succeeds with `trajectory_completed` once it settles. See *Guarded trajectories* in contracts.md. |
 | `ActionChunk` | Applies its latest due step on every step from its start, and succeeds after the final step. A period shorter than a tick skips steps. The context already refuses stale chunks, chunks on another clock, and steps whose commands overlap. |
 
 When an execution is canceled, superseded, or times out (the context owns deadlines),

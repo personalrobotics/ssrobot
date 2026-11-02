@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ssrobot.EffortGuard v1",
+  "$ref": "#/$defs/EffortGuard",
+  "$defs": {
+    "EffortGuard": {
+      "type": "object",
+      "description": "A joint-effort condition a runtime evaluates at every control tick.",
+      "properties": {
+        "schema": {
+          "const": "ssrobot.EffortGuard"
+        },
+        "version": {
+          "const": 1
+        },
+        "channel": {
+          "type": "string",
+          "description": "The joint-effort channel it reads."
+        },
+        "thresholds": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Per joint, in the channel's group's canonical order, the effort change that trips the guard.",
+          "x-unit": "joint-effort"
+        },
+        "tare": {
+          "type": "boolean",
+          "description": "Measure from the reading when the motion started."
+        },
+        "samples": {
+          "type": "integer",
+          "description": "Consecutive ticks at or over a threshold.",
+          "x-unit": "count"
+        }
+      },
+      "required": [
+        "schema",
+        "version",
+        "channel",
+        "thresholds"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

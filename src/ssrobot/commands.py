@@ -314,7 +314,62 @@ class OpeningGuard(Record):
         return measure < self.below
 
 
-Guard = WrenchGuard | OpeningGuard
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EffortGuard(Record):
+    """A joint-effort condition a runtime evaluates at every control tick.
+
+    The channel is a joint group's actuator effort: what its actuators exert, not a
+    measurement of external contact. The guard detects contact only because the
+    controller's effort changes when the joints are obstructed. The measure is
+    ``max_i |effort_i - start_i| / thresholds[i]`` over the group's joints, in its
+    canonical order, with ``start`` the reading when the motion started if ``tare`` and
+    zero otherwise. The guard triggers once the measure is at least 1 for ``samples``
+    consecutive ticks."""
+
+    SCHEMA = "ssrobot.EffortGuard"
+    VERSION = 1
+
+    channel: str = field(metadata=meta("The joint-effort channel it reads."))
+    thresholds: tuple[float, ...] = field(
+        metadata=meta(
+            "Per joint, in the channel's group's canonical order, the effort change that "
+            "trips the guard.",
+            unit="joint-effort",
+        )
+    )
+    tare: bool = field(
+        default=True, metadata=meta("Measure from the reading when the motion started.")
+    )
+    samples: int = field(
+        default=1, metadata=meta("Consecutive ticks at or over a threshold.", unit="count")
+    )
+
+    def _validate(self) -> None:
+        check_name(self.channel, path="channel")
+        if not self.thresholds:
+            raise ValidationError("shape_mismatch", "at least one threshold", path="thresholds")
+        for i, threshold in enumerate(self.thresholds):
+            if not math.isfinite(threshold) or threshold <= 0.0:
+                raise ValidationError(
+                    "out_of_limits",
+                    "a threshold must be positive and finite",
+                    path=f"thresholds[{i}]",
+                )
+        if self.samples < 1:
+            raise ValidationError("out_of_limits", "samples must be at least 1", path="samples")
+
+    def measure(self, effort: tuple[float, ...], baseline: tuple[float, ...] | None) -> float:
+        """The guarded measure of ``effort`` (one value per threshold), given the tare
+        ``baseline``: the largest change as a fraction of its joint's threshold."""
+        start = baseline if baseline is not None else (0.0,) * len(effort)
+        return max(abs(e - s) / t for e, s, t in zip(effort, start, self.thresholds, strict=True))
+
+    def trips(self, measure: float) -> bool:
+        """Whether one tick's ``measure`` counts toward triggering."""
+        return measure >= 1.0
+
+
+Guard = WrenchGuard | OpeningGuard | EffortGuard
 """A condition that stops a guarded trajectory."""
 
 
@@ -326,10 +381,12 @@ class GuardCapability(Value):
 
     component: str = field(metadata=meta("The joint group whose trajectories may be guarded."))
     channels: tuple[str, ...] = field(
-        metadata=meta("Wrench and gripper-opening channels a guard may read, sorted.")
+        metadata=meta(
+            "Wrench, gripper-opening, and joint-effort channels a guard may read, sorted."
+        )
     )
     tare: bool = field(
-        metadata=meta("Whether a wrench guard may measure from the reading at the start.")
+        metadata=meta("Whether a wrench or effort guard may measure from the reading at the start.")
     )
     period_ns: int = field(metadata=meta("Time between guard evaluations.", unit="ns"))
     stop_latency_ns: int = field(
@@ -359,7 +416,7 @@ class GuardedJointTrajectory(Record):
     and the caller decides whether that is success."""
 
     SCHEMA = "ssrobot.GuardedJointTrajectory"
-    VERSION = 2
+    VERSION = 3
 
     trajectory: JointTrajectory = field(metadata=meta("The motion to execute."))
     guard: Guard = field(metadata=meta("When to stop it."))

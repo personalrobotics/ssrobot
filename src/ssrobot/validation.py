@@ -18,6 +18,7 @@ from ssrobot.commands import (
     BaseTwistCommand,
     Command,
     CommandKind,
+    EffortGuard,
     GripperCommand,
     Guard,
     GuardedJointTrajectory,
@@ -25,6 +26,7 @@ from ssrobot.commands import (
     JointCommand,
     JointMode,
     JointTrajectory,
+    OpeningGuard,
     WrenchGuard,
     command_component,
 )
@@ -150,25 +152,45 @@ def _check_trajectory(
     )
 
 
+_GUARDED = {
+    WrenchGuard: Quantity.WRENCH,
+    OpeningGuard: Quantity.GRIPPER_OPENING,
+    EffortGuard: Quantity.JOINT_EFFORT,
+}
+"""The quantity of the channel each kind of guard reads."""
+
+_SIZES = {WrenchGuard: 6, OpeningGuard: 1}
+"""How many values a reading of a wrench or an opening guard's channel has."""
+
+
 def _check_guard(
     description: RobotDescription, info: RuntimeInfo | None, command: GuardedJointTrajectory
 ) -> None:
-    """A guard reads a declared channel of the quantity it measures (a wrench, or a
-    gripper opening), and the runtime evaluates it for the trajectory's group, there, with
-    every feature it asks for."""
+    """A guard reads a declared channel of the quantity it measures (a wrench, a gripper
+    opening, or a joint group's efforts, with one threshold per joint), and the runtime
+    evaluates it for the trajectory's group, there, with every feature it asks for."""
     guard, component = command.guard, command.trajectory.group
     spec = next((c for c in description.channels if c.name == guard.channel), None)
     if spec is None:
         raise ValidationError(
             "unknown_reference", f"no channel {guard.channel!r}", path="guard.channel"
         )
-    quantity = Quantity.WRENCH if isinstance(guard, WrenchGuard) else Quantity.GRIPPER_OPENING
+    quantity = _GUARDED[type(guard)]
     if spec.quantity is not quantity:
         raise ValidationError(
             "unsupported_quantity",
             f"{guard.channel!r} measures {spec.quantity}, not {quantity}",
             path="guard.channel",
         )
+    if isinstance(guard, EffortGuard):
+        joints = description.group(spec.source).joints
+        if len(guard.thresholds) != len(joints):
+            raise ValidationError(
+                "shape_mismatch",
+                f"{len(guard.thresholds)} thresholds for the {len(joints)} joints of "
+                f"{spec.source!r}",
+                path="guard.thresholds",
+            )
     if info is None:
         return
     support = next((g for g in info.guards if g.component == component), None)
@@ -422,6 +444,12 @@ def check_guard_outcome(guard: Guard, outcome: GuardOutcome) -> None:
         raise refuse(f"measures {outcome.part}, the guard {part}", "part")
     if (outcome.baseline is not None) != guard.tare:
         raise refuse("has a baseline exactly when the guard tares", "baseline")
+    size = len(guard.thresholds) if isinstance(guard, EffortGuard) else _SIZES[type(guard)]
+    rows = [("baseline", outcome.baseline)] if outcome.baseline is not None else []
+    rows += [(f"window[{i}]", w) for i, w in enumerate(outcome.window)]
+    for path, reading in rows:
+        if len(reading) != size:
+            raise refuse(f"{len(reading)} values, the guarded channel {size}", path)
     if len(outcome.window) > guard.samples:
         raise refuse(f"{len(outcome.window)} readings for {guard.samples} samples", "window")
     measures = [guard.measure(w, outcome.baseline) for w in outcome.window]

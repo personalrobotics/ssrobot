@@ -1331,10 +1331,11 @@ class RobotContext:
         every held object its hand moves carried with it, everything else as in the
         captured snapshot it was submitted with. One motion ahead: the execution must
         have been submitted with a snapshot this context captured, and be a joint
-        trajectory. One guarded by a ``WrenchGuard`` stops where it meets contact, which
-        is not known in advance (``unpredictable_command``); one guarded by an
-        ``OpeningGuard`` is expected to complete, since its guard triggering is a fault,
-        and a continuation from it is refused if it does (``source_not_succeeded``).
+        trajectory. One guarded by a ``WrenchGuard`` or an ``EffortGuard`` stops where it
+        meets contact, which is not known in advance (``unpredictable_command``); one
+        guarded by an ``OpeningGuard`` is expected to complete, since its guard triggering
+        is a fault, and a continuation from it is refused if it does
+        (``source_not_succeeded``).
 
         ``unsettled`` names free objects whose pose the prediction makes no claim about,
         such as one just released and still falling; it is recorded in the prediction,
@@ -1358,7 +1359,7 @@ class RobotContext:
         if not isinstance(command, JointTrajectory):
             what = type(command).__name__
             if isinstance(command, GuardedJointTrajectory):
-                what += " stopped by a WrenchGuard"
+                what += f" stopped by a {type(command.guard).__name__}"
             raise ValidationError(
                 "unpredictable_command",
                 f"only a joint trajectory's end is predictable, not a {what}",
@@ -2446,7 +2447,7 @@ class RobotContext:
         guardable = {
             c.name
             for c in self._description.channels
-            if c.quantity in (Quantity.WRENCH, Quantity.GRIPPER_OPENING)
+            if c.quantity in (Quantity.WRENCH, Quantity.GRIPPER_OPENING, Quantity.JOINT_EFFORT)
         }
         trajectories = {
             c.component for c in info.commands if c.kind is CommandKind.JOINT_TRAJECTORY
@@ -2461,8 +2462,8 @@ class RobotContext:
                 if name not in guardable or name not in info.channels:
                     raise CapabilityError(
                         "undeclared_capability",
-                        f"runtime guards on {name!r}, which is not a confirmed wrench or "
-                        "gripper-opening channel",
+                        f"runtime guards on {name!r}, which is not a confirmed wrench, "
+                        "gripper-opening, or joint-effort channel",
                     )
         has_scene = callable(getattr(self._runtime, "attach", None)) and callable(
             getattr(self._runtime, "detach", None)
