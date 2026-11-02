@@ -562,7 +562,8 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
         assert not outcome["report"]["accepted"] and outcome["submitted_nothing"], code
         assert [k for k, _, _ in outcome["traced"]] == ["predicted", "continued"], code
         assert outcome["traced"][-1][1] == outcome["report"]["refusal"], code
-    assert refusals["unpredicted_scene_change_falling"]["report"]["detail"] == "object block"
+    falling = refusals["unpredicted_scene_change_falling"]["report"]["discrepancies"]
+    assert [(d["kind"], d["subject"]) for d in falling] == [("object_position", "block")]
     assert unsettled["prediction_unsettled"] == ["block"]
     assert unsettled["report"]["accepted"], unsettled["report"]
     assert released["released"]["prediction_releases"] == ["block"]
@@ -571,7 +572,7 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
     assert released["released"]["report"]["accepted"], released["released"]["report"]
     kept = released["kept"]["report"]
     assert kept["refusal"] == "unpredicted_scene_change", kept
-    assert [d["what"] for d in kept["discrepancies"]] == ["attachments"]
+    assert [d["kind"] for d in kept["discrepancies"]] == ["attachments"]
 
     allowed = evidence["allowances"]
     narrowed = allowed["narrowed"]
@@ -582,11 +583,14 @@ def test_a_plan_made_on_a_prediction_continues_on_arrival(artifacts: Path, tmp_p
     for name in ("other_allow", "moved", "kept"):
         report = allowed[name]["report"]
         assert report["refusal"] == "unpredicted_scene_change", (name, report)
-        assert [d["what"] for d in report["discrepancies"]] == ["attachments"], (name, report)
+        assert [d["kind"] for d in report["discrepancies"]] == ["attachments"], (name, report)
     unexpected = allowed["unexpected"]
     assert unexpected["prediction_allowances"] == []
     assert unexpected["report"]["refusal"] == "unpredicted_scene_change", unexpected["report"]
-    assert [d["what"] for d in unexpected["report"]["discrepancies"]] == ["revision", "attachments"]
+    assert [d["kind"] for d in unexpected["report"]["discrepancies"]] == [
+        "revision",
+        "attachments",
+    ]
 
 
 OBSTACLE = (0.135, -0.235, 0.15)  # the right arm's second link at (0.45, 0); clear of rest and A
@@ -761,7 +765,9 @@ def test_continuations_check_what_they_reconcile(artifacts: Path, tmp_path: Path
 
     turned = report["rotated_in_place"]["report"]
     assert turned["refusal"] == "unpredicted_scene_change", turned
-    assert [d["what"] for d in turned["discrepancies"]] == ["object block rotation"]
+    assert [(d["kind"], d["subject"]) for d in turned["discrepancies"]] == [
+        ("object_rotation", "block")
+    ]
     assert turned["discrepancies"][0]["actual"] == pytest.approx(0.3, abs=1e-6)
     assert report["rotated_in_place"]["submitted_nothing"]
 

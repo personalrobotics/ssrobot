@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.TraceRecord v9",
+  "title": "ssrobot.TraceRecord v10",
   "$ref": "#/$defs/TraceRecord",
   "$defs": {
     "ActionChunk": {
@@ -544,7 +544,7 @@
           "const": "ssrobot.ContinuationReport"
         },
         "version": {
-          "const": 5
+          "const": 6
         },
         "prediction": {
           "type": "string",
@@ -716,11 +716,31 @@
     },
     "Discrepancy": {
       "type": "object",
-      "description": "One way the actual state differs from the prediction.",
+      "description": "One way the actual state differs from the prediction: what differs, and of what.",
       "properties": {
-        "what": {
+        "kind": {
           "type": "string",
-          "description": "A joint, an object or its rotation, or 'revision'."
+          "enum": [
+            "joint",
+            "revision",
+            "attachments",
+            "fixtures",
+            "object_position",
+            "object_rotation",
+            "object_state"
+          ],
+          "description": "What differs."
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The joint or object it is of; none for a scene's own."
         },
         "predicted": {
           "type": "number",
@@ -739,7 +759,7 @@
         }
       },
       "required": [
-        "what",
+        "kind",
         "predicted",
         "actual",
         "tolerance"
@@ -2933,7 +2953,7 @@
           "const": "ssrobot.TraceRecord"
         },
         "version": {
-          "const": 9
+          "const": 10
         },
         "sequence": {
           "type": "integer",

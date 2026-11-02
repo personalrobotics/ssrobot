@@ -918,7 +918,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
 | [`Submission`](../schemas/ssrobot.Submission.v3.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
-| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v9.json) | One event in a trace. |
+| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v10.json) | One event in a trace. |
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`ChainsReport`](../schemas/ssrobot.ChainsReport.v2.json) | Every attempt and stage of a race of staged prefixes, each chain's choice and cost, and the selection. See planning.md. |

@@ -37,6 +37,7 @@ from ssrobot.continuation import (
     ContinuationReport,
     ContinuationResult,
     Discrepancy,
+    DiscrepancyKind,
     PlanProjection,
     PredictedSnapshot,
     check_tolerance,
@@ -351,13 +352,20 @@ def _scene_changes(
     if actual.revision < base or (not expects and actual.revision != base):
         changes.append(
             Discrepancy(
-                what="revision", predicted=float(base), actual=float(actual.revision), tolerance=0.0
+                kind=DiscrepancyKind.REVISION,
+                predicted=float(base),
+                actual=float(actual.revision),
+                tolerance=0.0,
             )
         )
     if actual.attachments != predicted.attachments:
-        changes.append(Discrepancy(what="attachments", predicted=0.0, actual=1.0, tolerance=0.0))
+        changes.append(
+            Discrepancy(kind=DiscrepancyKind.ATTACHMENTS, predicted=0.0, actual=1.0, tolerance=0.0)
+        )
     if actual.fixtures != predicted.fixtures:
-        changes.append(Discrepancy(what="fixtures", predicted=0.0, actual=1.0, tolerance=0.0))
+        changes.append(
+            Discrepancy(kind=DiscrepancyKind.FIXTURES, predicted=0.0, actual=1.0, tolerance=0.0)
+        )
     held = {o.name for o in prediction.held}
     held |= {a.object for a in predicted.attachments if a.held}
     held |= {a.object for a in actual.attachments if a.held}
@@ -374,7 +382,11 @@ def _scene_changes(
             if there.status is not expected:
                 changes.append(
                     Discrepancy(
-                        what=f"object {o.name} state", predicted=0.0, actual=1.0, tolerance=0.0
+                        kind=DiscrepancyKind.OBJECT_STATE,
+                        subject=o.name,
+                        predicted=0.0,
+                        actual=1.0,
+                        tolerance=0.0,
                     )
                 )
                 continue
@@ -383,7 +395,8 @@ def _scene_changes(
         if there is None:
             changes.append(
                 Discrepancy(
-                    what=f"object {o.name}",
+                    kind=DiscrepancyKind.OBJECT_POSITION,
+                    subject=o.name,
                     predicted=0.0,
                     actual=-1.0,
                     tolerance=object_tolerance_m,
@@ -396,7 +409,8 @@ def _scene_changes(
         if moved > object_tolerance_m:
             changes.append(
                 Discrepancy(
-                    what=f"object {o.name}",
+                    kind=DiscrepancyKind.OBJECT_POSITION,
+                    subject=o.name,
                     predicted=0.0,
                     actual=moved,
                     tolerance=object_tolerance_m,
@@ -407,7 +421,8 @@ def _scene_changes(
         if turned > object_tolerance_rad:
             changes.append(
                 Discrepancy(
-                    what=f"object {o.name} rotation",
+                    kind=DiscrepancyKind.OBJECT_ROTATION,
+                    subject=o.name,
                     predicted=0.0,
                     actual=turned,
                     tolerance=object_tolerance_rad,
@@ -1785,7 +1800,13 @@ class RobotContext:
             )
 
         off = tuple(
-            Discrepancy(what=j, predicted=p, actual=a, tolerance=arrival_tolerance)
+            Discrepancy(
+                kind=DiscrepancyKind.JOINT,
+                subject=j,
+                predicted=p,
+                actual=a,
+                tolerance=arrival_tolerance,
+            )
             for j, p, a, g in zip(request.joints, predicted_start, actual_start, gaps, strict=True)
             if g > arrival_tolerance
         )
@@ -1800,7 +1821,7 @@ class RobotContext:
         if changed:
             return refuse(
                 "unpredicted_scene_change",
-                "; ".join(d.what for d in changed),
+                "; ".join(str(d) for d in changed),
                 discrepancies=tuple(changed),
             )
 

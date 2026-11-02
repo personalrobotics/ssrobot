@@ -554,7 +554,7 @@ it when the robot arrives. Three pieces make that safe:
       - the scene changed only as predicted: the same revision, or, with expected releases,
         removals or allowance changes, a later one; the predicted attachments and the same
         fixtures; with registered object poses, every object in the state the prediction
-        expects (``object <name> state``), so a removal or a registration nothing predicted
+        expects (an `object_state` discrepancy), so a removal or a registration nothing predicted
         is refused; and every free object within `object_tolerance_m` of its predicted position and
         `object_tolerance_rad` of its predicted orientation
         (`unpredicted_scene_change`);
@@ -583,10 +583,13 @@ it when the robot arrives. Three pieces make that safe:
       `execute` does.
 
    A refusal submits nothing. `ContinuationResult.report`, a `ContinuationReport`, is the
-   evidence either way: the predicted and actual starts, every tolerance, every
-   discrepancy, the `RestResult` it was given (`ContinuationReport` version 4), the
-   planner's account of its rebase,
-   and the fingerprints of the rebased plan and compiled command.
+   evidence either way (`ContinuationReport` version 6): the predicted and actual
+   starts, every tolerance, every discrepancy, the `RestResult` it was given, the
+   planner's account of its rebase, and the fingerprints of the rebased plan and compiled
+   command. A `Discrepancy` names what differs as a `DiscrepancyKind` (`joint`,
+   `revision`, `attachments`, `fixtures`, `object_position`, `object_rotation`,
+   `object_state`) and, for a joint or an object, its `subject`, so a caller branches on
+   fields, never on text.
 
 **Planning on a plan's end.** A feasibility check plans the next motion from where a
 motion not yet run would end, and that check plan can be kept:

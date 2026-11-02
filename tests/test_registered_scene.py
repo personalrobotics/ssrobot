@@ -338,7 +338,7 @@ def _continued(removing: bool, remove: bool = True) -> dict[str, Any]:
             "predicted_box": prediction.state.objects[0].status.value,
             "continued": result.execution is not None,
             "refusal": report.refusal,
-            "discrepancies": sorted(d.what for d in report.discrepancies),
+            "discrepancies": sorted(str(d) for d in report.discrepancies),
         }
 
 
@@ -445,7 +445,7 @@ def test_registered_object_poses_hold_until_registered_again(artifacts: Path) ->
     released = evidence["releases"]
     assert released["predicted_box"] == "registered" and not released["continued"]
     assert released["refusal"] == "unpredicted_scene_change"
-    assert released["discrepancies"] == ["object box state"]
+    assert released["discrepancies"] == ["object_state box"]
     # Released as predicted, but unknown: nothing can validate the plan around it.
     assert evidence["released_unknown"] == {
         "predicted_box": "registered",

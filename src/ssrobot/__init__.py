@@ -54,6 +54,7 @@ from ssrobot.continuation import (
     ContinuationReport,
     ContinuationResult,
     Discrepancy,
+    DiscrepancyKind,
     PlanProjection,
     PredictedSnapshot,
 )
@@ -228,6 +229,7 @@ __all__ = [
     "DType",
     "Diagnostic",
     "Discrepancy",
+    "DiscrepancyKind",
     "EffectiveLimits",
     "EndEffector",
     "Execution",
