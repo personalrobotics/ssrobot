@@ -487,7 +487,9 @@ or float64 stops it, so its readings have no sensor chatter to set a bound by. T
 the `source`. The `dwell_ns` is measured against it: just longer than the longest
 interval in which the readings stay within that variation and then move beyond it
 again, after a commanded motion ends, over isolated traces of the motions the stack
-commands (`scripts/calibrate_rest.py`). `max_gap_ns` is the control tick. The evidence
+commands (`scripts/calibrate_rest.py`). Where the arm can carry the reference scenario's
+object, it also measures loaded trials, after a planned lift of the held object, as a
+separate set: the dwell covers both. `max_gap_ns` is the control tick. The evidence
 belongs with the profile that declares the values, cited from it with its command and
 commits.
 

@@ -73,6 +73,17 @@ half_length = 0.06
 position_in_frame = [0.0, 0.0, 0.025]
 quat_in_frame_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
 
+# The payload lift of scripts/calibrate_rest.py (#239): with the object gripped and held,
+# the hand straight up in the world by `height` metres, planned as an end-effector
+# offset. A trial whose object rose less than `minimum_rise` is invalid. The runtime
+# reports a held object more than 1 cm from where it was gripped, so a lift it carries
+# without a violation rises at least height - 0.01. The held object may touch `support`,
+# what it stands on as the lift starts, as well as the hand.
+[robots.scenario.lift]
+height = 0.10
+minimum_rise = 0.09
+support = "vention_base"
+
 [[robots]]
 name = "ada"
 repository = "personalrobotics/ada_assets"
@@ -228,3 +239,14 @@ radius = 0.025
 half_length = 0.05
 position_in_frame = [0.0, 0.0, 0.0641]
 quat_in_frame_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
+
+# The payload lift of scripts/calibrate_rest.py (#239): with the object gripped and held,
+# the hand straight up in the world by `height` metres, planned as an end-effector
+# offset. A trial whose object rose less than `minimum_rise` is invalid. The runtime
+# reports a held object more than 1 cm from where it was gripped, so a lift it carries
+# without a violation rises at least height - 0.01. The held object may touch `support`,
+# what it stands on as the lift starts, as well as the hand.
+[robots.scenario.lift]
+height = 0.10
+minimum_rise = 0.09
+support = "ada_table"
