@@ -12,6 +12,7 @@ import shutil
 import xml.etree.ElementTree as ET
 from importlib import resources
 from pathlib import Path
+from typing import Any
 
 from ssrobot import (
     ChannelSpec,
@@ -529,3 +530,17 @@ def runnable_panda(root: Path, *, slide: bool = False) -> tuple[Path, Path]:
     scene = root / "scene.xml"
     scene.write_text("<mujoco><worldbody/></mujoco>\n")
     return package, scene
+
+
+def race(ctx: Any, chains: Any, **kwargs: Any) -> Any:
+    """Race ``chains`` with ``ctx.start_chains``, advanced until it is done, as a caller
+    that does not step meanwhile: the run's ``Chains``."""
+    from concurrent.futures import FIRST_COMPLETED, wait
+
+    run = ctx.start_chains(chains, **kwargs)
+    try:
+        while not run.advance():
+            wait(run.planning, timeout=0.01, return_when=FIRST_COMPLETED)
+    finally:
+        run.close()
+    return run.result

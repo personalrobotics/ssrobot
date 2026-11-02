@@ -1,40 +1,35 @@
-"""Planner portfolios (#23): isolated attempts at one request, selected deterministically.
+"""Planner portfolios (#23): one request raced across planners, as one-stage chains.
 
-On the example arm in the pedestal scene, the shoulder swings from -0.5 to 0.5 rad with
-the elbow lowered. The straight motion sweeps the fingers through the pedestal, so a
-planner must go around it. The portfolio's attempts, each with its own planner, are:
-- three seeded sscbirrt attempts at equal priority;
+``RobotContext.plan_portfolio`` plans one request with each of several planners, each in
+its own scene of one snapshot, and selects one: a race of one-stage chains, so its report
+is the chains' (``ChainsReport``). On the example arm in the pedestal scene, the shoulder
+swings from -0.5 to 0.5 rad with the elbow lowered. The straight motion sweeps the fingers
+through the pedestal, so a planner must go around it. The planners are:
+- three sscbirrt planners, seeds 0, 1 and 2;
 - one that deliberately corrupts its own planning scene: it overwrites the scene's
   private MuJoCo state, and plans as if nothing collided;
-- one whose planner cannot plan configuration goals;
-- one whose planner returns only a path, timed by a counting processor;
-- one whose processor cannot time its path;
+- one that cannot plan configuration goals;
+- one that returns only a path, timed by a counting processor;
 - one whose validator answers with a report about another motion.
 
-The last five rise in priority. The corrupt attempt's straight motion fails validation
-on a fresh scene. The untimable and misreporting attempts fail on their own, without
-affecting the others. So the path-only attempt is selected, and its candidate (the path
-timed once) is exactly what executes. The live context, and every other attempt, are
+The corrupt planner's straight motion fails validation on a fresh scene, the unable one
+is refused at negotiation, and the misreporting one fails on its own, without affecting
+the others. The shortest valid motion is selected and executes exactly; the path-only
+planner's path was timed once. The live context, and every other planner, are
 untouched. The report is byte-identical with one worker and with three, so completion
-order does not matter.
+order does not matter. A processor that cannot time a path fails only its planner.
 
-A second portfolio, of planners that only wait for the abort signal, shows a timeout:
-the running attempt is aborted, and the pending ones are canceled before they start.
-Decoding refuses reports that claim an impossible outcome.
-
-Validation runs on workers (#202), so ``validating.json`` shows what that must not
-change: two path-only planners sharing one processor that is not reentrant never call it
-at once, and a run stopped (by ``abort``, or by its timeout) while an attempt's delayed
+``canceled.json``: an abort stops planners that only wait for it, and those not started
+never start. ``validating.json`` (#202): two path-only planners sharing one processor
+that is not reentrant never call it at once, and a run aborted while a planner's delayed
 validation runs selects nothing, that validation unused.
 
-The evidence is ``portfolio.json``, ``isolation.json``, ``canceled.json``,
-``validating.json``, and ``refusals.json``. Reproduce with
-``pytest tests/test_planner_portfolio.py``.
+The evidence is ``portfolio.json``, ``isolation.json``, ``canceled.json`` and
+``validating.json``. Reproduce with ``pytest tests/test_planner_portfolio.py``.
 """
 
 from __future__ import annotations
 
-import copy
 import json
 import math
 import threading
@@ -46,20 +41,15 @@ from typing import Any
 from ssrobot import (
     ConfigurationGoal,
     GeometricPath,
-    PlanAttempt,
     PlannerCapabilities,
     PlanningRequest,
     PlanResult,
     PlanStatus,
-    PortfolioReport,
     ResultForm,
     RobotContext,
-    SsrobotError,
     ValidationError,
     dumps,
     load_package,
-    loads,
-    plan_portfolio,
 )
 from ssrobot.mujoco import MujocoRuntime
 from ssrobot.planning import CBiRRT, RestToRestProcessor
@@ -280,45 +270,58 @@ class _Unable(_Wrapped):
         )
 
 
+def _stages(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each planner's one stage, in order."""
+    return [c["attempts"][0]["stages"][0] for c in report["chains"]]
+
+
 def _portfolio(out: Path, workers: int) -> dict[str, Any]:
     package = load_package(PACKAGE)
     description = package.description
     counting = _Counting()
-    attempts = [
-        *(PlanAttempt(planner=CBiRRT(description), seed=seed) for seed in (0, 1, 2)),
-        PlanAttempt(planner=_Corrupting(CBiRRT(description)), seed=0, priority=1),
-        PlanAttempt(planner=_Unable(CBiRRT(description)), priority=2),
-        PlanAttempt(planner=_PathOnly(CBiRRT(description)), processor=counting, priority=3),
-        PlanAttempt(planner=_PathOnly(CBiRRT(description)), processor=_Untimable(), priority=4),
-        PlanAttempt(planner=_Misreporting(CBiRRT(description)), priority=5),
+    planners: list[Any] = [
+        CBiRRT(description),
+        CBiRRT(description),
+        CBiRRT(description),
+        _Corrupting(CBiRRT(description)),
+        _Unable(CBiRRT(description)),
+        _PathOnly(CBiRRT(description)),
+        _Misreporting(CBiRRT(description)),
     ]
+    seeds = [0, 1, 2, 0, 0, 0, 0]
     with RobotContext(description, MujocoRuntime(package, scene=SCENE, **OPTIONS)) as ctx:
         _move(ctx, START)
         arm = ctx.manipulator()
         snapshot = ctx.snapshot()
         request = arm.request(ConfigurationGoal(configurations=(GOAL,)), snapshot=snapshot)
         before = (_arm(ctx), ctx.now, ctx.scene)
-        portfolio = plan_portfolio(
-            ctx, request, snapshot=snapshot, attempts=attempts, workers=workers
+        portfolio = ctx.plan_portfolio(
+            request,
+            snapshot=snapshot,
+            planners=planners,
+            seeds=seeds,
+            processor=counting,
+            workers=workers,
         )
         after = (_arm(ctx), ctx.now, ctx.scene)
         (out / "portfolio.json").write_text(dumps(portfolio.report) + "\n")
         selected = portfolio.selected
-        assert selected is not None
-        attempt, candidate = selected
-        # Every candidate is still valid on a fresh scene: no attempt changed another's.
+        assert selected is not None and portfolio.report.selected is not None
+        candidate = selected[2][0].plan
+        planner = planners[portfolio.report.selected]
+        # Every valid plan is still valid on a fresh scene: no planner changed another's.
         scene = ctx.planning_scene(snapshot, arm.group)
         still_valid = {
-            i: attempts[i]
-            .planner.validator(c.request, scene)
-            .validate_trajectory(c.trajectory, c.path)
+            i: planners[i]
+            .validator(results[0][0].plan.request, scene)
+            .validate_trajectory(results[0][0].plan.trajectory, results[0][0].plan.path)
             .valid
-            for i, c in enumerate(portfolio.candidates)
-            if c is not None and c.trajectory is not None
+            for i, results in enumerate(portfolio.results)
+            if results and results[0]
         }
-        # The selected candidate executes as it is: no processor runs again.
-        execution = ctx.execute(candidate, planner=attempt.planner)
-        status = ctx.run_until(execution, max_ticks=20_000)  # 21.4 s: it stops at every waypoint
+        # The selected plan executes as it is: no processor runs again.
+        execution = ctx.execute(candidate, planner=planner)
+        status = ctx.run_until(execution, max_ticks=20_000)
         assert candidate.trajectory is not None
         exact = execution.command == candidate.trajectory.sample(ctx.trajectory_contract.period_ns)
         reached = _arm(ctx)
@@ -333,29 +336,7 @@ def _portfolio(out: Path, workers: int) -> dict[str, Any]:
     }
 
 
-def _canceled(out: Path) -> dict[str, Any]:
-    package = load_package(PACKAGE)
-    description = package.description
-    polled: list[str] = []
-    with RobotContext(description, MujocoRuntime(package, scene=SCENE, **OPTIONS)) as ctx:
-        arm = ctx.manipulator()
-        snapshot = ctx.snapshot()
-        request = arm.request(ConfigurationGoal(configurations=(GOAL,)), snapshot=snapshot)
-        patient = _Patient(CBiRRT(description), polled)
-        attempts = [PlanAttempt(planner=patient, seed=s) for s in (0, 1, 2)]
-        portfolio = plan_portfolio(
-            ctx, request, snapshot=snapshot, attempts=attempts, workers=1, timeout_s=0.2
-        )
-        try:
-            plan_portfolio(ctx, request, snapshot=snapshot, attempts=attempts, workers=2)
-            shared = "accepted"
-        except SsrobotError as e:
-            shared = e.code
-    (out / "canceled.json").write_text(dumps(portfolio.report) + "\n")
-    return {"report": json.loads(dumps(portfolio.report)), "polled": polled, "shared": shared}
-
-
-def test_a_portfolio_selects_deterministically_from_isolated_attempts(
+def test_a_portfolio_selects_deterministically_from_isolated_planners(
     artifacts: Path, tmp_path: Path
 ) -> None:
     one = _portfolio(artifacts, workers=1)
@@ -364,8 +345,8 @@ def test_a_portfolio_selects_deterministically_from_isolated_attempts(
     assert (artifacts / "portfolio.json").read_bytes() == (tmp_path / "portfolio.json").read_bytes()
     (artifacts / "isolation.json").write_text(json.dumps(one, indent=2) + "\n")
 
-    attempts = one["report"]["attempts"]
-    assert [a["outcome"] for a in attempts] == [
+    stages = _stages(one["report"])
+    assert [s["outcome"] for s in stages] == [
         "valid",
         "valid",
         "valid",
@@ -373,20 +354,21 @@ def test_a_portfolio_selects_deterministically_from_isolated_attempts(
         "refused",
         "valid",
         "failed",
-        "failed",
     ]
-    # The corrupt attempt planned straight through the pedestal: a fresh scene refuses it.
-    assert attempts[3]["status"] == "succeeded" and attempts[3]["detail"].startswith("collision")
-    assert attempts[4]["detail"] == "unsupported_goal"
-    # Expected failures stay with their attempt: the processor's, and a misbound report.
-    assert attempts[6]["detail"].startswith("cannot_time")
-    assert attempts[7]["detail"].startswith("validation_mismatch")
-    # The highest-priority valid attempt is the path-only one; its path was timed once.
-    assert one["report"]["selected"] == 5 and one["report"]["stopped"] is None
+    # The corrupt planner planned straight through the pedestal: a fresh scene refuses it.
+    assert stages[3]["status"] == "succeeded" and stages[3]["detail"].startswith("collision")
+    assert stages[4]["detail"] == "unsupported_goal"
+    # An expected failure stays with its planner: a misbound report.
+    assert stages[6]["detail"].startswith("validation_mismatch")
+    # The shortest valid motion is selected, and executed exactly; the path-only planner's
+    # path was timed once.
+    valid = {i: s["duration_s"] for i, s in enumerate(stages) if s["outcome"] == "valid"}
+    shortest = min(valid, key=lambda i: (valid[i], i))
+    assert one["report"]["selected"] == shortest and one["report"]["stopped"] is None
     assert one["processor_calls"] == 1 and one["executed_the_candidate"]
-    # Nothing an attempt did reached the live context or another attempt.
+    # Nothing a planner did reached the live context or another planner.
     assert one["live_untouched"] and many["live_untouched"]
-    assert one["still_valid"] == {0: True, 1: True, 2: True, 5: True}
+    assert one["still_valid"] == {i: True for i in valid}
     assert one["executed"] == "succeeded"
     # The shoulder is continuous: the goal is reached modulo a turn.
     pairs = zip(one["reached"], GOAL, strict=True)
@@ -394,26 +376,60 @@ def test_a_portfolio_selects_deterministically_from_isolated_attempts(
     assert max(gaps) <= 0.03
 
 
-def test_a_timeout_aborts_running_attempts_and_cancels_pending_ones(artifacts: Path) -> None:
-    result = _canceled(artifacts)
-    report = result["report"]
-    outcomes = [(a["outcome"], a["status"], a["detail"]) for a in report["attempts"]]
-    # One worker: the first attempt was running and polled the abort signal; the other
-    # two never started.
+def test_a_processor_that_cannot_time_a_path_fails_only_its_planner(artifacts: Path) -> None:
+    package = load_package(PACKAGE)
+    description = package.description
+    with RobotContext(description, MujocoRuntime(package, scene=SCENE, **OPTIONS)) as ctx:
+        _move(ctx, START)
+        arm = ctx.manipulator()
+        snapshot = ctx.snapshot()
+        request = arm.request(ConfigurationGoal(configurations=(GOAL,)), snapshot=snapshot)
+        portfolio = ctx.plan_portfolio(
+            request,
+            snapshot=snapshot,
+            planners=[_PathOnly(CBiRRT(description)), CBiRRT(description)],
+            processor=_Untimable(),
+        )
+    stages = _stages(json.loads(dumps(portfolio.report)))
+    (artifacts / "untimable.json").write_text(dumps(portfolio.report) + "\n")
+    assert stages[0]["outcome"] == "failed" and stages[0]["detail"].startswith("cannot_time")
+    assert stages[1]["outcome"] == "valid" and portfolio.report.selected == 1
+
+
+def test_an_abort_stops_running_planners_and_starts_no_others(artifacts: Path) -> None:
+    package = load_package(PACKAGE)
+    description = package.description
+    polled: list[str] = []
+    with RobotContext(description, MujocoRuntime(package, scene=SCENE, **OPTIONS)) as ctx:
+        arm = ctx.manipulator()
+        snapshot = ctx.snapshot()
+        request = arm.request(ConfigurationGoal(configurations=(GOAL,)), snapshot=snapshot)
+        patient = _Patient(CBiRRT(description), polled)
+        deadline = time.monotonic() + 0.2
+        portfolio = ctx.plan_portfolio(
+            request,
+            snapshot=snapshot,
+            planners=[patient, patient, patient],
+            seeds=[0, 1, 2],
+            abort=lambda: time.monotonic() >= deadline,
+        )
+    (artifacts / "canceled.json").write_text(dumps(portfolio.report) + "\n")
+    report = json.loads(dumps(portfolio.report))
+    outcomes = [(s["outcome"], s["status"], s["detail"]) for s in _stages(report)]
+    # One planner, so one plans at a time: the first was running and polled the abort
+    # signal; the other two never started.
     assert outcomes == [
         ("failed", "cancelled", "cancelled"),
-        ("canceled", None, "timeout"),
-        ("canceled", None, "timeout"),
+        ("not_started", None, "aborted"),
+        ("not_started", None, "aborted"),
     ]
-    assert result["polled"] == ["seed 0 aborted"]
-    assert report["stopped"] == "timeout" and report["selected"] is None
-    # Attempts that may run at once must not share a planner.
-    assert result["shared"] == "shared_planner"
+    assert polled == ["seed 0 aborted"]
+    assert report["stopped"] == "aborted" and report["selected"] is None
 
 
 def test_validating_on_workers_shares_processors_and_honors_a_stop(artifacts: Path) -> None:
     """#202's review: processors need not be thread-safe, so a shared one is called once at
-    a time; and a stop while an attempt is validated leaves nothing selected."""
+    a time; and an abort while a planner's motion is validated leaves nothing selected."""
     package = load_package(PACKAGE)
     description = package.description
     out: dict[str, Any] = {}
@@ -424,94 +440,40 @@ def test_validating_on_workers_shares_processors_and_honors_a_stop(artifacts: Pa
         request = arm.request(ConfigurationGoal(configurations=(GOAL,)), snapshot=snapshot)
 
         shared = _NotReentrant()
-        both = plan_portfolio(
-            ctx,
+        both = ctx.plan_portfolio(
             request,
             snapshot=snapshot,
-            attempts=[
-                PlanAttempt(planner=_PathOnly(CBiRRT(description)), processor=shared, seed=seed)
-                for seed in (0, 1)
-            ],
+            planners=[_PathOnly(CBiRRT(description)), _PathOnly(CBiRRT(description))],
+            seeds=[0, 1],
+            processor=shared,
             workers=2,
         )
         out["shared_processor"] = {
             "calls": shared.calls,
             "most_at_once": shared.overlapped,
-            "selected": both.report.selected,
+            "selected": both.report.selected is not None,
         }
 
-        def stopped(**stop: Any) -> dict[str, Any]:
-            slow = _SlowlyValidated(CBiRRT(description), stop.pop("delay_s"))
-            if stop.pop("abort_while_validating", False):
-                stop["abort"] = slow.validating.is_set
-            portfolio = plan_portfolio(
-                ctx, request, snapshot=snapshot, attempts=[PlanAttempt(planner=slow)], **stop
-            )
-            report = json.loads(dumps(portfolio.report))
-            (attempt,) = report["attempts"]
-            return {
-                "validation_began": slow.validating.is_set(),
-                "stopped": report["stopped"],
-                "selected": report["selected"],
-                "candidate": portfolio.candidates[0] is not None,
-                "attempt": (attempt["outcome"], attempt["status"], attempt["detail"]),
-                "validation": attempt["validation"],
-            }
-
-        out["aborted_while_validating"] = stopped(delay_s=0.5, abort_while_validating=True)
-        out["timed_out_while_validating"] = stopped(delay_s=2.0, timeout_s=1.0)
+        slow = _SlowlyValidated(CBiRRT(description), 0.5)
+        portfolio = ctx.plan_portfolio(
+            request, snapshot=snapshot, planners=[slow], abort=slow.validating.is_set
+        )
+        report = json.loads(dumps(portfolio.report))
+        (stage,) = _stages(report)
+        out["aborted_while_validating"] = {
+            "validation_began": slow.validating.is_set(),
+            "stopped": report["stopped"],
+            "selected": report["selected"],
+            "stage": (stage["outcome"], stage["status"], stage["detail"]),
+            "validation": stage["validation"],
+        }
     (artifacts / "validating.json").write_text(json.dumps(out, indent=2) + "\n")
 
-    assert out["shared_processor"] == {"calls": 2, "most_at_once": 1, "selected": 0}
-    for name, reason in (
-        ("aborted_while_validating", "aborted"),
-        ("timed_out_while_validating", "timeout"),
-    ):
-        assert out[name] == {
-            "validation_began": True,
-            "stopped": reason,
-            "selected": None,
-            "candidate": False,
-            "attempt": ("failed", "succeeded", f"{reason}: stopped while it was validated"),
-            "validation": None,
-        }, out[name]
-
-
-def test_a_report_cannot_claim_an_impossible_outcome(artifacts: Path, tmp_path: Path) -> None:
-    _portfolio(tmp_path, workers=1)
-    good = json.loads((tmp_path / "portfolio.json").read_text())
-
-    def edited(change: Callable[[dict[str, Any]], None]) -> str:
-        record = copy.deepcopy(good)
-        change(record)
-        try:
-            loads(json.dumps(record), PortfolioReport)
-        except SsrobotError as e:
-            return f"{e.code} at {e.path}"
-        return "accepted"
-
-    def set_(path: list[Any], value: Any) -> Callable[[dict[str, Any]], None]:
-        def change(record: dict[str, Any]) -> None:
-            target = record
-            for key in path[:-1]:
-                target = target[key]
-            target[path[-1]] = value
-
-        return change
-
-    cases = {
-        "as_written": edited(lambda r: None),
-        "selects_an_invalid_attempt": edited(set_(["selected"], 3)),
-        "selects_another_valid_attempt": edited(set_(["selected"], 0)),
-        "selects_nothing": edited(set_(["selected"], None)),
-        "unknown_stop": edited(set_(["stopped"], "bored")),
-        "canceled_without_a_stop": edited(set_(["attempts", 4, "outcome"], "canceled")),
-        "valid_without_a_duration": edited(set_(["attempts", 0, "duration_s"], None)),
-        "invalid_without_validation": edited(set_(["attempts", 3, "validation"], None)),
-        "bad_fingerprint": edited(set_(["snapshot"], "nope")),
-        "reordered": edited(lambda r: r["attempts"].reverse()),
-        "another_rule": edited(set_(["selection"], "fastest finisher")),
+    assert out["shared_processor"] == {"calls": 2, "most_at_once": 1, "selected": True}
+    assert out["aborted_while_validating"] == {
+        "validation_began": True,
+        "stopped": "aborted",
+        "selected": None,
+        "stage": ("failed", "succeeded", "aborted: stopped while it was validated"),
+        "validation": None,
     }
-    (artifacts / "refusals.json").write_text(json.dumps(cases, indent=2) + "\n")
-    assert cases["as_written"] == "accepted"
-    assert all(v != "accepted" for k, v in cases.items() if k != "as_written"), cases

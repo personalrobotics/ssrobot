@@ -120,7 +120,7 @@ take it like any request option (`arm.plan_to_configuration(q, planner=planner,
 clearance_m=0.005)`), it is part of the request's fingerprint and of
 `constraints_identity`, and so every validation report is bound to it. Every scene made
 for a request has its clearance: planning, the planner's validator, `prepare`, execution,
-and portfolios. A result or prepared trajectory made at one clearance is refused as
+and races. A result or prepared trajectory made at one clearance is refused as
 evidence at another (`validation_mismatch`). A skill that wants one clearance for many
 stages holds it as configuration and puts it in each request; there is no runtime-wide
 default.
@@ -309,163 +309,27 @@ execution = ctx.execute(plan, planner=planner)  # reuses the preparation once ve
 ```
 
 The context keeps each preparation, keyed by the content of the plan, until the scene
-changes. Every candidate that alternatives, portfolios, or chains prepare is kept in the
+changes. Every candidate a race of chains prepares is kept in the
 same way. When the plan is prepared again or executed, the context reuses the stored
 validation of the command only after confirming that it answers exactly the same
 request, source trajectory, trajectory contract, command, and validator. Otherwise the
 command is validated again. The remaining readiness checks are always repeated.
 
-## Planner portfolios
+## Racing: chains
 
-`ssrobot.plan_portfolio(ctx, request, *, snapshot, attempts, workers=1, timeout_s=None,
-abort=None)` plans one request with an explicit list of attempts, at most 32, and
-selects one plan deterministically. Each `PlanAttempt(planner, processor=None,
-seed=None, priority=0)` is negotiated, then given its own planning scene of `snapshot`,
-the one snapshot `request` was built in. All the scenes are built before any attempt
-runs, and attempts run on at most `workers` threads. With more than one worker, every
-attempt needs its own planner instance (`shared_planner`), so attempts share no mutable
-state with each other or with the live context.
+A race plans several candidates at once in one state and selects one,
+deterministically. A candidate is a **chain**: a prefix of motions, such as a pregrasp,
+then the approach from where it ends, then a lift holding the object. Racing the whole
+prefix keeps a candidate from winning on a short first motion when a later one is
+infeasible. A single motion is a one-stage chain. `ctx.start_chains(chains, *, snapshot,
+workers=1, cancel_lower=True, abort=None)` starts the race, and the caller advances it.
+`ctx.plan_portfolio` is the blocking race of planners at one request (see *Planner
+portfolios*).
 
-- **Cancellation** is cooperative. When `timeout_s` passes or `abort` returns True,
-  attempts not yet started are `canceled` at once, and running planners receive the
-  abort signal through `Planner.plan`'s `abort`, which they must poll. Python cannot
-  safely stop a planner that does not. The report's `stopped` (`timeout` or `aborted`)
-  says why.
-  - Once the run has stopped, nothing becomes valid. A result that arrives after the
-    stop is not validated. A validation running at the stop finishes safely on its
-    worker, but is not used. Either is `failed`, with the stop's reason.
-- **Validation and candidates.** Every successful attempt is validated again by its
-  own planner's validator, on a fresh scene of the same snapshot, as it would execute:
-  its trajectory, or its path timed once by its processor.
-  - Each attempt runs on a worker in two phases: it plans, then it is validated. The
-    context builds the fresh scene once planning succeeds; the worker, which touches
-    neither the context nor the runtime, processes, validates and checks. The
-    attempt's planner and worker stay occupied until its validation ends, and a valid
-    attempt cuts off lower priorities only once validated. Processors need not be
-    thread-safe: a processor shared by attempts processes one path at a time. Nothing uses a result before
-    its validation; the context keeps stepping meanwhile.
-  - The fresh report must come from that validator, bound to the request, and be about
-    exactly that motion with its path as evidence (`check_bound`, `check_validation`).
-  - A motion that fails is `invalid`, whatever the planner reported.
-  - A valid motion is then prepared for the runtime's trajectory contract on the same
-    worker, exactly as `ctx.prepare` would prepare it, with the same validator,
-    clearance, and resolution. If the command is refused, the attempt is `invalid`. Its
-    detail is the refusal and its validation is the command's report, so the next seed,
-    candidate, or arm can be selected before anything executes. A runtime without a
-    trajectory contract executes nothing, and there a candidate is validated only as
-    planned.
-  - The context keeps the prepared command as evidence, and `execute` reuses it as
-    described in "Executing a plan". A continuation's rebased motion is a different
-    motion and is always prepared again.
-  - A valid motion becomes the attempt's candidate plan. That is the planner's result,
-    carrying the exact trajectory validated and the fresh report as its trajectory
-    evidence.
-  - An expected error from the processor, the validator, or the binding checks fails
-    only that attempt (`failed`).
-- **Selection** is among `valid` attempts: highest priority, then the shortest
-  duration, then the earliest attempt. Neither wall-clock time nor completion order
-  matters, so without a timeout or abort the `PortfolioReport` is the same however the
-  attempts were scheduled.
-- **The report** records, for every attempt:
-  - its planner, processor, seed, and priority;
-  - its outcome (`refused`, `canceled`, `failed`, `invalid`, or `valid`), the planner's
-    status, and why;
-  - its candidate's duration;
-  - the fingerprints of its result and of its fresh validation.
-
-  Decoding refuses a report whose attempts are out of order or claim an impossible
-  combination, or whose `selected` is not the one the rule selects.
-
-`Portfolio.selected` is the selected attempt and its candidate. Execute it with
-`ctx.execute(candidate, planner=attempt.planner)`. The candidate is already timed, so no
-processor runs again. That call checks that the snapshot is still current and compiles
-exactly the validated motion.
-
-## Racing alternatives
-
-`ssrobot.plan_alternatives(ctx, alternatives, *, snapshot, workers=1, cancel_lower=True,
-abort=None)` plans several **alternative requests** in one snapshot and selects one:
-the same task for either of two arms, or towards either of two goals. Each
-`Alternative(request, attempts, priority=0, label="")` carries its own `PlanAttempt`s.
-It runs on the portfolio's engine:
-- **isolation:** every attempt gets its own planning scene, built on the context's
-  thread before it runs;
-- **validation:** every success is validated again on a fresh scene of the snapshot;
-- **workers:** at most `workers` attempts run at once, and those that may run together
-  need their own planner instances (`shared_planner`).
-
-What alternatives exist (arms, goals, containers) is the caller's choice.
-
-- **Budgets.** Every attempt plans with its own planner's budget, whatever the number of
-  workers. There is no shared deadline: with one, a single worker might never start a
-  later alternative. Workers change latency, never which attempts are planned.
-- **Scheduling.** Attempts are handed to the pool highest alternative priority first,
-  then in declaration order. A new attempt is started only after every finished one has
-  been validated.
-- **Selection** is among `valid` attempts, never by completion order:
-  1. highest alternative priority;
-  2. highest attempt priority;
-  3. shortest validated duration;
-  4. earliest alternative, then earliest attempt.
-- **Cancellation by priority** (`cancel_lower`). Once an attempt is valid, attempts of a
-  *strictly lower* alternative priority stop:
-  - one not yet started never starts (`not_started`);
-  - a running one is told to stop through its `abort` (`canceled_by_priority`), and
-    whatever it returns is not validated. It is `canceled_by_priority` whether it stops
-    by returning or by raising an expected error (`SsrobotError`); any other exception
-    propagates.
-
-  Attempts of an *equal* priority always finish, since they could still win on duration.
-  On one worker which work was spared is deterministic. On several it depends on
-  scheduling; the selection never does.
-- **Abort.** `abort` stops the run: attempts not started are `not_started` (detail
-  `aborted`), running planners receive the abort signal, and the report's `stopped` is
-  `aborted`.
-- **The report** (`AlternativesReport`) records every alternative (label, request
-  fingerprint, priority) and every attempt at it: planner, processor, seed, priority;
-  outcome (`refused`, `not_started`, `canceled_by_priority`, `failed`, `invalid`, or
-  `valid`) and why; the planner's status; its candidate's duration; and the
-  fingerprints of its result and fresh validation. It also records the selection.
-  - Decoding refuses a report whose selection isn't the rule's, whose
-    `canceled_by_priority` or `not_started` have no strictly higher valid priority, or
-    abort, to account for them, or that claims a timeout.
-  - When each attempt planned is in `Alternatives.intervals_s`, and when it was
-    validated in `validation_intervals_s`, in seconds from the start of the run. How
-    long building its validation scene took is in `scenes_s`. That's for inspection,
-    and never part of the report.
-
-`Alternatives.selected` is the selected alternative, its attempt and its candidate.
-Execute it with `ctx.execute(candidate, planner=attempt.planner)`. `plan_portfolio` is
-the one-alternative case on the same engine, with its report unchanged.
-
-**Planning while the robot moves.** `plan_alternatives` blocks the context's thread until
-every attempt has ended. `ctx.start_alternatives(...)` (or `ssrobot.start_alternatives`)
-takes the same arguments and builds every scene at once, but leaves the planning to the
-caller, so the context can keep stepping a running motion meanwhile. It returns an
-`AlternativesRun`:
-- `advance()` never waits. It starts attempts on free workers, checks `abort`, starts
-  the validation of every attempt that has planned, on a worker, and records every
-  validation that has ended. It returns True once the run is `done`.
-- `planning` holds the plans and validations running now, as opaque futures
-  (`Future[Any]`) for a caller that only waits on them; their results are the run's. Until the run is done, it is never empty after `advance()`: every finished plan
-  or validation has been taken, and every queued attempt a free worker can run has
-  started. A driver can rely on that to decide whether the runtime may step (#211).
-- `cancel()` stops the run: attempts not started never start, and running planners are
-  told to stop (`aborted`).
-- `close()` cancels an unfinished run, waits for its planners, and releases its scenes.
-  Both may be called again.
-- `result` is exactly what `plan_alternatives` returns: `plan_alternatives` is this run,
-  advanced until it is done.
-
-## Chains: racing staged prefixes
-
-An alternative is one motion. A chain is a candidate's whole prefix of motions, such as a
-pregrasp, then the approach from where it ends, then a lift holding the object. Racing
-the whole prefix keeps a candidate from winning on a short first motion when a later one
-is infeasible. `plan_chains(ctx, chains, snapshot=...)` races them, and `start_chains`
-(or `ctx.start_chains`) is its passive run, as `start_alternatives` is for alternatives.
+**Chains.**
 - **A `Chain`** is a label, a priority, its `stages`, and the `seeds` of its first stage,
-  one attempt at the whole chain each, in order of preference.
+  one attempt at the whole chain each, in order of preference. At most 32 seeds run in
+  one race.
 - **A `Stage`** is a name and `build(previous) -> StageRequest`, which runs on the
   context's thread. `previous` is the `StageResult` of the stage before it, `None` for the
   first.
@@ -473,8 +337,8 @@ is infeasible. `plan_chains(ctx, chains, snapshot=...)` races them, and `start_c
   request is built once, and tried with each seed in order; the first valid try is the
   stage's. When every try fails, the attempt fails, and the chain's next seed plans the
   prefix again. `None`, the default, plans the request's own seed once. The first stage
-  has none of its own, since its seeds are the chain's. A transfer, say, can be retried from
-  one validated pregrasp, approach and lift, without planning them again.
+  has none of its own, since its seeds are the chain's. A transfer, say, can be retried
+  from one validated pregrasp, approach and lift, without planning them again.
 - **`retry_prefix`**, on a later stage, defaults to `True`: once the stage has failed
   every try it may make, the chain's next seed may plan the prefix again, and a later
   prefix may rescue the chain. `False` is the caller's assertion that another prefix is
@@ -482,48 +346,121 @@ is infeasible. `plan_chains(ctx, chains, snapshot=...)` races them, and `start_c
   that stage's tries run, and the chain fails there. The first stage is the prefix, so
   it may not be `False`.
 - **A `StageRequest`** names the state the stage plans in, the request built in it, the
-  planner, and an optional processor. The request must have been built in that state.
+  planner, and an optional processor that times a path-only result. The request must
+  have been built in that state.
 - **A chain is contiguous.** The first stage plans in the run's own state: the snapshot
   or prediction it started from. Every later stage plans in the previous stage's
   `StageResult.projection`, exactly. With `attachments`, it plans in that projection's
-  state with exactly those attachments instead, such as an object held as a grasp would
-  hold it, and nothing else changed. Any other state is refused (`disconnected_stage`).
-  Each stage records the projected state it was built from, so the report shows the
-  linkage.
-- **Validation:** each stage is planned on a worker, then validated on a worker, on a
-  fresh scene of its own state and clearance, before the next stage is built.
+  state with exactly those attachments instead (`SceneSnapshot.with_attachments`), such
+  as an object held as a grasp would hold it, and nothing else changed. Any other state
+  is refused (`disconnected_stage`). Each stage records the projected state it was built
+  from, so the report shows the linkage.
 - **A `StageResult`** carries the validated plan, the state it was planned in, and its
   `PlanProjection`, on which the next stage may plan. A projection confers no validity.
-- **Selection is two-level:**
-  1. Each chain's choice is its first seed, in declared order, whose stages are all
-     valid. Its cost is the sum of that attempt's validated stage durations. A seed is
-     attempted only once every earlier seed of the chain has failed, so the report lists
-     the attempts made, and no later seed is planned; failed seeds stay in the report and
-     cost nothing. A stage's failed tries cost nothing either: only its valid try counts.
-  2. Across chains: the highest priority, then the lowest cost, then declaration order.
-     With `cancel_lower`, a chain's choice stops every chain of a strictly lower priority.
-- **Results:** `Chains.selected` gives the selected chain, its chosen attempt, and that
-  attempt's stage results.
-- **The `ChainsReport`** records every attempt and every try of every stage it reached,
-  with each try's `trial` and own `seed`, and each chain's `seeds`, `stage_seeds` and
-  `retry_prefix`, with no wall-clock time. Each stage has fingerprints of its state, the projection it was built
-  from and its own projection, and of its request, result and validation.
-- **Decoding checks the report:**
-  - every first stage is the run's state;
-  - every later stage is built from the previous stage's projection;
-  - a stage's tries plan its own seeds in order, another only after a failed or invalid
-    one, and, unless the run was aborted, a failed stage tried every seed it has;
-  - no seed follows the first feasible one, nor an attempt that failed where the prefix
-    is not retried;
-  - unless the run was aborted, a chain without a choice tried every seed. The
-    exceptions are a stage that does not retry the prefix, and a higher priority's choice
-    that stopped the chain;
-  - an attempt is feasible exactly when every stage of its chain is valid;
-  - each chain's choice is its first feasible seed;
-  - the selection follows the rule.
-- **Determinism:** the selection and the selected chain's evidence are deterministic.
-  Whether stopped work never started or was stopped while running depends on scheduling,
-  and isn't part of the claim.
+
+**The engine.** Every stage is negotiated, then planned in its own planning scene, built
+on the context's thread, on at most `workers` threads. A planner plans one stage at a
+time, so planners need not be thread-safe, and a planner shared by chains plans nothing
+while it validates another's stage. Every stage plans with its own planner's budget,
+whatever the number of workers: workers change latency, never which stages are planned.
+Stages are handed to the pool highest chain priority first, then in declaration order,
+and a new one starts only after every finished one has been validated.
+- **Validation and candidates.** Every successful stage is validated again by its own
+  planner's validator, on a fresh scene of its state and clearance, as it would execute:
+  its trajectory, or its path timed once by its processor. Processors need not be
+  thread-safe either: a shared processor processes one path at a time.
+  - Each stage runs on a worker in two phases: it plans, then it is validated. The
+    context builds the fresh scene once planning succeeds; the worker, which touches
+    neither the context nor the runtime, processes, validates and checks. Nothing uses a
+    result before its validation; the context keeps stepping meanwhile.
+  - The fresh report must come from that validator, bound to the request, and be about
+    exactly that motion with its path as evidence (`check_bound`, `check_validation`).
+  - A motion that fails is `invalid`, whatever the planner reported.
+  - A valid motion is then prepared for the runtime's trajectory contract on the same
+    worker, exactly as `ctx.prepare` would prepare it, with the same validator,
+    clearance, and resolution. If the command is refused, the stage is `invalid`. Its
+    detail is the refusal and its validation is the command's report, so the next seed,
+    candidate, or arm can be selected before anything executes. A runtime without a
+    trajectory contract executes nothing, and there a candidate is validated only as
+    planned.
+  - The context keeps the prepared command as evidence, and `execute` reuses it as
+    described in "Executing a plan". A continuation's rebased motion is a different
+    motion and is always prepared again.
+  - An expected error from the planner, the processor, the validator, or the binding
+    checks fails only that stage (`failed`); any other exception propagates, after every
+    stage has stopped.
+- **Cancellation by priority** (`cancel_lower`). Once a chain's choice is made, chains of
+  a *strictly lower* priority stop: a stage not yet started never starts
+  (`not_started`); a running one is told to stop through its `abort` (`canceled`), and
+  whatever it returns is not validated. Chains of an *equal* priority always finish,
+  since they could still win on cost.
+- **Abort.** `abort` stops the run: stages not started are `not_started` (detail
+  `aborted`), running planners receive the abort signal through `Planner.plan`'s
+  `abort`, which they must poll, and the report's `stopped` is `aborted`. Python cannot
+  safely stop a planner that does not poll. Once the run has stopped, nothing becomes
+  valid: a result that arrives after the stop, or a validation running at the stop, is
+  not used.
+
+**The passive run.** `ctx.start_chains` builds every first stage, and its scene, at once,
+and leaves the planning to the caller, so the context can keep stepping a running motion
+meanwhile. It returns a `ChainsRun`:
+- `advance()` never waits. It starts stages on free workers, checks `abort`, starts the
+  validation of every stage that has planned, on a worker, takes every validation that
+  has ended, and builds the next stage of each attempt from each validated one. It
+  returns True once the run is `done`.
+- `planning` holds the plans and validations running now, as opaque futures
+  (`Future[Any]`) for a caller that only waits on them. Until the run is done, it is
+  never empty after `advance()`: a driver can rely on that to decide whether the runtime
+  may step (#211).
+- `cancel()` stops the run (`aborted`); `close()` cancels an unfinished run, waits for
+  its planners, and releases its scenes. Both may be called again.
+- `result` is the `Chains` once the run is done.
+
+**Selection is two-level:**
+1. Each chain's choice is its first seed, in declared order, whose stages are all valid.
+   Its cost is the sum of that attempt's validated stage durations. A seed is attempted
+   only once every earlier seed of the chain has failed, so the report lists the
+   attempts made, and no later seed is planned; failed seeds stay in the report and cost
+   nothing. A stage's failed tries cost nothing either: only its valid try counts.
+2. Across chains: the highest priority, then the lowest cost, then declaration order.
+
+`Chains.selected` gives the selected chain, its chosen attempt, and that attempt's stage
+results. Execute a stage's plan with `ctx.execute(plan, planner=...)`: it is already
+timed, so no processor runs again.
+
+**The `ChainsReport`** (version 2) records every attempt and every try of every stage it
+reached, with each try's `trial` and own `seed`, and each chain's `seeds`, `stage_seeds`
+and `retry_prefix`, with no wall-clock time. Each stage has fingerprints of its state,
+the projection it was built from and its own projection, and of its request, result and
+validation. Decoding checks the report:
+- every first stage is the run's state;
+- every later stage is built from the previous stage's projection;
+- a stage's tries plan its own seeds in order, another only after a failed or invalid
+  one, and, unless the run was aborted, a failed stage tried every seed it has;
+- no seed follows the first feasible one, nor an attempt that failed where the prefix is
+  not retried;
+- unless the run was aborted, a chain without a choice tried every seed. The exceptions
+  are a stage that does not retry the prefix, and a higher priority's choice that
+  stopped the chain;
+- an attempt is feasible exactly when every stage of its chain is valid;
+- each chain's choice is its first feasible seed;
+- the selection follows the rule.
+
+**Determinism:** the selection and the selected chain's evidence are deterministic.
+Whether stopped work never started or was stopped while running depends on scheduling,
+and isn't part of the claim.
+
+## Planner portfolios
+
+`ctx.plan_portfolio(request, *, snapshot, planners, seeds=None, processor=None,
+workers=1, abort=None)` plans one request with each of several planners, each in its own
+scene of `snapshot`, the snapshot `request` was built in, and selects one. It is a race
+of one-stage chains, one per planner, in order, advanced until every planner has ended,
+so it returns `Chains` and its report is the `ChainsReport`. Each planner plans the
+request's seed, or, with `seeds`, its own; `processor` times a path-only result. With no
+priorities, the selection is the shortest valid motion, then the earliest planner. The
+selected plan, `result.selected[2][0].plan`, executes with
+`planners[result.report.selected]`.
 
 ## Interleaving planning and execution
 
@@ -751,15 +688,12 @@ Every failed check is named in one `execution_unready` error. A successful
 | --- | --- |
 | `artifacts/test_sscbirrt_plans_a_carry_that_executes/` | The example arm holds the box from `pedestal.xml`. A lift and a carry are each planned natively by `plan_to_configuration` at half speed and half acceleration, and run with `ctx.execute`. Their results, which carry their requests and the planner's own path and trajectory reports, and their compiled commands (the trace's `compiled` records) are written. Each compiled artifact equals offline `prepare` of the same inputs; the submission names its fingerprint and the snapshot; its contract is the runtime's. The validator's public calls give the same reports, and the command is exactly the sampled planner trajectory, with `geometry_preserved` false and every check passing. Both execute, the box stays held with no violation; after a detach, the carry is refused with `stale_snapshot` and nothing submitted. A second run is byte-identical. |
 | `artifacts/test_execute_refuses_requests_this_context_did_not_build/forgeries.json` | Plans whose embedded request was altered after planning (another robot, description, revision, start, or goal), executed against this context's own snapshot, and `prepare` given a non-plan, another goal's validator, or another robot's request: each refusal code, that nothing was submitted, and that the genuine plan still succeeds. A second run is byte-identical. |
-| `artifacts/test_a_portfolio_selects_deterministically_from_isolated_attempts/` | The example arm's pedestal swing planned by a portfolio of eight attempts, each with its own planner: three seeded sscbirrt; one that corrupts its own scene and plans through the pedestal (`invalid` on a fresh scene); one that negotiation refuses; a path-only planner with a counting processor; one whose processor cannot time (`failed`, alone); and one whose validator answers about another motion (`failed`, `validation_mismatch`). `portfolio.json` is the report, byte-identical with one worker and with three; the path-only attempt, the highest-priority valid one, is selected. `isolation.json` shows that the live context is unchanged, that every candidate is still valid on a fresh scene, that the processor ran once, and that the executed command is exactly the selected candidate's. |
-| `artifacts/test_alternatives_race_two_arms_and_select_deterministically/` | Two arms of one MuJoCo robot (the conformance robot with colliding geoms) as alternatives, each a configuration goal planned by its own sscbirrt. `alternatives.json` holds the report of every run whose outcomes are fixed, and is byte-identical on a second run: equal priorities with the nearer right-arm goal selected (identical with one worker and two; the candidate executes and reaches its goal); a preferred right arm whose goal a cube blocks, so the left is selected; a preferred feasible right arm with the left `not_started` on one worker; and an aborted run. `diagnostics.json` holds what depends on scheduling: the same preference on two workers, where the left is spared, stopped, or finished while the selection is the same, and when each attempt planned. |
-| `artifacts/test_alternatives_hold_their_own_inputs_and_classify_outranked_attempts/inputs_and_outranked.json` | The caller's attempts lists, changed after planning, change neither the selection nor the report (#184). A lower priority told to stop that raises an expected error is `canceled_by_priority`; one that raises a programming error propagates it. |
+| `artifacts/test_a_portfolio_selects_deterministically_from_isolated_planners/` | The example arm's pedestal swing planned by `ctx.plan_portfolio`, a race of one-stage chains, one per planner: three sscbirrt seeds, one that corrupts its own planning scene, one refused at negotiation, a path-only planner timed by a counting processor, and one whose validator misreports. The corrupt motion is invalid on a fresh scene, the refused and misreporting planners fail on their own, the shortest valid motion is selected and executes exactly, and the path-only path was timed once. The live context is untouched, and the report is byte-identical with one worker and with three (`portfolio.json`, `isolation.json`). |
 | `artifacts/test_a_candidate_whose_command_is_refused_is_never_selected/compiled_refusal.json` | A command refused at selection (#207). The preferred right arm's validator finds its planned trajectory valid, and its compiled command in collision, as two discrete checks that sample a motion at different points can. The right arm is `invalid`, its detail the command's witness, and the left arm is selected. Executing it validates no command: it reuses the race's validation, after verifying it. `prepare`, given evidence for another contract, validates the command again; given the exact evidence, it validates nothing. |
-| `artifacts/test_attempts_are_validated_on_workers_while_the_robot_moves/worker_validation.json` | Validation on workers (#202). Each arm's attempt has a validator slowed by 0.2 s. A passive run validates both attempts on portfolio workers, never the main thread, while the context steps a left-arm motion; its report is byte-identical to the blocking run's. Each attempt's validation-scene time and validation interval are recorded. Two chains sharing one slow planner on two workers plan and validate strictly in turn: plan, validate, plan, validate, never overlapping. |
-| `artifacts/test_alternatives_plan_passively_while_the_robot_moves/passive.json` | A passive run (#191). While the left arm executes a motion, the context steps every tick and advances `ctx.start_alternatives`, and the run plans meanwhile. Its report is byte-identical to `plan_alternatives` on the same alternatives, and selects the right arm. A run of planners that only wait to be stopped is canceled twice and closed twice: it ends `aborted`, and no worker thread is left. |
+| `artifacts/test_stages_are_validated_on_workers_while_the_robot_moves/worker_validation.json` | Validation on workers (#202). Each arm's one-stage chain has a validator slowed by 0.2 s. A passive run validates both on `ssrobot-race` workers while the context steps a motion, selecting as the blocking run does. A planner shared by two chains never plans while it validates, and a chain stopped while its stage is validated is canceled, its validation unused. |
+| `artifacts/test_a_race_plans_passively_while_the_robot_moves/passive.json` | A passive run (#191). While the left arm executes a motion, the context steps every tick and advances `ctx.start_chains`; the selection is the blocking run's. A run of planners that only wait for the abort signal, cancelled and closed twice each, ends `aborted`, with no `ssrobot-race` worker left running. |
 | `artifacts/test_chains_race_staged_prefixes_and_select_deterministically/chains.json` | Chains (#192) on the colliding two-arm robot: each arm reaches a first configuration, then moves onward to a second, planned on the reach's projection. A cube stands on the right arm's direct way onward, and the onward planner lies for given seeds: it plans in a twin world without the cube, and its result is well formed but collides here. At equal priority, the right's seed 0 reaches but its onward motion is invalid on a fresh scene, and seed 1 is its first feasible seed. Its cost is seed 1's stages alone, shorter than the left's chain, so the right is selected on seed 1, with seed 2 stopped. One worker and two give the same selection and selected evidence. With the liar preferred and lying on every seed, it is never feasible, and the left is selected. With the right preferred but its onward stage planned from the start instead of the reach's projection, that stage is refused on every seed (`disconnected_stage`), and the left is selected. Every stage records the projected state it was built from: the previous stage's own. A second run is byte-identical. |
 | `artifacts/test_a_chains_report_cannot_claim_an_impossible_outcome/refusals.json` | Forged `ChainsReport`s refused: a selection not by the rule, a choice that is not the first feasible seed, a cost that counts a failed seed, an attempt called feasible without every stage, a feasible seed hidden as infeasible, and a stage claimed built from another projection. |
-| `artifacts/test_an_alternatives_report_cannot_claim_an_impossible_outcome/refusals.json` | Decoding refuses a forged selection, a lower priority stopped without `cancel_lower` or without a strictly higher valid priority, a `not_started` with no reason, and a timeout. |
 | `artifacts/test_a_plan_made_on_a_prediction_continues_on_arrival/continuation.json` | The right arm of the colliding two-arm robot moves to A. Its move on to B is planned on `ctx.predict` of that motion, on a worker, while the context steps every tick of the source motion. Ordinary `execute` refuses the plan (`predicted_plan`); planned on the context's thread it is identical. Once the arm is at rest at A, about 5 mm (rad) from the predicted start, the continuation is rebased by sscbirrt (a straight bridge, retimed), validated, and executed to B. From fresh runs, each refusal submits nothing: a canceled source, an arm still moving (a rest watch held to a bound it cannot meet ends at its deadline), an arrival outside a tight tolerance, a block attached after the prediction, and a planner that cannot rebase. A second run is byte-identical. `timeline.json` holds the wall-clock overlap, apart. |
 | `artifacts/test_continuations_check_what_they_reconcile/reconciliation.json` | What a continuation refuses to take on trust (#185). NaN, negative and infinite tolerances are refused before anything is compared, and nothing is submitted. A continuous joint arriving across +pi, reported as -2.98 a full turn from the predicted 3.3, continues the short way round: its bridge is 8e-11, not a full turn. A block turned 0.3 rad in place is an `unpredicted_scene_change` (`object block rotation`). A block that left the grasp is not carried by the prediction. A source accepted 0.25 s after its snapshot is predicted to end its duration after that. The default arrival tolerance is the runtime's declared goal tolerance (0.02). A bridge through an obstacle is `rebase_failed`, with nothing submitted. A rest watch over joint-position readings stamped 2 ms before each observation comes to rest on a window that ends before the arrival snapshot, which doesn't establish rest (`not_at_rest`). A forged rest result is refused (`unknown_rest`). |
 | `artifacts/test_a_plan_made_on_a_projection_continues_that_execution/projection.json` | A plan made on where an unexecuted plan ends (#190). Rest to A is planned on a captured snapshot and projected, and A to B is planned on the projection. Then A is executed, and B, bound to that execution, continues on arrival and reaches B. The projection keeps the snapshot's stamp and names the plan and snapshot. Binding refuses: an execution of another plan, of a replanned A, or a continuation's rebased run (`unprojected_source`); a plan not made on the projection (`snapshot_mismatch`); a changed projection (`unknown_projection`). Two plans to exactly the same end (the same request with another time budget) project to the same state, and each binds to an execution of its own plan, but not to the other's (`unprojected_source`). `execute` refuses a plan made on a projection (`projected_plan`), and `project` refuses an unsuccessful plan. A second run is byte-identical. |
@@ -767,9 +701,9 @@ Every failed check is named in one `execution_unready` error. A successful
 | `artifacts/test_a_continued_offset_motion_keeps_its_planned_line/offset_continuation.json` | A continued offset motion keeps its planned line (#203), on a runnable Franka Panda with ssik kinematics. A 5 cm line down (5 mm, 0.02 rad) is planned on a source motion's prediction, and the arm is moved before it continues. 1 cm further down the line, inside the tube, it continues, held to the line through its planned start; re-anchored at the arrival, the same rebase is refused (`path_constraint`). 2 cm across, it is refused (`arrival_off_constraint`) and nothing is submitted. At the same hand pose in another arm configuration, the bridge's interior leaves the line: `rebase_failed` (`path_constraint`). An explicit reference pose is kept unchanged. With the arm on a carriage, a joint outside its group, sliding 2 cm across the line before the arm continues, the line stays where it was planned: `arrival_off_constraint`. A validator answering the arrival check about another state is refused (`validation_mismatch`), and nothing is submitted. `OffsetGoal`, `PlanningRequest`, `PlanResult`, `PreparedTrajectory`, `TraceRecord` and `ContinuationReport` refuse their previous versions. A second run is byte-identical. |
 | `artifacts/test_an_offset_line_is_planned_with_a_declared_margin/line_margin.json` | An offset line planned with a declared margin (#208), on the runnable Panda: a 12 cm line across, 1 mm wide. Planned with no margin, a waypoint lies on the line's boundary, so its own path is invalid against the line shifted 10 um across it, as a joint outside the group shifts the frame. Planned against the line narrowed by 25 um and validated against the original, it keeps the margin: valid under every 10 um and 24 um shift, with a `line_margin` diagnostic. A margin as wide as the line's half-width is refused (`line_margin`), as are negative, non-finite and boolean ones. A second run is byte-identical. |
 | `artifacts/test_the_manipulator_view_plans_on_a_projection/view.json` | The example arm's manipulator view plans on a projection as on any snapshot: the plan is made on the projected state and starts where the projected plan ends. |
-| `artifacts/test_validating_on_workers_shares_processors_and_honors_a_stop/validating.json` | What validating on workers (#202) must not change. Two path-only planners sharing one processor that is not reentrant (it takes 0.2 s) call it twice, never at once. A run stopped while an attempt's delayed validation runs, by `abort` or by its 1 s timeout, selects nothing: the attempt is `failed`, "stopped while it was validated", with no validation. |
-| `artifacts/test_a_report_cannot_claim_an_impossible_outcome/refusals.json` | Edits of a real report that decoding refuses: a selection of an invalid or a non-selected valid attempt, or of none; an unknown stop; a cancellation without a stop; a valid attempt without a duration; an invalid one without its validation; a malformed fingerprint; reordered attempts; another selection rule. |
-| `artifacts/test_a_timeout_aborts_running_attempts_and_cancels_pending_ones/canceled.json` | Three attempts that only wait for the abort signal, on one worker, with a 0.2 s timeout: the running one is aborted (`cancelled`), the two pending ones are `canceled` before they start, and nothing is selected. The same attempts, sharing one planner, are refused with two workers (`shared_planner`). |
+| `artifacts/test_validating_on_workers_shares_processors_and_honors_a_stop/validating.json` | What validating on workers (#202) must not change. Two path-only planners sharing one processor that is not reentrant never call it at once, and a portfolio aborted while its planner's delayed validation runs selects nothing, that validation unused. |
+| `artifacts/test_a_processor_that_cannot_time_a_path_fails_only_its_planner/untimable.json` | A processor that cannot time any path: the path-only planner fails (`cannot_time`), and the sscbirrt planner beside it is selected. |
+| `artifacts/test_an_abort_stops_running_planners_and_starts_no_others/canceled.json` | Three seeds of one planner that only waits for the abort signal, aborted after 0.2 s: the running one polled the signal and is `failed` (`cancelled`); the other two never started (`not_started`, `aborted`). |
 | `artifacts/test_neutral_providers_and_geometric_paths/` | The same query through a scene with no native checker plans on sscbirrt's Python backend and passes every check. Its path without the trajectory is refused without a processor (`untimed_result`); with `RestToRestProcessor` it is prepared and executed. A second run is byte-identical. |
 | `artifacts/test_one_validator_answers_everywhere/evidence.json` | The example arm in the pedestal scene swings its shoulder from -0.5 to 0.5 rad with the elbow lowered. Both waypoints are valid states, but the planner's validator refuses the motion between them: a collision witness at segment 0, fraction 0.3, naming `left_finger` and `pedestal`, under the recorded 0.05 joint-space resolution, on sscbirrt's native backend. `prepare` has no check of its own to disagree with it, and repeated or reordered queries give equal reports. A path constraint the planner cannot plan with, on this three-joint arm with no kinematics, has no validator either (`unsupported_constraint`). |
 | `artifacts/test_adapter_refusals/refusals.json` | ssik cannot solve the three-joint arm (`kinematics_unavailable`). A pose goal without kinematics (`unsupported_goal`) and effort limits (`unsupported_constraint`) are refused at negotiation. A goal in collision is `infeasible`, and an abort is `cancelled`. The validator refuses a path into the pedestal with a collision witness naming the pedestal, and a success claiming that report is refused (`invalid_motion`). |

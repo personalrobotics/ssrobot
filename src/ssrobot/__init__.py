@@ -9,17 +9,6 @@ from ssrobot._wire import (
     dumps,
     loads,
 )
-from ssrobot.alternatives import (
-    Alternative,
-    AlternativeAttempt,
-    AlternativeOutcome,
-    AlternativeRecord,
-    Alternatives,
-    AlternativesReport,
-    AlternativesRun,
-    plan_alternatives,
-    start_alternatives,
-)
 from ssrobot.bundle import Bundle, BundleFile, RunBundle, open_bundle, write_bundle
 from ssrobot.chains import (
     Chain,
@@ -33,8 +22,7 @@ from ssrobot.chains import (
     StageOutcome,
     StageRequest,
     StageResult,
-    plan_chains,
-    start_chains,
+    StopReason,
 )
 from ssrobot.commands import (
     ActionChunk,
@@ -168,15 +156,6 @@ from ssrobot.planning_contracts import (
     Tsr,
     TsrGoal,
 )
-from ssrobot.portfolio import (
-    AttemptOutcome,
-    AttemptRecord,
-    PlanAttempt,
-    Portfolio,
-    PortfolioReport,
-    StopReason,
-    plan_portfolio,
-)
 from ssrobot.preparation import prepare
 from ssrobot.replay import ReplayRuntime, ReplayScript, ReplayTick
 from ssrobot.resources import ResolvedFile, SourceItem
@@ -209,21 +188,12 @@ from ssrobot.trace import JsonlTrace, TraceKind, TraceRecord, read_trace
 
 __all__ = [
     "ActionChunk",
-    "Alternative",
-    "AlternativeAttempt",
-    "AlternativeOutcome",
-    "AlternativeRecord",
-    "Alternatives",
-    "AlternativesReport",
-    "AlternativesRun",
     "AppliedCommand",
     "ArrayValue",
     "AssetStore",
     "Attachment",
     "AttachmentReference",
     "AttachmentViolation",
-    "AttemptOutcome",
-    "AttemptRecord",
     "BasePoseGoal",
     "BaseTwistCommand",
     "BaseView",
@@ -316,7 +286,6 @@ __all__ = [
     "OwnershipError",
     "PackageManifest",
     "PackageReport",
-    "PlanAttempt",
     "PlanProjection",
     "PlanResult",
     "PlanStatus",
@@ -324,8 +293,6 @@ __all__ = [
     "PlannerCapabilities",
     "PlanningRequest",
     "PlanningScene",
-    "Portfolio",
-    "PortfolioReport",
     "Pose",
     "PoseGoal",
     "PredictedSnapshot",
@@ -390,12 +357,7 @@ __all__ = [
     "load_package",
     "loads",
     "open_bundle",
-    "plan_alternatives",
-    "plan_chains",
-    "plan_portfolio",
     "prepare",
     "read_trace",
-    "start_alternatives",
-    "start_chains",
     "write_bundle",
 ]

@@ -127,8 +127,7 @@ from ssrobot.validation import (
 )
 
 if TYPE_CHECKING:
-    from ssrobot.alternatives import Alternative, AlternativesRun
-    from ssrobot.chains import Chain, ChainsRun
+    from ssrobot.chains import Chain, Chains, ChainsRun
 
 
 class ContextState(enum.StrEnum):
@@ -1225,28 +1224,6 @@ class RobotContext:
         negotiate(request, planner.capabilities(request), processor)
         return self.planning_scene(state, request.group, clearance_m=request.clearance_m)
 
-    def start_alternatives(
-        self,
-        alternatives: Sequence[Alternative],
-        *,
-        snapshot: SceneSnapshot,
-        workers: int = 1,
-        cancel_lower: bool = True,
-        abort: Callable[[], bool] | None = None,
-    ) -> AlternativesRun:
-        """``ssrobot.start_alternatives`` in this context: ``plan_alternatives``'s run,
-        advanced by the caller so the context can keep stepping while it plans."""
-        from ssrobot.alternatives import start_alternatives
-
-        return start_alternatives(
-            self,
-            alternatives,
-            snapshot=snapshot,
-            workers=workers,
-            cancel_lower=cancel_lower,
-            abort=abort,
-        )
-
     def start_chains(
         self,
         chains: Sequence[Chain],
@@ -1256,13 +1233,56 @@ class RobotContext:
         cancel_lower: bool = True,
         abort: Callable[[], bool] | None = None,
     ) -> ChainsRun:
-        """``ssrobot.start_chains`` in this context: a race of staged prefixes, advanced
-        by the caller so the context can keep stepping while it plans."""
-        from ssrobot.chains import start_chains
+        """Start racing ``chains`` of staged prefixes from ``snapshot`` without waiting
+        (``ssrobot.chains``): every first stage is built, and its scene made, here; nothing
+        plans until the run is advanced, so the context can keep stepping meanwhile."""
+        from ssrobot.chains import ChainsRun
 
-        return start_chains(
+        return ChainsRun(
             self, chains, snapshot=snapshot, workers=workers, cancel_lower=cancel_lower, abort=abort
         )
+
+    def plan_portfolio(
+        self,
+        request: PlanningRequest,
+        *,
+        snapshot: SceneSnapshot,
+        planners: Sequence[Planner],
+        seeds: Sequence[int] | None = None,
+        processor: TrajectoryProcessor | None = None,
+        workers: int = 1,
+        abort: Callable[[], bool] | None = None,
+    ) -> Chains:
+        """Plan ``request`` with each of ``planners``, each in its own scene of
+        ``snapshot``, and select one: a race of one-stage chains, one per planner, in
+        order, blocking until every planner has ended. Each planner plans the request's
+        seed, or with ``seeds``, its own. ``processor`` times a path-only result. Planners
+        that may run at once (``workers`` above 1) must be distinct instances. The
+        selection is the shortest valid motion, then the earliest planner; the selected
+        plan, ``result.selected[2][0].plan``, executes with
+        ``planners[result.report.selected]``."""
+        from ssrobot.chains import Chain, ChainsRun, Stage, StageRequest, _until_done
+
+        planners = tuple(planners)
+        chosen = tuple(seeds) if seeds is not None else (request.seed,) * len(planners)
+        if not planners or len(chosen) != len(planners):
+            raise ValidationError(
+                "out_of_limits", "at least one planner, and one seed per planner", path="seeds"
+            )
+
+        def stage(planner: Planner) -> Stage:
+            return Stage(
+                name="plan",
+                build=lambda previous: StageRequest(
+                    snapshot=snapshot, request=request, planner=planner, processor=processor
+                ),
+            )
+
+        chains = [
+            Chain(label=p.name, stages=(stage(p),), seeds=(seed,))
+            for p, seed in zip(planners, chosen, strict=True)
+        ]
+        return _until_done(ChainsRun(self, chains, snapshot=snapshot, workers=workers, abort=abort))
 
     # -- Interleaving planning and execution -----------------------------------------
 

@@ -58,13 +58,12 @@ from ssrobot import (
     dumps,
     load_package,
     loads,
-    plan_chains,
 )
 from ssrobot.mujoco import MujocoRuntime
 from ssrobot.planning import CBiRRT
 from ssrobot.planning_contracts import build_request
 from ssrobot.scene import PlanningScene
-from tests.support import colliding_bimanual
+from tests.support import colliding_bimanual, race
 
 CUBE = (0.0544, -0.1602, 0.15)  # the right arm's second link at (1.2, 0): on its way onward
 GOALS = {
@@ -203,7 +202,7 @@ def _scenario(
             _chain(ctx, "left_arm", priority=0, seeds=(0,), onward_planner=CBiRRT(d)),
         ]
         snapshot = ctx.snapshot()
-        result = plan_chains(ctx, chains, snapshot=snapshot, workers=workers)
+        result = race(ctx, chains, snapshot=snapshot, workers=workers)
         report = json.loads(dumps(result.report))
         selected = result.selected
         out: dict[str, Any] = {"report": report, "selected": None}
@@ -478,7 +477,7 @@ def test_a_chains_run_has_work_in_flight_until_it_is_done(tmp_path: Path) -> Non
     unfinished with nothing in flight."""
     from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, wait
 
-    from ssrobot import portfolio
+    from ssrobot import chains as engine
 
     package_root, scene = colliding_bimanual(tmp_path / "cube", blocked=CUBE)
     package = load_package(package_root)
@@ -501,7 +500,7 @@ def test_a_chains_run_has_work_in_flight_until_it_is_done(tmp_path: Path) -> Non
             # A validation, created within the engine's call, ends before the engine
             # looks for ended validations: no scheduling decides whether it is taken.
             future = submit(fn, *args)
-            if fn is portfolio._check:
+            if fn is engine._check:
                 wait([future])
             return future
 
