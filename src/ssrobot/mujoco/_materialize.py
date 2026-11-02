@@ -25,10 +25,26 @@ from ssrobot.mujoco._compose import compile_world, require_version, select
 from ssrobot.mujoco._model import unchanged
 from ssrobot.mujoco._scene import load_scene
 from ssrobot.package import ModelEntry, ModelFormat, RobotPackage
-from ssrobot.scene import SceneSnapshot
+from ssrobot.scene import ObjectState, ObjectStatus, SceneSnapshot
 
 _BODY = mujoco.mjtObj.mjOBJ_BODY
 _JOINT = mujoco.mjtObj.mjOBJ_JOINT
+
+
+def object_qpos(model: Any, state: ObjectState) -> tuple[float, ...]:
+    """Where ``state`` puts its object's free joint in ``model``, as position then wxyz:
+    its pose; for a removed object, out of the world, four of ``model``'s extents below
+    its centre, where nothing the robot reaches can touch it (the world lies within one
+    extent of that centre). An unknown object has no pose (``unknown_object_pose``).
+    Planning scenes and ``SnapshotMapping.apply`` share it."""
+    if state.pose is not None:
+        return (*state.pose.position, *state.pose.quat_wxyz)
+    if state.status is ObjectStatus.REMOVED:
+        x, y, z = (float(v) for v in model.stat.center)
+        return (x, y, z - 4 * float(model.stat.extent), 1.0, 0.0, 0.0, 0.0)
+    raise ValidationError(
+        "unknown_object_pose", f"no pose is known for {state.name!r}", path="snapshot.objects"
+    )
 
 
 @dataclass(frozen=True)
@@ -44,11 +60,12 @@ class SnapshotMapping:
     """Each scene object, sorted, and its free joint's qpos address."""
 
     def apply(self, snapshot: SceneSnapshot, data: Any) -> None:
-        """Write ``snapshot``'s joint positions and object poses into ``data.qpos``; an object
-        without a pose (unknown or removed) keeps its own. Nothing else changes: run
-        ``mujoco.mj_kinematics`` (or ``mj_forward``) for the body poses. Fails with
-        ``incompatible_snapshot`` for a snapshot of another description or world, or of
-        other joints or objects."""
+        """Write ``snapshot``'s joint positions and object poses into ``data.qpos``, from the
+        snapshot alone: a removed object is placed out of the world as planning places it
+        (``object_qpos``), and an unknown one refuses (``unknown_object_pose``). Nothing
+        else changes: run ``mujoco.mj_kinematics`` (or ``mj_forward``) for the body poses.
+        Fails with ``incompatible_snapshot`` for a snapshot of another description or
+        world, or of other joints or objects. ``data`` is unchanged unless it succeeds."""
         if snapshot.description != self.description or snapshot.model != self.world:
             raise ValidationError(
                 "incompatible_snapshot",
@@ -59,19 +76,16 @@ class SnapshotMapping:
             raise ValidationError(
                 "incompatible_snapshot", "the snapshot has other joints", path="snapshot.joints"
             )
-        objects = {o.name: o.pose for o in snapshot.objects}
+        objects = {o.name: o for o in snapshot.objects}
         if sorted(objects) != [name for name, _ in self.objects]:
             raise ValidationError(
                 "incompatible_snapshot", "the snapshot has other objects", path="snapshot.objects"
             )
+        placed = [(at, object_qpos(data.model, objects[name])) for name, at in self.objects]
         for (_, at), position in zip(self.joints, snapshot.positions, strict=True):
             data.qpos[at] = position
-        for name, at in self.objects:
-            pose = objects[name]
-            if pose is None:
-                continue
-            data.qpos[at : at + 3] = pose.position
-            data.qpos[at + 3 : at + 7] = pose.quat_wxyz
+        for at, qpos in placed:
+            data.qpos[at : at + 7] = qpos
 
 
 @dataclass(frozen=True)
