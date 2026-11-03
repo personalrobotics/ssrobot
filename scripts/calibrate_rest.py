@@ -28,8 +28,12 @@ run of readings, as a watch keeps them, within the declared variation, after whi
 reading breaks it. The slow creep is out-of-envelope evidence: arbitrarily slow motion
 makes any dwell look short, so it is reported but does not set the dwell. A trial whose
 trajectory failed is invalid, as is a payload trial whose lift failed to plan or execute,
-whose object rose less than the scenario's ``minimum_rise``, or whose object the runtime
-reported leaving the hand during the lift or the trial. An invalid trial is reported, with
+whose object rose less than the scenario's ``minimum_rise``, whose object the runtime
+reported leaving the hand during the lift or the trial, or whose leg the planner's
+validator refuses: each payload leg is validated as collision-free with the object held,
+over the planning scene of a snapshot taken just before it, and a refused leg is not
+submitted; the report records the first colliding state and its contacts. Once raised,
+the held object may touch the hand only, not its support. An invalid trial is reported, with
 why, but neither sets the dwell nor is judged. The unloaded and the loaded trials are
 measured as separate sets, each with its own dwell; the declared dwell covers both, and
 the report names the trials (set, index and motion) that determine it.
@@ -86,6 +90,8 @@ from check_reference_robots import (
 )
 
 from ssrobot import (
+    ConfigurationGoal,
+    GeometricPath,
     GripperCommand,
     JointKind,
     JointRest,
@@ -192,6 +198,7 @@ class Trial:
     legs: Callable[[tuple[float, ...]], list[Leg]]
     scene: Path | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    validate: Callable[[RobotContext, JointTrajectory], dict[str, Any]] | None = None
 
 
 class Arm:
@@ -563,6 +570,8 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
         held["object_raised_m"] = after.position[2] - before.position[2]
         held["object_raised_to_m"] = after.position[2]
         held["lift_violation"] = violated(ctx, spec["object"])
+        # Raised: the held object may touch the hand again, and no longer its support.
+        ctx.set_attachment_allowances(spec["object"], allow=hand.allow)
         return current(ctx, arm.joints)
 
     def revolute(revolute: float, q: tuple[float, ...]) -> list[float]:
@@ -587,6 +596,51 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
             arm.leg("move", half, 1.0),
         ]
 
+    def validate(ctx: RobotContext, trajectory: JointTrajectory) -> dict[str, Any]:
+        """Whether the leg is collision-free with the object held, by the planner's own
+        validator over the planning scene of a snapshot taken now: the leg's waypoints,
+        restricted to the manipulator's joints, as the straight joint-space lines the
+        runtime executes between them. Joints outside the manipulator must not move."""
+        moving = [i for i, j in enumerate(trajectory.joints) if j not in joints]
+        if any(w[i] != trajectory.positions[0][i] for w in trajectory.positions for i in moving):
+            return {"valid": False, "detail": "the leg moves joints outside the manipulator"}
+        index = [trajectory.joints.index(j) for j in joints]
+        rows = tuple(tuple(w[i] for i in index) for w in trajectory.positions)
+        snapshot = ctx.snapshot()
+        planner = CBiRRT(
+            description, kinematics=SsikKinematics.from_package(robot.package, manipulator.name)
+        )
+        request = ctx.manipulator(manipulator.name).request(
+            ConfigurationGoal(configurations=(rows[-1],)), snapshot=snapshot
+        )
+        validator = planner.validator(request, ctx.planning_scene(snapshot, group))
+        report = validator.validate_path(GeometricPath(group=group, joints=joints, waypoints=rows))
+        witness = report.witness
+        return {
+            "valid": report.valid,
+            "checks": report.checks,
+            "validator": report.validator.implementation,
+            "policy": report.validator.policy.summary,
+            "witness": None
+            if witness is None
+            else {
+                "failure": witness.failure.value,
+                "segment": witness.segment,
+                "fraction": witness.fraction,
+                "configuration": list(witness.configuration),
+                "contacts": [
+                    {
+                        "kind": c.kind.value,
+                        "first": c.first,
+                        "second": c.second,
+                        "distance": c.distance,
+                    }
+                    for c in witness.contacts
+                ],
+                "detail": witness.detail,
+            },
+        }
+
     motions = [
         ("out_and_back", "every revolute joint 0.2 rad out and back", back),
         ("slow_creep", "every revolute joint 0.01 rad over 5 s", slow),
@@ -600,6 +654,7 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
             legs=legs,
             scene=robot.scene,
             extra=held,
+            validate=validate,
         )
         for name, describe, legs in motions
     ]
@@ -634,6 +689,21 @@ def run_joint(
         q = current(ctx, arm.joints)  # where the held arm is: the trajectory starts there
         legs = trial.legs(q)
         trajectory = profile(arm.group, arm.joints, q, legs)
+        validation = None if trial.validate is None else trial.validate(ctx, trajectory)
+        if validation is not None and not validation["valid"]:
+            # A client never submits a leg its validator refuses.
+            return {
+                "legs": [[k, d, s] for k, d, s in legs],
+                "submitted_ns": None,
+                "end_ns": None,
+                "execution": {"state": "not_submitted", "ended_ns": None},
+                "watched": None,
+                "tick_ns": tick,
+                "result": None,
+                "objects": {o.name: list(o.known_pose().position) for o in ctx.snapshot().objects},
+                "violations": {a.object: violated(ctx, a.object) for a in ctx.scene.attachments},
+                "validation": validation,
+            }
         submitted = ctx.now.time_ns
         execution = ctx.submit(trajectory)
         n = (trajectory.time_from_start_ns[-1] + ticks(HOLD_S, tick) * tick) // tick
@@ -658,6 +728,7 @@ def run_joint(
         "result": None if watch is None else watch.result,
         "objects": {o.name: list(o.known_pose().position) for o in objects},
         "violations": violations,
+        "validation": validation,
     }
 
 
@@ -669,7 +740,14 @@ def invalid(name: str) -> Callable[[dict[str, Any]], list[str]]:
 
     def reasons(trial: dict[str, Any]) -> list[str]:
         out = []
-        if trial["execution"]["state"] != "succeeded":
+        validation = trial.get("validation")
+        if validation is not None and not validation["valid"]:
+            out.append(
+                "leg collides with the object held"
+                if validation.get("witness")
+                else validation["detail"]
+            )
+        elif trial["execution"]["state"] != "succeeded":
             out.append(f"trajectory {trial['execution']['state']}")
         held = trial.get("payload")
         if held is None:
@@ -697,6 +775,8 @@ def check(run: dict[str, Any], variation: Sequence[float]) -> dict[str, Any]:
     the end of the trace stayed within the variation; with its delay from where it
     started, and how far each element ranged over those readings."""
     result = run["result"]
+    if result is None:
+        return {"outcome": "not_submitted", "passed": False}
     rec: Recording = run["watched"]
     out: dict[str, Any] = {
         "outcome": result.outcome.value,
@@ -785,7 +865,12 @@ def calibrate_robot(
                 "execution": run["execution"],
                 "end_ns": run["end_ns"],
                 **(
-                    {"payload": t.extra, "objects": run["objects"], "violations": run["violations"]}
+                    {
+                        "payload": t.extra,
+                        "validation": run["validation"],
+                        "objects": run["objects"],
+                        "violations": run["violations"],
+                    }
                     if t.extra
                     else {}
                 ),
@@ -795,8 +880,10 @@ def calibrate_robot(
             entry["valid"] = not entry["invalid"]
             entry["out_of_envelope"] = t.name.endswith("slow_creep")
             entry["judged"] = entry["valid"] and not entry["out_of_envelope"]
-            rec: Recording = run["watched"]
-            entry["longest_false_still"] = false_still(rec.stamps, rec.values, variation)
+            rec: Recording | None = run["watched"]
+            entry["longest_false_still"] = (
+                None if rec is None else false_still(rec.stamps, rec.values, variation)
+            )
             entries.append(entry)
         # Each set's own dwell; the declared one covers both.
         sets: dict[str, dict[str, Any]] = {}

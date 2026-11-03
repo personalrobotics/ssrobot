@@ -83,6 +83,10 @@ quat_in_frame_wxyz = [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
 height = 0.10
 minimum_rise = 0.09
 support = "vention_base"
+# Recorded in the payload trials' artifact. #239's grasp holds the cylinder deep in the
+# hand, on the inner spring links, not the pads; held there it creeps out along the
+# approach axis at about 1 mm/s with the arm still.
+known = ["personalrobotics/geodude_assets#42: deep grasps whose inner links carry the load give way"]
 
 [[robots]]
 name = "ada"
