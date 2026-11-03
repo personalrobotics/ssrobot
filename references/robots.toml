@@ -91,7 +91,7 @@ known = ["personalrobotics/geodude_assets#42: deep grasps whose inner links carr
 [[robots]]
 name = "ada"
 repository = "personalrobotics/ada_assets"
-commit = "9f5cfacd8d14ba5b298599ee57125c47ed93f8ea"
+commit = "794631b98691dad990974b8bb241fc832d25c142"
 module = "ada_assets"
 package_root = "src/ada_assets"
 # No keyframe: the package's MuJoCo profile starts it at "resting" (#95,
@@ -171,7 +171,7 @@ duration_ns = 3_000_000_000
 [[robots]]
 name = "ada_hand"
 repository = "personalrobotics/ada_assets"
-commit = "9f5cfacd8d14ba5b298599ee57125c47ed93f8ea"
+commit = "794631b98691dad990974b8bb241fc832d25c142"
 module = "ada_assets.models"
 package_root = "src/ada_assets/models"
 # No keyframe: the package's MuJoCo profile starts it at "resting", fingers open.
