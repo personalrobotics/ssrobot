@@ -19,7 +19,10 @@ slow and fast; a reach with a pause; single-joint out-and-backs of the first and
 joint; and a slow creep. Where the robot's scenario can grasp its scene object, the arm
 also carries it: it grips it, declares it held, and lifts it by the scenario's ``lift``,
 the hand straight up by ``height``, planned as an end-effector offset whatever the arm's
-kinematics, before three of these motions. Each trial holds ``HOLD_S`` after its
+kinematics. It then waits for the grip to settle, observed on the simulator's object pose
+(privileged calibration evidence: it establishes loaded arm-rest criteria, not a runtime
+gripper-rest event), resets the attachment's reference there, and runs three of these
+motions. Each trial holds ``HOLD_S`` after its
 trajectory ends, and is judged from where its execution ends, as a client starts a watch
 after a transfer.
 
@@ -28,15 +31,16 @@ run of readings, as a watch keeps them, within the declared variation, after whi
 reading breaks it. The slow creep is out-of-envelope evidence: arbitrarily slow motion
 makes any dwell look short, so it is reported but does not set the dwell. A trial whose
 trajectory failed is invalid, as is a payload trial whose lift failed to plan or execute,
-whose object rose less than the scenario's ``minimum_rise``, whose object the runtime
-reported leaving the hand during the lift or the trial, or whose leg the planner's
-validator refuses: each payload leg is validated as collision-free with the object held,
-over the planning scene of a snapshot taken just before it, and a refused leg is not
-submitted; the report records the first colliding state and its contacts. Once raised,
-the held object may touch the hand only, not its support. An invalid trial is reported, with
-why, but neither sets the dwell nor is judged. The unloaded and the loaded trials are
-measured as separate sets, each with its own dwell; the declared dwell covers both, and
-the report names the trials (set, index and motion) that determine it.
+whose object rose less than the scenario's ``minimum_rise``, whose grip did not settle,
+whose object the runtime reported leaving the hand after the reference reset, or whose
+leg the planner's validator refuses. Each payload leg is validated as collision-free with
+the object held, over the planning scene of a snapshot taken just before it; a refused
+leg is not submitted, and the report records the first colliding state and its contacts.
+After the reset, the held object may touch the hand only, not its support. An invalid
+trial is reported, with why, but neither sets the dwell nor is judged. The unloaded and
+the loaded trials are measured as separate sets, each with its own dwell; the declared
+dwell covers both, and the report names the trials (set, index and motion) that
+determine it.
 
 The check. Every trial runs again with the measured criteria, and a ``JointRest`` watch
 starts where its execution ends. A judged trial passes when the watch comes to rest and
@@ -96,6 +100,7 @@ from ssrobot import (
     JointKind,
     JointRest,
     JointTrajectory,
+    ObjectRest,
     ObservationRequest,
     Pose,
     Quantity,
@@ -124,6 +129,29 @@ description's limits: a shorter leg is stretched."""
 
 LIMIT_MARGIN = 0.05
 """How close, in joint units, a trial may bring a joint to its limit."""
+
+SETTLE_DEADLINE_S = 120.0
+"""A bound for failing, not a wait: how long a payload trial's grip may take to settle."""
+
+SETTLE_EVIDENCE = (
+    "PRIVILEGED CALIBRATION EVIDENCE: the simulator's pose of the held object, observed to "
+    "decide when the grip has settled before the attachment's reference is reset. It "
+    "establishes loaded arm-rest criteria; it is not a runtime gripper-rest event."
+)
+
+
+def settle_criteria(tick_ns: int) -> RestCriteria:
+    """When a held object's grip has settled: its pose within 1% of MujocoRuntime's
+    attachment tolerances (10 mm and 0.1 rad) for 0.5 s, the JACO2 finger action's stall
+    interval, read every tick. Declared here, for calibration only."""
+    return RestCriteria(
+        max_gap_ns=tick_ns,
+        dwell_ns=500_000_000,
+        translation_m=1e-4,
+        rotation_rad=1e-3,
+        source="calibrate_rest.py: 1% of MujocoRuntime's attachment tolerances over 0.5 s",
+    )
+
 
 Prepare = Callable[[RobotContext, MujocoRuntime], tuple[float, ...]]
 
@@ -570,8 +598,38 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
         held["object_raised_m"] = after.position[2] - before.position[2]
         held["object_raised_to_m"] = after.position[2]
         held["lift_violation"] = violated(ctx, spec["object"])
-        # Raised: the held object may touch the hand again, and no longer its support.
-        ctx.set_attachment_allowances(spec["object"], allow=hand.allow)
+        # Let the grip settle: an underactuated hand keeps drawing the object in once its
+        # support is gone. Observed on the simulator's object pose, with the arm held where
+        # the lift ended; the deadline only bounds failure.
+        settle = settle_criteria(runtime.mapping.timestep_ns * runtime.mapping.substeps)
+        watch = ctx.watch_rest(
+            ObjectRest(spec["object"], criteria=settle),
+            deadline_ns=ctx.now.time_ns
+            + ticks(SETTLE_DEADLINE_S, runtime.mapping.timestep_ns) * runtime.mapping.timestep_ns,
+        )
+        while not watch.done:
+            ctx.step()
+        result = watch.result
+        assert result is not None
+        settled = next(o.known_pose() for o in ctx.snapshot().objects if o.name == spec["object"])
+        held["settle"] = {
+            "evidence": SETTLE_EVIDENCE,
+            "criteria": {
+                "max_gap_ns": settle.max_gap_ns,
+                "dwell_ns": settle.dwell_ns,
+                "translation_m": settle.translation_m,
+                "rotation_rad": settle.rotation_rad,
+                "source": settle.source,
+            },
+            "outcome": result.outcome.value,
+            "started_ns": result.start.time_ns,
+            "ended_ns": result.end.time_ns,
+            "violation_while_settling": violated(ctx, spec["object"]),
+            "object_raised_m": settled.position[2] - before.position[2],
+        }
+        # The reference reset: held as it now is, by the hand alone (its default allowance).
+        ctx.detach(spec["object"])
+        ctx.attach(spec["object"], effector)
         return current(ctx, arm.joints)
 
     def revolute(revolute: float, q: tuple[float, ...]) -> list[float]:
@@ -734,9 +792,10 @@ def run_joint(
 
 def invalid(name: str) -> Callable[[dict[str, Any]], list[str]]:
     """Why a joint trial is not one the rule can judge, if it is not: its trajectory
-    failed, or, carrying the object, the lift's plan or execution failed, the object rose
-    less than the declared minimum, or the runtime reported it leaving the hand during the
-    lift or the trial."""
+    failed or its leg was refused, or, carrying the object, the lift's plan or execution
+    failed, the object rose less than the declared minimum, its grip did not settle, or
+    the runtime reported it leaving the hand after the attachment's reference was reset.
+    A violation before the reset, while the grip settles, is recorded, not judged."""
 
     def reasons(trial: dict[str, Any]) -> list[str]:
         out = []
@@ -761,10 +820,11 @@ def invalid(name: str) -> Callable[[dict[str, Any]], list[str]]:
                 f"object rose {held['object_raised_m']} m, "
                 f"less than {held['lift']['minimum_rise']} m"
             )
-        if held["lift_violation"] is not None:
-            out.append("attachment violated during the lift")
-        elif trial["violations"].get(name) is not None:
-            out.append("attachment violated during the trial")
+        # A violation while settling is recorded, not judged: the reference resets after.
+        if held["settle"]["outcome"] != "at_rest":
+            out.append(f"the grip did not settle: {held['settle']['outcome']}")
+        if trial["violations"].get(name) is not None:
+            out.append("attachment violated after the reference reset")
         return out
 
     return reasons
