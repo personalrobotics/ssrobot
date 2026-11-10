@@ -31,6 +31,14 @@ name = "home"
 group = "arm"
 positions = [0.5, -1.0, 0.25]
 
+# Home with the wrist level, so the finger slides are horizontal: gravity does not act
+# along them, and nothing is near the fingers. scripts/calibrate_gripper.py measures the
+# gripper's positions from here.
+[[semantics.configurations]]
+name = "level_hand"
+group = "arm"
+positions = [0.5, -1.0, 0.0]
+
 # MJCF cannot express velocity or acceleration limits, so the package declares them: the
 # arm's joints at 180 deg/s and 5 rad/s^2, like a UR5e's, and the fingers at 0.1 m/s. A declaration may add or tighten a
 # model limit, never widen one.
@@ -61,6 +69,13 @@ velocity = 0.1
 name = "gripper"
 frame = "gripper"
 joints = ["left_finger_joint", "right_finger_joint"]
+# Where the fingers settle when commanded fully open from closed, and fully closed on
+# nothing from open, in joint order. Measured by
+#   uv run python scripts/calibrate_gripper.py --out artifacts/calibrate-gripper \
+#       --package examples/packages/mujoco_arm --configuration level_hand
+# Each finger settles 1.3e-7 m inside its joint limits; none is clamped.
+open_positions = [0.03999987144670518, 0.03999987144670517]
+closed_positions = [1.2855329453159447e-07, 1.2855329453119205e-07]
 
 [[semantics.end_effectors]]
 name = "hand"

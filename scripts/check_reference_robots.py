@@ -28,6 +28,11 @@ For each robot in references/robots.toml, this script:
    channel whose rest criteria the robot's MuJoCo profile declares, a small move, then a
    ``JointRest`` watch from the end of its execution, checked against the readings
    recorded every tick, which must equal the simulated state, twice.
+10. re-measures every gripper's declared ``open_positions`` and ``closed_positions``
+    (#243) with scripts/calibrate_gripper.py's routine, from the robot's start, and
+    fails if any joint drifted beyond that script's tolerance: the larger of 1e-6 and
+    the runtime's joint resolution. A gripper that declares none is reported
+    ``undeclared`` and not measured.
 
 Steps 1 and 2 need network access: the archive comes from GitHub and the build
 backends from the package index. It writes, under --out, each robot's ``inspect.json``,
@@ -1297,6 +1302,38 @@ def rested(package: Any, keyframe: str | None, scene: Path | None, out: Path) ->
     return record
 
 
+def gripper_positions(package: Any, keyframe: str | None) -> dict[str, Any]:
+    """Each gripper's declared open and closed positions (#243) against a fresh
+    measurement by scripts/calibrate_gripper.py's routine, from the robot's start: per
+    gripper, ``undeclared``, or ``matches`` or ``drifted`` with both comparisons and any
+    way the measurement failed its procedure."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import calibrate_gripper
+
+    grippers = package.description.grippers
+    declared = [g for g in grippers if g.open_positions]
+    record: dict[str, Any] = {g.name: {"status": "undeclared"} for g in grippers}
+    if not declared:
+        return record
+    measured = calibrate_gripper.measure(
+        package, keyframe=keyframe, only=[g.name for g in declared]
+    )
+    for g in declared:
+        m = measured["grippers"][g.name]
+        opened = calibrate_gripper.compare(g.open_positions, m["open_positions"])
+        closed = calibrate_gripper.compare(g.closed_positions, m["closed_positions"])
+        failures = [f for f in measured["failures"] if f.startswith(f"{g.name} ")]
+        within = opened["within"] and closed["within"] and not failures
+        record[g.name] = {
+            "status": "matches" if within else "drifted",
+            "joints": m["joints"],
+            "open": opened,
+            "closed": closed,
+            "failures": failures,
+        }
+    return record
+
+
 def render(ctx: Any, runtime: Any) -> dict[str, Any]:
     """What a viewer gets through ``ssrobot.mujoco.render_handle`` (#125): a capture that
     names the context's time and world, into data MuJoCo can draw offscreen."""
@@ -1359,6 +1396,7 @@ def startup(module: str, out: Path, keyframe: str | None, spec: dict[str, Any] |
         }
         record["render"] = render(ctx, runtime)
         record["driven"] = drive(ctx)
+    record["gripper_positions"] = gripper_positions(package, keyframe)
     if spec is not None:
         # Twice, from the same start, to show the artifacts are deterministic.
         runs = [
@@ -1552,6 +1590,22 @@ def check(
         "mujoco_drive",
         all(result["state"] == "succeeded" for result in driven.values()),
         f"{len(driven)} capabilities: {driven}" if driven else "no commands to drive",
+    )
+    positions = startup_record["gripper_positions"]
+    add(
+        "gripper_positions",
+        all(p["status"] in ("undeclared", "matches") for p in positions.values()),
+        "; ".join(
+            f"{name}: {p['status']}"
+            + (
+                ""
+                if p["status"] == "undeclared"
+                else f" (max difference open {p['open']['max_difference']:.3g}, closed "
+                f"{p['closed']['max_difference']:.3g}; {p['failures'] or 'procedure met'})"
+            )
+            for name, p in positions.items()
+        )
+        or "no grippers",
     )
     if spec is not None:
         run = startup_record["scenario"]

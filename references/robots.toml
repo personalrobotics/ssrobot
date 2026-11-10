@@ -16,7 +16,7 @@ package_root = "src/geodude_assets"
 [robots.expect]
 # The reviewed semantic identity. Any change to the description, intended or not,
 # must update this fingerprint in review.
-fingerprint = "f49caa42cf97010d963f5ce82e0ad999fb6f9e139456ef5cd89d9033125b1987"
+fingerprint = "a46d96de2d7aa0c0e29d2fb8e50cef62752280485ae95ea60b3cc428e12e17cf"
 model_format = "mjcf"
 license = "MIT"
 manipulators = 4
@@ -98,7 +98,7 @@ package_root = "src/ada_assets"
 # personalrobotics/ada_assets#17).
 
 [robots.expect]
-fingerprint = "d0346b1373ef3bfe3e294bdf9dc09b4517b5618df0471f42e777a04aedb71c1d"
+fingerprint = "41c46ee3b865846893dc8bb62c8cf1b813d6028886ce2cab08f57acba4a79c3f"
 model_format = "mjcf"
 license = "MIT"
 manipulators = 1
@@ -177,7 +177,7 @@ package_root = "src/ada_assets/models"
 # No keyframe: the package's MuJoCo profile starts it at "resting", fingers open.
 
 [robots.expect]
-fingerprint = "25ed82d83091521bcff1021df2a0a7debac7ac82b3febad2c054677ef8ad643e"
+fingerprint = "3c782b4e34ec3da78dad18f77bc73c659af0c8d6155703259eca85180fe38fde"
 model_format = "mjcf"
 license = "MIT"
 manipulators = 1

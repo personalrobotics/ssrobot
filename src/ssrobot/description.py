@@ -146,12 +146,32 @@ class JointGroup(Value):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Gripper(Value):
-    """An actuated grasping device, commanded by opening."""
+    """An actuated grasping device, commanded by opening.
+
+    ``open_positions`` and ``closed_positions`` are where its joints end when it is
+    commanded fully open and fully closed with nothing between the fingers, as
+    scripts/calibrate_gripper.py measures them. Both are declared or neither.
+    """
 
     name: str = field(metadata=meta("Component name, unique among components."))
     frame: str = field(metadata=meta("Frame the gripper is mounted at."))
     joints: tuple[str, ...] = field(
         default=(), metadata=meta("Joints the gripper moves, including passive linkage joints.")
+    )
+    open_positions: tuple[float, ...] = field(
+        default=(),
+        metadata=meta(
+            "One position per gripper joint, in joint order, when fully open; empty if undeclared.",
+            unit="joint",
+        ),
+    )
+    closed_positions: tuple[float, ...] = field(
+        default=(),
+        metadata=meta(
+            "One position per gripper joint, in joint order, when fully closed on nothing; "
+            "empty if undeclared.",
+            unit="joint",
+        ),
     )
 
     def _validate(self) -> None:
@@ -681,6 +701,39 @@ class RobotDescription(Record):
                 if lower is not None and upper is not None and not lower <= q <= upper:
                     raise ValidationError(
                         "out_of_limits", f"{name}={q} is outside its limits", path=path
+                    )
+        for g in self.grippers:
+            self._validate_gripper_positions(g, joints)
+
+    @staticmethod
+    def _validate_gripper_positions(g: Gripper, joints: dict[str, Joint]) -> None:
+        """Declared both or neither, one per joint, within limits. Finiteness is checked
+        when the ``Gripper`` is built (``non_finite``)."""
+        path = f"components.{g.name}"
+        declared = {"open_positions": g.open_positions, "closed_positions": g.closed_positions}
+        if not g.open_positions and not g.closed_positions:
+            return
+        for field_name, positions in declared.items():
+            if not positions:
+                raise ValidationError(
+                    "missing_field",
+                    "open_positions and closed_positions are declared together",
+                    path=f"{path}.{field_name}",
+                )
+        for field_name, positions in declared.items():
+            if len(positions) != len(g.joints):
+                raise ValidationError(
+                    "shape_mismatch",
+                    f"{len(positions)} positions for {len(g.joints)} joints",
+                    path=f"{path}.{field_name}",
+                )
+            for name, q in zip(g.joints, positions, strict=True):
+                lower, upper = joints[name].limits.lower, joints[name].limits.upper
+                if lower is not None and upper is not None and not lower <= q <= upper:
+                    raise ValidationError(
+                        "out_of_limits",
+                        f"{name}={q} is outside its limits",
+                        path=f"{path}.{field_name}",
                     )
 
     def _validate_manipulator(
