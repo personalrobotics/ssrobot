@@ -6,7 +6,7 @@
 [[robots]]
 name = "geodude"
 repository = "personalrobotics/geodude_assets"
-commit = "f130a8f435ef7780fbc28014805c25cce6acd67b"
+commit = "e9538a26553e10a9613f9a61af86cb9f63db144e"
 module = "geodude_assets"
 package_root = "src/geodude_assets"
 # No keyframe: the package's MuJoCo profile starts it at "ready" (#95).
@@ -16,7 +16,7 @@ package_root = "src/geodude_assets"
 [robots.expect]
 # The reviewed semantic identity. Any change to the description, intended or not,
 # must update this fingerprint in review.
-fingerprint = "a46d96de2d7aa0c0e29d2fb8e50cef62752280485ae95ea60b3cc428e12e17cf"
+fingerprint = "31c516cd500909b9f7425f5edd6c336f57e83ce2cd37897a7dd4e6d176f0445d"
 model_format = "mjcf"
 license = "MIT"
 manipulators = 4
