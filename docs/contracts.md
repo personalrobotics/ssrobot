@@ -923,7 +923,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`TraceRecord`](../schemas/ssrobot.TraceRecord.v12.json) | One event in a trace. |
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
-| [`ChainsReport`](../schemas/ssrobot.ChainsReport.v2.json) | Every attempt and stage of a race of staged prefixes, each chain's choice and cost, and the selection. See planning.md. |
+| [`ChainsReport`](../schemas/ssrobot.ChainsReport.v3.json) | Every attempt and stage of a race of staged prefixes, each chain's choice and cost, and the selection. See planning.md. |
 | [`ConformanceReport`](../schemas/ssrobot.ConformanceReport.v2.json) | The result of a conformance run, with the runtime, description, and clock it ran on. |
 | [`SceneState`](../schemas/ssrobot.SceneState.v2.json) | A context's scene: its objects and fixtures, what it holds, what is registered or removed, and its revision. |
 | [`AttachmentReference`](../schemas/ssrobot.AttachmentReference.v1.json) | An attachment declared from registration, beside the transform the runtime tracks. |

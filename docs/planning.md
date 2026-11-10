@@ -345,6 +345,14 @@ portfolios*).
   not worth exploring. It trades completeness for bounded work: exactly one prefix and
   that stage's tries run, and the chain fails there. The first stage is the prefix, so
   it may not be `False`.
+- **`accept`**, optional on any stage: given a try's valid `StageResult`, it returns why
+  the caller rejects the try, or `None` to keep it. It runs on the context's thread, once
+  the try is valid and before the next stage is built. It is for a check the planner
+  cannot make, such as whether a hand can open where a carry ends, so the race selects
+  only what the caller would go on to run. A rejected try is `rejected`, with the reason
+  as its detail. It costs nothing, and is tried again like a failed one: the stage's next
+  seed, and then the prefix's, as `retry_prefix` allows. An `SsrobotError` raised by
+  `accept` rejects the try with its code; any other exception propagates.
 - **A `StageRequest`** names the state the stage plans in, the request built in it, the
   planner, and an optional processor that times a path-only result. The request must
   have been built in that state.
@@ -428,15 +436,15 @@ meanwhile. It returns a `ChainsRun`:
 results. Execute a stage's plan with `ctx.execute(plan, planner=...)`: it is already
 timed, so no processor runs again.
 
-**The `ChainsReport`** (version 2) records every attempt and every try of every stage it
+**The `ChainsReport`** (version 3, which adds the `rejected` outcome) records every attempt and every try of every stage it
 reached, with each try's `trial` and own `seed`, and each chain's `seeds`, `stage_seeds`
 and `retry_prefix`, with no wall-clock time. Each stage has fingerprints of its state,
 the projection it was built from and its own projection, and of its request, result and
 validation. Decoding checks the report:
 - every first stage is the run's state;
 - every later stage is built from the previous stage's projection;
-- a stage's tries plan its own seeds in order, another only after a failed or invalid
-  one, and, unless the run was aborted, a failed stage tried every seed it has;
+- a stage's tries plan its own seeds in order, another only after a failed, invalid, or
+  rejected one, a rejected try naming why, and, unless the run was aborted, a failed stage tried every seed it has;
 - no seed follows the first feasible one, nor an attempt that failed where the prefix is
   not retried;
 - unless the run was aborted, a chain without a choice tried every seed. The exceptions

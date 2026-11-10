@@ -15,9 +15,11 @@ Selection is two-level:
    chain's choice is the first seed all of whose stages are valid, its cost the sum of
    that attempt's validated stage durations. A seed is attempted only once every earlier
    seed of its chain has failed, so no later seed is planned; failed seeds stay in the
-   report and cost nothing. A later stage may also have seeds of its own: tried in order
-   from the same previous stage's result, the first valid try is the stage's, so a failed
-   stage is retried without planning the prefix again. Only when every one fails does the
+   report and cost nothing. A stage's ``accept`` may reject a valid try for a reason the
+   planner cannot see (``rejected``), and the try then counts as failed. A later stage may
+   also have seeds of its own: tried in order from the same previous stage's result, the
+   first valid try it accepts is the stage's, so a failed stage is retried without
+   planning the prefix again. Only when every one fails does the
    attempt fail, and the chain's next seed plan the prefix again, unless that stage says
    not to (``retry_prefix=False``): the chain then fails. Only the valid try costs.
 2. Across chains: the highest priority, then the lowest cost, then declaration order.
@@ -95,6 +97,7 @@ class _Ended(enum.Enum):
     CANCELED_BY_PRIORITY = "canceled_by_priority"
     FAILED = "failed"
     INVALID = "invalid"
+    REJECTED = "rejected"
     VALID = "valid"
 
 
@@ -152,12 +155,19 @@ class Stage:
     ``retry_prefix``, for a later stage: once it has failed every try it may make, whether
     the chain's next seed may plan the prefix again. False is the caller's assertion that
     another prefix is not worth exploring, trading completeness for bounded work: the
-    chain fails there."""
+    chain fails there.
+
+    ``accept``, given a try's valid result, returns why the caller rejects it, or None to
+    keep it: a check the planner cannot make, such as whether a hand can open where the
+    motion ends. It runs on the context's thread. A rejected try is ``rejected``, its
+    reason its detail, and is tried again like a failed one; an ``SsrobotError`` it
+    raises rejects the try with its code."""
 
     name: str
     build: Callable[[StageResult | None], StageRequest]
     seeds: Sequence[int] | None = None
     retry_prefix: bool = True
+    accept: Callable[[StageResult], str | None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +195,8 @@ class StageOutcome(enum.StrEnum):
     """The planner did not succeed, or an expected error was raised."""
     INVALID = "invalid"
     """It succeeded, but its motion failed validation on a fresh scene."""
+    REJECTED = "rejected"
+    """It succeeded and its motion is valid, but the stage's ``accept`` rejected it."""
     VALID = "valid"
     """It succeeded, and its motion is valid."""
 
@@ -195,9 +207,10 @@ _STAGE_OUTCOMES = {
     _Ended.CANCELED_BY_PRIORITY: StageOutcome.CANCELED,
     _Ended.FAILED: StageOutcome.FAILED,
     _Ended.INVALID: StageOutcome.INVALID,
+    _Ended.REJECTED: StageOutcome.REJECTED,
     _Ended.VALID: StageOutcome.VALID,
 }
-_RETRIED = (StageOutcome.FAILED, StageOutcome.INVALID)
+_RETRIED = (StageOutcome.FAILED, StageOutcome.INVALID, StageOutcome.REJECTED)
 """The outcomes after which a stage with seeds of its own is tried again."""
 
 
@@ -301,11 +314,13 @@ class StageAttempt(Value):
             raise refuse("a status exactly when the planner returned a result", "status")
         if o in (StageOutcome.REFUSED, StageOutcome.NOT_STARTED) and ran:
             raise refuse("nothing was planned", "result")
-        if o in (StageOutcome.REFUSED, StageOutcome.NOT_STARTED) and not self.detail:
+        if o in (StageOutcome.REFUSED, StageOutcome.NOT_STARTED, StageOutcome.REJECTED) and (
+            not self.detail
+        ):
             raise refuse("names why", "detail")
         if o is not StageOutcome.REFUSED and self.request is None:
             raise refuse("a stage that was built names its request", "request")
-        validated = o in (StageOutcome.INVALID, StageOutcome.VALID)
+        validated = o in (StageOutcome.INVALID, StageOutcome.REJECTED, StageOutcome.VALID)
         if validated and not (self.status is PlanStatus.SUCCEEDED and self.validation):
             raise refuse("a succeeded result with a fresh validation", "validation")
         if not validated and self.validation is not None:
@@ -349,7 +364,7 @@ class ChainAttempt(Value):
                 if t < len(group) - 1 and stage.outcome not in _RETRIED:
                     raise ValidationError(
                         "inconsistent_outcome",
-                        "a stage is tried again only after a failed or invalid try",
+                        "a stage is tried again only after a failed, invalid, or rejected try",
                         path=path,
                     )
                 if n == 0:
@@ -544,7 +559,7 @@ class ChainsReport(Record):
     """Every chain's attempts and stages, and the selection; no wall-clock time."""
 
     SCHEMA = "ssrobot.ChainsReport"
-    VERSION = 2
+    VERSION = 3
 
     snapshot: str = field(metadata=meta("Fingerprint of the state every chain started in."))
     chains: tuple[ChainRecord, ...] = field(metadata=meta("Every chain, in declared order."))
@@ -879,8 +894,9 @@ class ChainsRun:
         return started
 
     def _take(self, attempt: _Attempt, *, build: bool) -> None:
-        """If the attempt's current try has ended: try the stage's next seed after a
-        failed or invalid try, if it has one (stopped at once if the attempt was);
+        """If the attempt's current try has ended, and a valid one passed the stage's
+        ``accept``: try the stage's next seed after a failed, invalid, or rejected try,
+        if it has one (stopped at once if the attempt was);
         settle it when it is not valid, or when the attempt was stopped; otherwise keep
         its result and, with ``build``, queue the next stage, or settle it as feasible
         after the last."""
@@ -893,6 +909,23 @@ class ChainsRun:
         self._taken += 1
         end = self._run.ends[current.job]
         stage = self._chains[attempt.chain].stages[current.stage]
+        result = None
+        if end.ended is _Ended.VALID and attempt.stopped is None:
+            assert end.candidate is not None
+            state = end.job.snapshot or self._basis
+            result = StageResult(
+                name=stage.name,
+                plan=end.candidate,
+                snapshot=state,
+                projection=self._ctx.project(end.candidate, snapshot=state),
+            )
+            if stage.accept is not None:
+                try:
+                    rejected = stage.accept(result)
+                except SsrobotError as e:
+                    rejected = e.code
+                if rejected is not None:
+                    end.ended, end.detail, end.duration_s = _Ended.REJECTED, rejected, None
         if end.ended is not _Ended.VALID:
             following = current.trial + 1
             if (
@@ -916,14 +949,7 @@ class ChainsRun:
         if attempt.stopped is not None:
             attempt.settled = True
             return
-        assert end.candidate is not None
-        state = end.job.snapshot or self._basis
-        result = StageResult(
-            name=stage.name,
-            plan=end.candidate,
-            snapshot=state,
-            projection=self._ctx.project(end.candidate, snapshot=state),
-        )
+        assert result is not None
         attempt.results.append(result)
         attempt.built = None
         if len(attempt.results) == len(self._chains[attempt.chain].stages):
