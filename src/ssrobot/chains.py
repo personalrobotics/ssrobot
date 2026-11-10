@@ -16,10 +16,10 @@ Selection is two-level:
    that attempt's validated stage durations. A seed is attempted only once every earlier
    seed of its chain has failed, so no later seed is planned; failed seeds stay in the
    report and cost nothing. A stage's ``accept`` may reject a valid try for a reason the
-   planner cannot see (``rejected``), and the try then counts as failed. A later stage may
-   also have seeds of its own: tried in order from the same previous stage's result, the
-   first valid try it accepts is the stage's, so a failed stage is retried without
-   planning the prefix again. Only when every one fails does the
+   planner cannot see: the try is recorded ``rejected``, and is retried as a failed one
+   is. A later stage may also have seeds of its own: tried in order from the same
+   previous stage's result, the first valid try it accepts is the stage's, so a failed
+   stage is retried without planning the prefix again. Only when every one fails does the
    attempt fail, and the chain's next seed plan the prefix again, unless that stage says
    not to (``retry_prefix=False``): the chain then fails. Only the valid try costs.
 2. Across chains: the highest priority, then the lowest cost, then declaration order.
@@ -108,6 +108,9 @@ def _check_fingerprint(value: str | None, path: str) -> None:
         )
 
 
+CLOSED_BEFORE_ACCEPT = "the run closed before its accept ran"
+"""Why a valid try is rejected when its run closes before the stage's ``accept`` kept it."""
+
 CHAIN_SELECTION = (
     "first feasible seed within each chain; then highest priority, lowest cost (the sum of "
     "that seed's validated stage durations), and earliest chain"
@@ -157,11 +160,13 @@ class Stage:
     another prefix is not worth exploring, trading completeness for bounded work: the
     chain fails there.
 
-    ``accept``, given a try's valid result, returns why the caller rejects it, or None to
-    keep it: a check the planner cannot make, such as whether a hand can open where the
-    motion ends. It runs on the context's thread. A rejected try is ``rejected``, its
-    reason its detail, and is tried again like a failed one; an ``SsrobotError`` it
-    raises rejects the try with its code."""
+    ``accept``, given a try's valid result, returns why the caller rejects it, a non-empty
+    string, or None to keep it: a check the planner cannot make, such as whether a hand
+    can open where the motion ends. It runs on the context's thread, never while the run
+    closes; a valid try it has not kept by then is rejected (``CLOSED_BEFORE_ACCEPT``). A
+    rejected try is ``rejected``, its reason its detail, and is tried again like a failed
+    one. Any other return is refused (``invalid_accept``); an exception it raises
+    propagates, the try left to be taken again."""
 
     name: str
     build: Callable[[StageResult | None], StageRequest]
@@ -749,6 +754,12 @@ class ChainsRun:
                     path=f"chains[{i}].stages[0].seeds",
                 )
             for n, st in enumerate(c.stages):
+                if st.accept is not None and not callable(st.accept):
+                    raise ValidationError(
+                        "wrong_type",
+                        "accept is a callable, or None",
+                        path=f"chains[{i}].stages[{n}].accept",
+                    )
                 if st.seeds is not None and not 1 <= len(st.seeds) <= MAX_ATTEMPTS:
                     raise ValidationError(
                         "out_of_limits",
@@ -905,8 +916,6 @@ class ChainsRun:
         current = attempt.tries[-1]
         if current.taken or current.job is None or not self._run.settled(current.job):
             return
-        current.taken = True
-        self._taken += 1
         end = self._run.ends[current.job]
         stage = self._chains[attempt.chain].stages[current.stage]
         result = None
@@ -920,12 +929,20 @@ class ChainsRun:
                 projection=self._ctx.project(end.candidate, snapshot=state),
             )
             if stage.accept is not None:
-                try:
-                    rejected = stage.accept(result)
-                except SsrobotError as e:
-                    rejected = e.code
+                # Before the try is taken, so an exception from accept leaves it to be
+                # taken again. A closing run runs no caller code: what accept has not
+                # kept, it has not accepted.
+                rejected = stage.accept(result) if build else CLOSED_BEFORE_ACCEPT
+                if rejected is not None and not (isinstance(rejected, str) and rejected):
+                    raise ValidationError(
+                        "invalid_accept",
+                        f"accept returns None or a non-empty reason, not {rejected!r}",
+                        path=f"stages[{current.stage}].accept",
+                    )
                 if rejected is not None:
                     end.ended, end.detail, end.duration_s = _Ended.REJECTED, rejected, None
+        current.taken = True
+        self._taken += 1
         if end.ended is not _Ended.VALID:
             following = current.trial + 1
             if (
@@ -1009,12 +1026,20 @@ class ChainsRun:
 
     def close(self) -> None:
         """Cancel the run if it has not finished, wait for its planners, record how each
-        stage ended, and release its scenes; may be called again."""
-        if self._run.done:
+        stage ended, and release its scenes; may be called again. A try left to be taken,
+        as one whose ``accept`` raised is, is taken here, as the run closes."""
+        pending = any(
+            t.job is not None and not t.taken
+            for chain in self._attempts
+            for a in chain
+            for t in a.tries[-1:]
+        )
+        if self._run.done and not pending:
             return
-        self._run.cancel()
-        self._run.seal()
-        self._run.close()
+        if not self._run.done:
+            self._run.cancel()
+            self._run.seal()
+            self._run.close()
         for chain in self._attempts:
             for attempt in chain:
                 self._take(attempt, build=False)

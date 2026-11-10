@@ -49,6 +49,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from ssrobot import (
     Chain,
     ChainsReport,
@@ -61,10 +63,12 @@ from ssrobot import (
     Stage,
     StageRequest,
     StageResult,
+    ValidationError,
     dumps,
     load_package,
     loads,
 )
+from ssrobot.chains import CLOSED_BEFORE_ACCEPT
 from ssrobot.mujoco import MujocoRuntime
 from ssrobot.planning import CBiRRT
 from ssrobot.planning_contracts import build_request
@@ -392,13 +396,12 @@ def test_chains_race_staged_prefixes_and_select_deterministically(
     assert rejected["validation"] is not None  # it was valid: rejected after validation
     assert right["cost_s"] == reach["duration_s"] + onward["duration_s"]
     assert accepted["selected"]["label"] == "right_arm" and accepted["selected"]["attempt"] == 0
-    # Rejected on every try, the chain is never feasible.
+    # Rejected on every try, the chain is never feasible: each of its three seeds plans
+    # the reach again, and both onward tries are rejected.
     refused = first["all_rejected"]["report"]["chains"][0]
-    assert refused["chosen"] is None
-    assert all(
-        [s["outcome"] for s in a["stages"]] == ["valid", "rejected", "rejected"]
-        for a in refused["attempts"]
-    )
+    assert refused["chosen"] is None and len(refused["attempts"]) == 3
+    for attempt in refused["attempts"]:
+        assert [s["outcome"] for s in attempt["stages"]] == ["valid", "rejected", "rejected"]
     assert first["all_rejected"]["selected"]["label"] == "left_arm"
 
 
@@ -583,3 +586,41 @@ def test_a_chains_run_has_work_in_flight_until_it_is_done(tmp_path: Path) -> Non
         selected = run.result.report.selected
     assert idle == 0
     assert selected is not None
+
+
+def test_an_accept_that_answers_wrongly_is_refused_where_it_answers(tmp_path: Path) -> None:
+    """An ``accept`` returning anything but None or a reason, such as True for "keep it",
+    is refused there (``invalid_accept``), not recorded as a rejection; and the run,
+    closed, still gives a consistent report, the try it left rejected as never accepted.
+    A non-callable ``accept`` is refused before anything is planned (``wrong_type``)."""
+    package_root, scene = colliding_bimanual(tmp_path / "cube", blocked=CUBE)
+    package = load_package(package_root)
+    with RobotContext(package.description, MujocoRuntime(package, scene=scene)) as ctx:
+        d = package.description
+        chain = _chain(ctx, "left_arm", priority=0, seeds=(0,), onward_planner=CBiRRT(d))
+        onward = dataclasses.replace(chain.stages[1], accept=lambda _: True)  # type: ignore[arg-type,return-value]
+        answered = dataclasses.replace(chain, stages=(chain.stages[0], onward))
+        run = ctx.start_chains([answered], snapshot=ctx.snapshot())
+        try:
+            with pytest.raises(ValidationError) as refused:
+                while not run.advance():
+                    for future in run.planning:
+                        future.result()
+        finally:
+            run.close()
+        assert refused.value.code == "invalid_accept"
+        (record,) = run.result.report.chains
+        (attempt,) = record.attempts
+        assert [(s.outcome.value, s.detail) for s in attempt.stages] == [
+            ("valid", "valid"),
+            ("rejected", CLOSED_BEFORE_ACCEPT),
+        ]
+        assert record.chosen is None and run.result.selected is None
+
+        uncallable = dataclasses.replace(chain.stages[1], accept="reject")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError) as wrong:
+            ctx.start_chains(
+                [dataclasses.replace(chain, stages=(chain.stages[0], uncallable))],
+                snapshot=ctx.snapshot(),
+            )
+        assert wrong.value.code == "wrong_type"
