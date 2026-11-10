@@ -28,6 +28,12 @@ Its validator is the honest one.
 - ``prefix_not_retried``: the same, with ``retry_prefix=False`` on the onward stage:
   exactly one reach and its two onward tries run, no later chain seed, and the left is
   selected. The report records the policy.
+- ``accepted``: the right preferred, its onward stage with seeds 5 and 6 and an
+  ``accept`` that rejects every try of seed 5, valid as it is: seed 5 is ``rejected``,
+  its reason its detail and no cost, and seed 6 is tried from the same reach and
+  selected.
+- ``all_rejected``: the same, rejecting every try: the right is never feasible, and the
+  left is selected.
 Every stage records the projected state it was built from, the previous stage's own.
 
 The evidence is ``chains.json``: each scenario's report, the selected chain's stages, and
@@ -43,6 +49,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from ssrobot import (
     Chain,
     ChainsReport,
@@ -55,10 +63,12 @@ from ssrobot import (
     Stage,
     StageRequest,
     StageResult,
+    ValidationError,
     dumps,
     load_package,
     loads,
 )
+from ssrobot.chains import CLOSED_BEFORE_ACCEPT
 from ssrobot.mujoco import MujocoRuntime
 from ssrobot.planning import CBiRRT
 from ssrobot.planning_contracts import build_request
@@ -121,6 +131,7 @@ def _chain(
     disconnected: bool = False,
     stage_seeds: Sequence[int] | None = None,
     retry_prefix: bool = True,
+    rejects: Sequence[int] = (),
 ) -> Chain:
     d = ctx.description
     first, then = GOALS[arm]
@@ -155,11 +166,21 @@ def _chain(
             snapshot=projection, request=request(projection, then, seed), planner=onward_planner
         )
 
+    def accept(result: StageResult) -> str | None:
+        seed = result.plan.request.seed
+        return f"the test rejects seed {seed}" if seed in rejects else None
+
     return Chain(
         label=arm,
         stages=(
             Stage(name="reach", build=reach),
-            Stage(name="onward", build=onward, seeds=stage_seeds, retry_prefix=retry_prefix),
+            Stage(
+                name="onward",
+                build=onward,
+                seeds=stage_seeds,
+                retry_prefix=retry_prefix,
+                accept=accept if rejects else None,
+            ),
         ),
         seeds=tuple(seeds),
         priority=priority,
@@ -176,6 +197,7 @@ def _scenario(
     stage_seeds: Sequence[int] | None = None,
     lie_first: int = 0,
     retry_prefix: bool = True,
+    rejects: Sequence[int] = (),
 ) -> dict[str, Any]:
     package_root, scene = colliding_bimanual(tmp / "cube", blocked=CUBE)
     twin_root, twin_scene = colliding_bimanual(tmp / "twin")
@@ -198,6 +220,7 @@ def _scenario(
                 disconnected=disconnected,
                 stage_seeds=stage_seeds,
                 retry_prefix=retry_prefix,
+                rejects=rejects,
             ),
             _chain(ctx, "left_arm", priority=0, seeds=(0,), onward_planner=CBiRRT(d)),
         ]
@@ -249,6 +272,17 @@ def test_chains_race_staged_prefixes_and_select_deterministically(
                 stage_seeds=(5, 6),
                 lie_first=2,
                 retry_prefix=False,
+            ),
+            "accepted": _scenario(
+                tmp / "ac", liar_priority=1, lies=(), workers=1, stage_seeds=(5, 6), rejects=(5,)
+            ),
+            "all_rejected": _scenario(
+                tmp / "ar",
+                liar_priority=1,
+                lies=(),
+                workers=1,
+                stage_seeds=(5, 6),
+                rejects=(5, 6),
             ),
         }
 
@@ -346,6 +380,30 @@ def test_chains_race_staged_prefixes_and_select_deterministically(
     assert right["chosen"] is None and pruned["selected"]["label"] == "left_arm"
     assert preferred["selected"]["label"] == "left_arm"
 
+    # A valid try the stage's accept rejects is tried again like a failed one: from the
+    # same reach, with no cost, its reason recorded.
+    accepted = first["accepted"]
+    right = accepted["report"]["chains"][0]
+    (only,) = right["attempts"]
+    assert tries(only) == [
+        ("reach", "valid", None, 0),
+        ("onward", "rejected", 5, 0),
+        ("onward", "valid", 6, 1),
+    ]
+    reach, rejected, onward = only["stages"]
+    assert rejected["detail"] == "the test rejects seed 5", rejected
+    assert rejected["duration_s"] is None and rejected["projection"] is None
+    assert rejected["validation"] is not None  # it was valid: rejected after validation
+    assert right["cost_s"] == reach["duration_s"] + onward["duration_s"]
+    assert accepted["selected"]["label"] == "right_arm" and accepted["selected"]["attempt"] == 0
+    # Rejected on every try, the chain is never feasible: each of its three seeds plans
+    # the reach again, and both onward tries are rejected.
+    refused = first["all_rejected"]["report"]["chains"][0]
+    assert refused["chosen"] is None and len(refused["attempts"]) == 3
+    for attempt in refused["attempts"]:
+        assert [s["outcome"] for s in attempt["stages"]] == ["valid", "rejected", "rejected"]
+    assert first["all_rejected"]["selected"]["label"] == "left_arm"
+
 
 def test_a_chains_report_cannot_claim_an_impossible_outcome(
     artifacts: Path, tmp_path: Path
@@ -366,6 +424,9 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
         stage_seeds=(5, 6),
         lie_first=2,
         retry_prefix=False,
+    )["report"]
+    rejecting = _scenario(
+        tmp_path / "ac", liar_priority=1, lies=(), workers=1, stage_seeds=(5, 6), rejects=(5,)
     )["report"]
     forged: dict[str, Any] = {}
 
@@ -430,6 +491,12 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
     def prune_the_first_stage(d: dict[str, Any]) -> None:
         d["chains"][0]["retry_prefix"][0] = False
 
+    def reject_without_a_reason(d: dict[str, Any]) -> None:
+        d["chains"][0]["attempts"][0]["stages"][1]["detail"] = ""
+
+    def cost_a_rejected_try(d: dict[str, Any]) -> None:
+        d["chains"][0]["attempts"][0]["stages"][1]["duration_s"] = 0.5
+
     def drop_later_seeds(d: dict[str, Any]) -> None:
         d["chains"][0]["attempts"] = d["chains"][0]["attempts"][:1]
 
@@ -437,6 +504,8 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
     forge("pruning_unrecorded", hide_the_pruning, pruned)
     forge("the_first_stage_pruned", prune_the_first_stage, pruned)
     forge("later_seeds_missing", drop_later_seeds, exhausted)
+    forge("rejected_without_a_reason", reject_without_a_reason, rejecting)
+    forge("a_rejected_try_costs", cost_a_rejected_try, rejecting)
     forge("a_stage_seed_skipped", skip_a_stage_seed, seeded)
     forge("a_stage_retried_after_a_valid_try", retry_after_a_valid_try, seeded)
     forge("the_first_stage_seeded", seed_the_first_stage, seeded)
@@ -456,6 +525,8 @@ def test_a_chains_report_cannot_claim_an_impossible_outcome(
         "pruning_unrecorded": "inconsistent_outcome",
         "the_first_stage_pruned": "inconsistent_outcome",
         "later_seeds_missing": "inconsistent_outcome",
+        "rejected_without_a_reason": "inconsistent_outcome",
+        "a_rejected_try_costs": "inconsistent_outcome",
         "a_stage_seed_skipped": "inconsistent_outcome",
         "a_stage_retried_after_a_valid_try": "inconsistent_outcome",
         "the_first_stage_seeded": "inconsistent_outcome",
@@ -515,3 +586,41 @@ def test_a_chains_run_has_work_in_flight_until_it_is_done(tmp_path: Path) -> Non
         selected = run.result.report.selected
     assert idle == 0
     assert selected is not None
+
+
+def test_an_accept_that_answers_wrongly_is_refused_where_it_answers(tmp_path: Path) -> None:
+    """An ``accept`` returning anything but None or a reason, such as True for "keep it",
+    is refused there (``invalid_accept``), not recorded as a rejection; and the run,
+    closed, still gives a consistent report, the try it left rejected as never accepted.
+    A non-callable ``accept`` is refused before anything is planned (``wrong_type``)."""
+    package_root, scene = colliding_bimanual(tmp_path / "cube", blocked=CUBE)
+    package = load_package(package_root)
+    with RobotContext(package.description, MujocoRuntime(package, scene=scene)) as ctx:
+        d = package.description
+        chain = _chain(ctx, "left_arm", priority=0, seeds=(0,), onward_planner=CBiRRT(d))
+        onward = dataclasses.replace(chain.stages[1], accept=lambda _: True)  # type: ignore[arg-type,return-value]
+        answered = dataclasses.replace(chain, stages=(chain.stages[0], onward))
+        run = ctx.start_chains([answered], snapshot=ctx.snapshot())
+        try:
+            with pytest.raises(ValidationError) as refused:
+                while not run.advance():
+                    for future in run.planning:
+                        future.result()
+        finally:
+            run.close()
+        assert refused.value.code == "invalid_accept"
+        (record,) = run.result.report.chains
+        (attempt,) = record.attempts
+        assert [(s.outcome.value, s.detail) for s in attempt.stages] == [
+            ("valid", "valid"),
+            ("rejected", CLOSED_BEFORE_ACCEPT),
+        ]
+        assert record.chosen is None and run.result.selected is None
+
+        uncallable = dataclasses.replace(chain.stages[1], accept="reject")  # type: ignore[arg-type]
+        with pytest.raises(ValidationError) as wrong:
+            ctx.start_chains(
+                [dataclasses.replace(chain, stages=(chain.stages[0], uncallable))],
+                snapshot=ctx.snapshot(),
+            )
+        assert wrong.value.code == "wrong_type"

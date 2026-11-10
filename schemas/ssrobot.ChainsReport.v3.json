@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.ChainsReport v2",
+  "title": "ssrobot.ChainsReport v3",
   "$ref": "#/$defs/ChainsReport",
   "$defs": {
     "ChainAttempt": {
@@ -158,7 +158,7 @@
           "const": "ssrobot.ChainsReport"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "snapshot": {
           "type": "string",
@@ -310,6 +310,7 @@
             "canceled",
             "failed",
             "invalid",
+            "rejected",
             "valid"
           ],
           "description": "How it ended."
