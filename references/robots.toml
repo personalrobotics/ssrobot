@@ -91,14 +91,14 @@ known = ["personalrobotics/geodude_assets#42: deep grasps whose inner links carr
 [[robots]]
 name = "ada"
 repository = "personalrobotics/ada_assets"
-commit = "2d8f7972920e4369933065e9131b22dcd5858f2e"
+commit = "0703586a91fd933b5b4ddf0257e804ab37002e75"
 module = "ada_assets"
 package_root = "src/ada_assets"
 # No keyframe: the package's MuJoCo profile starts it at "resting" (#95,
 # personalrobotics/ada_assets#17).
 
 [robots.expect]
-fingerprint = "41c46ee3b865846893dc8bb62c8cf1b813d6028886ce2cab08f57acba4a79c3f"
+fingerprint = "68f60e917b191ee7683d8452985b29104cbd909afae2d929f06275d36458a0b3"
 model_format = "mjcf"
 license = "MIT"
 manipulators = 1
@@ -171,13 +171,13 @@ duration_ns = 3_000_000_000
 [[robots]]
 name = "ada_hand"
 repository = "personalrobotics/ada_assets"
-commit = "2d8f7972920e4369933065e9131b22dcd5858f2e"
+commit = "0703586a91fd933b5b4ddf0257e804ab37002e75"
 module = "ada_assets.models"
 package_root = "src/ada_assets/models"
 # No keyframe: the package's MuJoCo profile starts it at "resting", fingers open.
 
 [robots.expect]
-fingerprint = "3c782b4e34ec3da78dad18f77bc73c659af0c8d6155703259eca85180fe38fde"
+fingerprint = "b85614e24ec37431acdb9f02f2f338de119b06b514e6785ac385e29b5bd0bd5f"
 model_format = "mjcf"
 license = "MIT"
 manipulators = 1
