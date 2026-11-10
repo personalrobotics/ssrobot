@@ -30,9 +30,8 @@ For each robot in references/robots.toml, this script:
    recorded every tick, which must equal the simulated state, twice.
 10. re-measures every gripper's declared ``open_positions`` and ``closed_positions``
     (#243) with scripts/calibrate_gripper.py's routine, from the robot's start, and
-    fails if any joint drifted beyond that script's tolerance: the larger of 1e-6 and
-    the runtime's joint resolution. A gripper that declares none is reported
-    ``undeclared`` and not measured.
+    fails if any joint drifted beyond 1e-6, or the measurement failed. A gripper that
+    declares none is reported ``undeclared`` and not measured.
 
 Steps 1 and 2 need network access: the archive comes from GitHub and the build
 backends from the package index. It writes, under --out, each robot's ``inspect.json``,
@@ -1305,30 +1304,33 @@ def rested(package: Any, keyframe: str | None, scene: Path | None, out: Path) ->
 def gripper_positions(package: Any, keyframe: str | None) -> dict[str, Any]:
     """Each gripper's declared open and closed positions (#243) against a fresh
     measurement by scripts/calibrate_gripper.py's routine, from the robot's start: per
-    gripper, ``undeclared``, or ``matches`` or ``drifted`` with both comparisons and any
-    way the measurement failed its procedure."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import calibrate_gripper
+    gripper, ``undeclared``; ``matches`` or ``drifted``, with both comparisons and every
+    way the measurement failed its procedure; or ``failed``, when the measurement could
+    not run, with why."""
+    from ssrobot import SsrobotError
+    from ssrobot.mujoco._calibration import CalibrationError, compare, measure
 
-    grippers = package.description.grippers
-    declared = [g for g in grippers if g.open_positions]
-    record: dict[str, Any] = {g.name: {"status": "undeclared"} for g in grippers}
-    if not declared:
-        return record
-    measured = calibrate_gripper.measure(
-        package, keyframe=keyframe, only=[g.name for g in declared]
-    )
-    for g in declared:
+    record: dict[str, Any] = {}
+    for g in package.description.grippers:
+        if not g.open_positions:
+            record[g.name] = {"status": "undeclared"}
+            continue
+        try:
+            measured = measure(package, keyframe=keyframe, only=[g.name])
+        except (CalibrationError, SsrobotError) as e:
+            record[g.name] = {"status": "failed", "error": f"{type(e).__name__}: {e}"}
+            continue
         m = measured["grippers"][g.name]
-        opened = calibrate_gripper.compare(g.open_positions, m["open_positions"])
-        closed = calibrate_gripper.compare(g.closed_positions, m["closed_positions"])
-        failures = [f for f in measured["failures"] if f.startswith(f"{g.name} ")]
+        opened = compare(g.open_positions, m["open_positions"])
+        closed = compare(g.closed_positions, m["closed_positions"])
+        failures = [f for f in measured["failures"] if f["gripper"] == g.name]
         within = opened["within"] and closed["within"] and not failures
         record[g.name] = {
             "status": "matches" if within else "drifted",
             "joints": m["joints"],
             "open": opened,
             "closed": closed,
+            "clamped": m["clamped"],
             "failures": failures,
         }
     return record
@@ -1600,8 +1602,11 @@ def check(
             + (
                 ""
                 if p["status"] == "undeclared"
-                else f" (max difference open {p['open']['max_difference']:.3g}, closed "
-                f"{p['closed']['max_difference']:.3g}; {p['failures'] or 'procedure met'})"
+                else f" ({p['error']})"
+                if p["status"] == "failed"
+                else f" (max difference open {p['open']['max_difference']}, closed "
+                f"{p['closed']['max_difference']}, tolerance {p['open']['tolerance']}; "
+                f"{[f['reason'] + ': ' + f['detail'] for f in p['failures']] or 'procedure met'})"
             )
             for name, p in positions.items()
         )

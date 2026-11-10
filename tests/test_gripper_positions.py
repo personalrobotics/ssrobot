@@ -70,7 +70,7 @@ def test_declared_gripper_positions_match_a_fresh_calibration(
     for entry in (measured["first_close"], measured["open"], measured["closed"]):
         assert entry["termination"] == "reached_target"
         assert entry["settled"]
-        assert entry["contacts_outside_gripper"] == []
+        assert entry["first_contact"] is None
     assert [measured[k]["opening"] for k in ("first_close", "open", "closed")] == [0.0, 1.0, 0.0]
     # The evidence's digest is of the positions it records.
     core = {"gripper": {k: measured[k] for k in ("joints", "open_positions", "closed_positions")}}
