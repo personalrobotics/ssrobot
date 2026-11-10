@@ -112,6 +112,57 @@ effort = 150.0
   every trajectory segment must stay within its joints' velocity limits, and every
   waypoint within their acceleration limits (see docs/contracts.md, *Capabilities*).
 
+### Gripper positions
+
+A `GripperCommand` is not validated against the scene the way a trajectory is. To check
+one, a caller evaluates the planning scene with the gripper's joints where the command
+leaves them. A package declares those positions per gripper:
+
+```toml
+[[semantics.grippers]]
+name = "gripper"
+frame = "gripper"
+joints = ["left_finger_joint", "right_finger_joint"]
+open_positions = [0.03999987144670518, 0.03999987144670517]     # one per joint, in order
+closed_positions = [1.2855329453159447e-07, 1.2855329453119205e-07]
+```
+
+- **Meaning.** Where the joints settle when the gripper is commanded fully open from
+  closed, and fully closed on nothing from open, in joint units, in the order of
+  `joints`, passive linkage joints included.
+- **Rules.** Both or neither (`missing_field`); one position per joint
+  (`shape_mismatch`); finite (`non_finite`); within each joint's limits where both
+  bounds exist (`out_of_limits`). Without them, a description is unchanged except for
+  its fingerprint, which carries the two empty fields.
+- **Measuring them.** `scripts/calibrate_gripper.py` measures them from a package's
+  MuJoCo runtime and prints the lines to paste:
+
+  ```sh
+  uv run python scripts/calibrate_gripper.py --out artifacts/calibrate-gripper \
+      --package examples/packages/mujoco_arm --configuration level_hand
+  uv run python scripts/calibrate_gripper.py --out artifacts/calibrate-gripper --robot geodude
+  ```
+
+  From the profile's keyframe, or `--keyframe`, optionally moved to a named
+  configuration, it closes each gripper, opens it and reads the open positions, then
+  closes it and reads the closed ones. After each command ends it steps until every
+  gripper joint's variation over 200 ms, extrapolated over 10 s, is at most 1e-6 (a
+  drift of at most 1e-7/s), and fails if that takes more than 20 s. Every command must
+  end `reached_target`; one that does not fails at once, without settling. On every
+  tick of every command and its settling, nothing outside the hand may touch the
+  fingers, and the first contact fails: choose a start where nothing is near them and
+  gravity does not act along their axes. MuJoCo's joint limits are soft, so a joint may
+  settle slightly past a bound; a reading at most 1e-3 past it is declared at the bound,
+  and anything further fails. The evidence, `<out>/<robot>.json`, records the
+  provenance, every reading raw and as declared, the joints clamped, the settle times,
+  each failure with its gripper, and a sha256 of the positions. `--robot` measures a
+  reference robot from its pin's start; `--commit NAME=SHA` must name that robot.
+- **Checked.** `check_reference_robots.py` re-measures every declared gripper of a
+  reference robot with the same routine and fails if any joint differs by more than
+  1e-6, the larger of 1e-6 and MuJoCo's joint resolution (it reports float64 `qpos`
+  unquantized), or if the measurement fails or cannot run. A gripper that declares none
+  is reported `undeclared`.
+
 ### Model formats
 
 | Format | File | Extra |
@@ -417,6 +468,10 @@ the uv version. The script then runs two public commands, and opens the runtime:
   recorded beside it. A gripper without a confirmed opening channel fails. It
   writes `mujoco-startup.json`, holding the mapping in [mujoco.md](mujoco.md) and what
   was driven, and requires exact time and a package loaded from the install.
+- The **gripper positions** (#243): every gripper that declares `open_positions` and
+  `closed_positions` is re-measured by `scripts/calibrate_gripper.py`'s routine from
+  the same start, and each joint must match within 1e-6 (*Gripper positions*). A
+  gripper that declares none is reported `undeclared`, which passes.
 - The **two-robot planning proof** (#24), when the pin has a `scenario` table. One
   function, `scenario`, serves every robot; the table is all that differs: the
   manipulator, a scene from `references/scenes/` and its object, a named configuration,

@@ -230,6 +230,22 @@
             "type": "string"
           },
           "description": "Joints the gripper moves, including passive linkage joints."
+        },
+        "open_positions": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "One position per gripper joint, in joint order, when fully open; empty if undeclared.",
+          "x-unit": "joint"
+        },
+        "closed_positions": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "One position per gripper joint, in joint order, when fully closed on nothing; empty if undeclared.",
+          "x-unit": "joint"
         }
       },
       "required": [
