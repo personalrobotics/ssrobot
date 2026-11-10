@@ -178,3 +178,44 @@ def test_gripper_positions_are_validated(artifacts: Path, tmp_path: Path) -> Non
             assert report[name]["path"].endswith(field), (name, report[name]["path"])
     assert report["undeclared"]["open_positions"] == []
     assert report["undeclared"]["closed_positions"] == []
+
+
+def test_settle_rule_tells_drift_from_jitter(artifacts: Path) -> None:
+    """#245: whether a gripper has settled, on synthetic joint readings at the example
+    arm's 2 ms tick. Bounded jitter, like MuJoCo's solver stopping at its tolerance
+    against active limits (4e-8 rad per 200 ms on Geodude's open 2F-140), is settled; a
+    drift is settled only below 1e-7/s, the rate that moves a joint by the 1e-6
+    comparison tolerance over the 10 s horizon. Artifact: ``settle-rule.json``."""
+    import random
+
+    from ssrobot.mujoco._calibration import TOLERANCE, settled
+
+    tick_s = 0.002
+    window = round(0.2 / tick_s)
+    n = 3 * window
+
+    def periodic(k: int) -> float:
+        """A deterministic jitter of range 4e-8 whose period divides the window."""
+        return (1.0, -1.0, 0.5, -0.5)[k % 4] * 2e-8
+
+    rng = random.Random(0)
+    noise = [rng.uniform(-2e-8, 2e-8) for _ in range(n)]
+    cases: dict[str, tuple[Callable[[int], float], bool]] = {
+        "still": (lambda k: 0.0, True),
+        "periodic jitter, 4e-8": (periodic, True),
+        "random jitter, 4e-8": (lambda k: noise[k], True),
+        "jitter wider than the tolerance, 2e-6": (lambda k: periodic(k) * 50, False),
+        "drift 5e-6/s": (lambda k: 5e-6 * k * tick_s, False),
+        "drift 5e-6/s under jitter": (lambda k: 5e-6 * k * tick_s + periodic(k), False),
+        "drift 0.9e-7/s under jitter": (lambda k: 0.9e-7 * k * tick_s + periodic(k), True),
+        "drift 1.1e-7/s under jitter": (lambda k: 1.1e-7 * k * tick_s + periodic(k), False),
+    }
+    report = {}
+    for name, (offset, _) in cases.items():
+        # Two joints: one still at 0.7 rad, one carrying the case's motion.
+        history = [[0.7, 0.3 + offset(k)] for k in range(n)]
+        report[name] = {"settled": settled(history, window)}
+    (artifacts / "settle-rule.json").write_text(
+        json.dumps({"tolerance": TOLERANCE, "window": window, "cases": report}, indent=2) + "\n"
+    )
+    assert {k: v["settled"] for k, v in report.items()} == {k: e for k, (_, e) in cases.items()}

@@ -19,10 +19,12 @@ named configurations (``--configuration``) by a slow joint-space move:
    settled: ``closed_positions``.
 
 Each reading comes from the opposite end, as a command leaves the fingers. A command
-ending by its completion detector is not enough: after each, the runtime steps until
-every gripper joint's variation over ``SETTLE_DWELL_S``, extrapolated over
-``SETTLE_HORIZON_S``, is at most ``TOLERANCE``, the 1e-6 a re-measurement is held to. A
-gripper not settled within ``SETTLE_TIMEOUT_S`` fails rather than being read early.
+ending by its completion detector is not enough: after each, the runtime steps until,
+for every gripper joint, the range over the last ``SETTLE_DWELL_S`` is at most
+``TOLERANCE``, the 1e-6 a re-measurement is held to, and the change in its mean from the
+window before, extrapolated over ``SETTLE_HORIZON_S``, is too: solver jitter passes,
+drift faster than 1e-7/s does not. A gripper not settled within ``SETTLE_TIMEOUT_S``
+fails rather than being read early.
 Readings are in the gripper's joint order. MuJoCo's soft joint limits let joints settle
 slightly past a bound; a reading at most ``LIMIT_SLACK`` past is declared at the bound,
 and the evidence records the raw reading and each joint so clamped.
@@ -208,8 +210,9 @@ def main() -> int:
                 "closed) and after the second close (from open)"
             ),
             "settled": (
-                "every gripper joint's variation over the dwell, extrapolated over the "
-                "horizon, at most the tolerance"
+                "every gripper joint's range over the last dwell at most the tolerance, "
+                "and the change in its mean from the dwell before, extrapolated over the "
+                "horizon, too"
             ),
             "settle_dwell_s": SETTLE_DWELL_S,
             "settle_horizon_s": SETTLE_HORIZON_S,

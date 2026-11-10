@@ -54,14 +54,22 @@ SETTLE_DWELL_S = 0.2
 Geodude's 2F-140, read every tick."""
 
 SETTLE_HORIZON_S = 10.0
-"""How long a reading must stay within ``TOLERANCE`` of itself, extrapolating the motion
-seen over the dwell. A gripper is settled when every joint's variation over the last
-``SETTLE_DWELL_S``, extrapolated at that rate over ``SETTLE_HORIZON_S``, is at most
-``TOLERANCE``: a variation of at most 2e-8 over 200 ms, a drift of at most 1e-7/s. A
-joint still drifting at the largest rate this accepts moves less than the comparison
-tolerance in the 10 s after it is read, longer than the longest settle measured on the
-reference robots (4.6 s, ADA's close), so the declared value is the one the comparison
-holds it to, not a point on a creep."""
+"""How long a reading must stay within ``TOLERANCE`` of where the gripper is settling.
+
+A settled gripper still moves in two ways, and the rule (``settled``) tells them apart:
+- **Jitter**, bounded and not going anywhere: MuJoCo's solver stops at ``opt.tolerance``,
+  so joints held against active limits, such as the 2F-140's couplers when it is open,
+  jitter by about 4 x that tolerance (4e-8 rad per 200 ms at 1e-8), indefinitely. Each
+  window's range must be at most ``TOLERANCE``, so any jitter the comparison could see
+  fails, but jitter is never extrapolated.
+- **Drift**, a steady creep: the change in each joint's mean between two consecutive
+  windows, ``SETTLE_DWELL_S`` apart, extrapolated over this horizon, must be at most
+  ``TOLERANCE``. That bounds the drift at 1e-7/s: a joint still drifting at the largest
+  rate accepted moves less than the comparison tolerance in the 10 s after it is read,
+  longer than the longest settle measured on the reference robots (4.6 s, ADA's
+  close), so the declared value is the one the comparison holds it to, not a point on a
+  creep. A drift of 5e-6/s fails, however small its jitter. Averaging over a window
+  takes the jitter out of the mean, so jitter does not read as drift."""
 
 SETTLE_TIMEOUT_S = 20.0
 """A bound for failing, not a wait: a gripper that has not settled this long after its
@@ -196,13 +204,22 @@ def _clamp(
     return out, clamped
 
 
-def _settled(history: list[list[float]], window: int) -> bool:
-    if len(history) < window:
+def settled(history: Sequence[Sequence[float]], window: int) -> bool:
+    """Whether readings taken every tick, oldest first, show a settled gripper: over the
+    last two consecutive windows of ``window`` readings each, ``SETTLE_DWELL_S`` apart,
+    every joint's range in the last window is at most ``TOLERANCE``, and the change in
+    its mean between the two, extrapolated over ``SETTLE_HORIZON_S``, is at most
+    ``TOLERANCE``. See ``SETTLE_HORIZON_S``."""
+    if len(history) < 2 * window:
         return False
+    before, last = history[-2 * window : -window], history[-window:]
     scale = SETTLE_HORIZON_S / SETTLE_DWELL_S
-    return all(
-        (max(column) - min(column)) * scale <= TOLERANCE for column in zip(*history, strict=True)
-    )
+    for old, new in zip(zip(*before, strict=True), zip(*last, strict=True), strict=True):
+        if max(new) - min(new) > TOLERANCE:
+            return False
+        if abs(sum(new) / window - sum(old) / window) * scale > TOLERANCE:
+            return False
+    return True
 
 
 def _command(
@@ -265,14 +282,14 @@ def _command(
             )
         )
         return entry, failures
-    window = round(SETTLE_DWELL_S * 1e9 / tick_ns) + 1  # readings spanning the dwell
+    window = round(SETTLE_DWELL_S * 1e9 / tick_ns)  # consecutive windows, a dwell apart
     history: list[list[float]] = []
     for _ in range(round(SETTLE_TIMEOUT_S * 1e9 / tick_ns)):
         if contact:
             break
         snapshot = ctx.snapshot()
-        history = [*history[-(window - 1) :], [snapshot.position(j) for j in joints]]
-        if _settled(history, window):
+        history = [*history[-(2 * window - 1) :], [snapshot.position(j) for j in joints]]
+        if settled(history, window):
             entry["settled"] = True
             break
         ctx.step()
