@@ -73,9 +73,9 @@ joints = ["left_finger_joint", "right_finger_joint"]
 # nothing from open, in joint order. Measured by
 #   uv run python scripts/calibrate_gripper.py --out artifacts/calibrate-gripper \
 #       --package examples/packages/mujoco_arm --configuration level_hand
-# Each finger settles 2.6e-9 m inside its joint limits; none is clamped.
-open_positions = [0.039999997439856314, 0.039999997439856314]
-closed_positions = [2.5601436905841387e-09, 2.5601436906567573e-09]
+# Each finger settles 7.3e-10 m inside its joint limits; none is clamped.
+open_positions = [0.03999999927012218, 0.03999999927012218]
+closed_positions = [7.298778283914569e-10, 7.298778284640819e-10]
 
 [[semantics.end_effectors]]
 name = "hand"

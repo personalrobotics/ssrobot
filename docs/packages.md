@@ -145,9 +145,11 @@ closed_positions = [1.2855329453159447e-07, 1.2855329453119205e-07]
 
   From the profile's keyframe, or `--keyframe`, optionally moved to a named
   configuration, it closes each gripper, opens it and reads the open positions, then
-  closes it and reads the closed ones. After each command ends it steps until every
-  gripper joint's variation over 200 ms, extrapolated over 10 s, is at most 1e-6 (a
-  drift of at most 1e-7/s), and fails if that takes more than 20 s. Every command must
+  closes it and reads the closed ones. After each command ends it steps until, for every
+  gripper joint, the range over the last 200 ms is at most 1e-6 and the change in its
+  mean from the 200 ms before, extrapolated over 10 s, is at most 1e-6. Bounded jitter,
+  such as MuJoCo's solver stopping at its tolerance against active joint limits, passes;
+  a drift faster than 1e-7/s does not. It fails if that takes more than 20 s. Every command must
   end `reached_target`; one that does not fails at once, without settling. On every
   tick of every command and its settling, nothing outside the hand may touch the
   fingers, and the first contact fails: choose a start where nothing is near them and
