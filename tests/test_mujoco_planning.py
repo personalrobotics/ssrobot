@@ -32,7 +32,9 @@ from ssrobot import (
     loads,
     read_trace,
 )
-from ssrobot.mujoco import MujocoRuntime
+from ssrobot.mujoco import MujocoRuntime, _planning
+from ssrobot.mujoco._compose import compile_world
+from tests.support import colliding_bimanual
 from tests.test_mujoco_scene import (
     ABOVE,
     HAND_FRAMES,
@@ -319,3 +321,127 @@ def test_an_allowed_static_robot_frame_is_honoured(artifacts: Path, tmp_path: Pa
     assert ["base", "puck"] in [sorted(c) for c in report["hand_only"]["contacts"]]
     assert report["with_base"]["valid"] is True and report["with_base"]["contacts"] == []
     assert report["one_runtime"] == [report["hand_only"], report["with_base"], report["hand_only"]]
+
+
+PAINT = """<asset>
+    <mesh name="cap" vertex="0 0 0  0.04 0 0  0 0.04 0  0 0 0.04"/>
+    <texture name="grid" type="2d" builtin="checker" width="32" height="32"/>
+    <material name="painted" texture="grid"/>
+  </asset>
+"""
+SHELF = """<mujoco>
+  <asset><mesh name="trim" vertex="0 0 0  0.05 0 0  0 0.05 0  0 0 0.05"/></asset>
+  <worldbody>
+    <body name="shelf" pos="0 0.3 0.25">
+      <geom type="box" size="0.25 0.25 0.01" contype="1" conaffinity="1"/>
+      <geom type="mesh" mesh="trim" contype="0" conaffinity="0"/>
+    </body>
+    <body name="tag" pos="0 0 0.6">
+      <freejoint/>
+      <geom type="sphere" size="0.01" contype="0" conaffinity="0"/>
+    </body>
+    <body name="pulley" pos="-0.4 0 0.3">
+      <geom name="wheel" type="cylinder" size="0.02 0.01" contype="0" conaffinity="0"/>
+      <site name="in" pos="-0.05 0 0.05"/>
+      <site name="out" pos="0.05 0 0.05"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="cord"><site site="in"/><geom geom="wheel"/><site site="out"/></spatial>
+  </tendon>
+</mujoco>
+"""
+
+
+def test_a_planning_scene_leaves_out_only_what_cannot_collide(
+    artifacts: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The planning model drops visual-only geometry and keeps every contact: the
+    colliding conformance arms, each link painted with a visual mesh, swept under a
+    shelf with visual trim that the left arm reaches when it pitches up, report the
+    contacts of the full model at every configuration. A free tag with only a visual
+    geom keeps its mass, and a visual pulley a tendon wraps stays."""
+    root, _ = colliding_bimanual(tmp_path / "painted")
+    model = root / "bimanual.xml"
+    text = model.read_text().replace("</default>\n", "</default>\n  " + PAINT, 1)
+    visual = '<geom type="mesh" mesh="cap" material="painted" contype="0" conaffinity="0"/>'
+    text = text.replace('size="0.03"/>', f'size="0.03"/>{visual}')
+    text = text.replace('size="0.025"/>', f'size="0.025"/>{visual}')
+    painted = text.count(visual)
+    model.write_text(text)
+    scene = tmp_path / "shelf.xml"
+    scene.write_text(SHELF)
+    package = load_package(root)
+    joints = package.description.group("both_arms").joints
+
+    built: dict[str, Any] = {}
+
+    def recording(name: str, planning_model: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapper(*args: Any) -> Any:
+            built[name] = planning_model(*args)
+            return built[name]
+
+        return wrapper
+
+    def full(model_path: Path, source: Any, excludes: Any) -> Any:
+        return compile_world(model_path, source, excludes=excludes)[0]
+
+    rng = np.random.default_rng(0)
+    qs = [tuple(rng.uniform(-np.pi, np.pi, len(joints))) for _ in range(400)]
+
+    def sweep(planning_model: Callable[..., Any]) -> list[list[tuple[str, str, str, float]]]:
+        monkeypatch.setattr(_planning, "planning_model", planning_model)
+        with RobotContext(package.description, MujocoRuntime(package, scene=scene)) as ctx:
+            planning = ctx.planning_scene(ctx.snapshot(), "both_arms")
+            return [
+                sorted((c.kind.value, c.first, c.second, c.distance) for c in planning.contacts(q))
+                for q in qs
+            ]
+
+    lean_contacts = sweep(recording("lean", _planning.planning_model))
+    full_contacts = sweep(recording("full", full))
+    lean_model, reference = built["lean"], built["full"]
+    report: dict[str, Any] = {
+        "configurations": len(qs),
+        "in_contact": sum(bool(c) for c in full_contacts),
+        "same_pairs": sum(
+            [x[:3] for x in a] == [x[:3] for x in b]
+            for a, b in zip(lean_contacts, full_contacts, strict=True)
+        ),
+        "on_the_shelf": sum(any("shelf" in x[1:3] for x in c) for c in full_contacts),
+        "geoms": [reference.ngeom, lean_model.ngeom],
+        "meshes": [reference.nmesh, lean_model.nmesh],
+        "textures": [reference.ntex, lean_model.ntex],
+        "bytes": [mujoco.mj_sizeModel(reference), mujoco.mj_sizeModel(lean_model)],
+    }
+    if report["same_pairs"] == len(qs):
+        report["max_distance_difference"] = max(
+            (
+                abs(x[3] - y[3])
+                for a, b in zip(lean_contacts, full_contacts, strict=True)
+                for x, y in zip(a, b, strict=True)
+            ),
+            default=0.0,
+        )
+    (artifacts / "collidable_only.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert report["same_pairs"] == len(qs) and report["max_distance_difference"] < 1e-9
+    # The sweep finds contacts and misses, and some are with the shelf beside its trim.
+    assert 0.1 * len(qs) < report["in_contact"] < 0.9 * len(qs) and report["on_the_shelf"] > 0
+    cap = mujoco.mj_name2id(reference, mujoco.mjtObj.mjOBJ_MESH, "cap")
+    assert (
+        painted > 0 and int(np.sum(reference.geom_dataid == cap)) == painted
+    )  # every link painted
+
+    def named(model: Any, kind: Any, i: int) -> str:
+        return str(mujoco.mj_id2name(model, kind, i))
+
+    uncollidable = [
+        named(lean_model, mujoco.mjtObj.mjOBJ_GEOM, g)
+        for g in range(lean_model.ngeom)
+        if lean_model.geom_contype[g] == 0 and lean_model.geom_conaffinity[g] == 0
+    ]
+    assert uncollidable == ["wheel"]  # the only visual geom left is the one a tendon wraps
+    assert lean_model.nmesh == 0 and lean_model.ntex == 0 and lean_model.nmat == 0
+    tag = mujoco.mj_name2id(lean_model, mujoco.mjtObj.mjOBJ_BODY, "tag")
+    assert lean_model.body_mass[tag] == reference.body_mass[tag] > 0
+    assert report["bytes"][1] < report["bytes"][0]

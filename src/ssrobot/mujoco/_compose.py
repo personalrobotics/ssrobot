@@ -54,11 +54,16 @@ def compile_world(
     *,
     excludes: Sequence[tuple[str, str]] = (),
     path: str = "model",
+    collidable_only: bool = False,
 ) -> tuple[Any, dict[str, str]]:
     """Compile the robot model at ``model_path`` with ``scene``'s bodies, from the
     scene's bytes read once, and with a contact exclude for each body pair in
     ``excludes``. Return the model and each top-level scene body's kind (``object``, one
-    free joint; ``fixture``, no joints). ``path`` names the model in errors."""
+    free joint; ``fixture``, no joints). ``path`` names the model in errors.
+    ``collidable_only`` compiles with MuJoCo's ``discardvisual``: geoms no contact can
+    involve and the meshes only they use are left out, after their mass is counted, and
+    so is every material and texture. A model for kinematics and contacts, not for
+    rendering."""
     try:
         spec = mujoco.MjSpec.from_file(str(model_path))
     except ValueError as e:
@@ -89,6 +94,8 @@ def compile_world(
     for first, second in excludes:
         exclude = spec.add_exclude()
         exclude.bodyname1, exclude.bodyname2 = first, second
+    if collidable_only:
+        spec.compiler.discardvisual = True
     try:
         model = spec.compile()
     except ValueError as e:

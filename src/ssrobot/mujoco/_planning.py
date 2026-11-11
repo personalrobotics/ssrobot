@@ -54,16 +54,22 @@ def planning_model(
     model_path: Path, scene: SceneSource | None, excludes: Sequence[tuple[str, str]]
 ) -> Any:
     """The runtime's model, rebuilt from the same sources by the same composition, with
-    ``excludes`` added: the collision allowances that sscbirrt's native policy would not
-    otherwise honour."""
-    return compile_world(model_path, scene, excludes=excludes)[0]
+    ``excludes`` added (the collision allowances that sscbirrt's native policy would not
+    otherwise honour) and without the geometry no contact can involve (MuJoCo's
+    ``discardvisual``: geoms that collide with nothing, the meshes only they use, and
+    every material and texture). Every contact and every frame is the runtime's, and
+    ``materialize`` parks a removed object where the runtime does. The model is a fraction
+    of the size, which every native scene exports and hashes. It overrides a package's own
+    ``discardvisual``: the planning model serves contacts and kinematics only."""
+    return compile_world(model_path, scene, excludes=excludes, collidable_only=True)[0]
 
 
 class PlanningModel:
     """A runtime's planning model and its native scene for each group.
 
     The planning model is the runtime's model rebuilt from its sources with the
-    description's collision allowances as excludes. Those never change; a held object's
+    description's collision allowances as excludes, and without geometry that cannot
+    collide (``planning_model``). Those never change; a held object's
     allowances belong to each snapshot (sscbirrt 3.11), and a clearance to each checker
     (sscbirrt 3.13), so one model, and one native scene per group, serve every planning
     scene. The model is compiled at the first planning scene, with ``check`` (the package
@@ -231,7 +237,7 @@ def materialize(
     for state in snapshot.objects:  # a removed object out of the world; unknown refuses
         free = int(model.body_jntadr[resolve(_BODY, state.name, "snapshot.objects")])
         at = int(model.jnt_qposadr[free])
-        data.qpos[at : at + 7] = object_qpos(model, state)
+        data.qpos[at : at + 7] = object_qpos(runtime_model, state)  # where the runtime parks it
     mujoco.mj_kinematics(model, data)
 
     bound = {}
