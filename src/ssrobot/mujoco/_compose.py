@@ -61,8 +61,9 @@ def compile_world(
     ``excludes``. Return the model and each top-level scene body's kind (``object``, one
     free joint; ``fixture``, no joints). ``path`` names the model in errors.
     ``collidable_only`` compiles with MuJoCo's ``discardvisual``: geoms no contact can
-    involve, and the meshes, materials and textures only they use, are left out, after
-    their mass is counted. A model for kinematics and contacts, not for rendering."""
+    involve and the meshes only they use are left out, after their mass is counted, and
+    so is every material and texture. A model for kinematics and contacts, not for
+    rendering."""
     try:
         spec = mujoco.MjSpec.from_file(str(model_path))
     except ValueError as e:

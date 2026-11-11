@@ -55,12 +55,12 @@ def planning_model(
 ) -> Any:
     """The runtime's model, rebuilt from the same sources by the same composition, with
     ``excludes`` added (the collision allowances that sscbirrt's native policy would not
-    otherwise honour) and without the geometry no contact can involve: visual meshes,
-    their materials and textures (MuJoCo's ``discardvisual``). Every contact, and every
-    frame of an object in the world, is the runtime's. A removed object parks by this
-    model's own extent, which, unless the model states its statistics, is the extent of
-    what can collide. The model is a fraction of the size, which every native scene
-    exports and hashes."""
+    otherwise honour) and without the geometry no contact can involve (MuJoCo's
+    ``discardvisual``: geoms that collide with nothing, the meshes only they use, and
+    every material and texture). Every contact and every frame is the runtime's, and
+    ``materialize`` parks a removed object where the runtime does. The model is a fraction
+    of the size, which every native scene exports and hashes. It overrides a package's own
+    ``discardvisual``: the planning model serves contacts and kinematics only."""
     return compile_world(model_path, scene, excludes=excludes, collidable_only=True)[0]
 
 
@@ -237,7 +237,7 @@ def materialize(
     for state in snapshot.objects:  # a removed object out of the world; unknown refuses
         free = int(model.body_jntadr[resolve(_BODY, state.name, "snapshot.objects")])
         at = int(model.jnt_qposadr[free])
-        data.qpos[at : at + 7] = object_qpos(model, state)
+        data.qpos[at : at + 7] = object_qpos(runtime_model, state)  # where the runtime parks it
     mujoco.mj_kinematics(model, data)
 
     bound = {}

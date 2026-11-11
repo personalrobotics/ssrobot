@@ -367,6 +367,7 @@ def test_a_planning_scene_leaves_out_only_what_cannot_collide(
     visual = '<geom type="mesh" mesh="cap" material="painted" contype="0" conaffinity="0"/>'
     text = text.replace('size="0.03"/>', f'size="0.03"/>{visual}')
     text = text.replace('size="0.025"/>', f'size="0.025"/>{visual}')
+    painted = text.count(visual)
     model.write_text(text)
     scene = tmp_path / "shelf.xml"
     scene.write_text(SHELF)
@@ -407,24 +408,29 @@ def test_a_planning_scene_leaves_out_only_what_cannot_collide(
             [x[:3] for x in a] == [x[:3] for x in b]
             for a, b in zip(lean_contacts, full_contacts, strict=True)
         ),
-        "max_distance_difference": max(
-            (
-                abs(x[3] - y[3])
-                for a, b in zip(lean_contacts, full_contacts, strict=True)
-                if len(a) == len(b)
-                for x, y in zip(a, b, strict=True)
-            ),
-            default=0.0,
-        ),
+        "on_the_shelf": sum(any("shelf" in x[1:3] for x in c) for c in full_contacts),
         "geoms": [reference.ngeom, lean_model.ngeom],
         "meshes": [reference.nmesh, lean_model.nmesh],
         "textures": [reference.ntex, lean_model.ntex],
         "bytes": [mujoco.mj_sizeModel(reference), mujoco.mj_sizeModel(lean_model)],
     }
+    if report["same_pairs"] == len(qs):
+        report["max_distance_difference"] = max(
+            (
+                abs(x[3] - y[3])
+                for a, b in zip(lean_contacts, full_contacts, strict=True)
+                for x, y in zip(a, b, strict=True)
+            ),
+            default=0.0,
+        )
     (artifacts / "collidable_only.json").write_text(json.dumps(report, indent=2) + "\n")
     assert report["same_pairs"] == len(qs) and report["max_distance_difference"] < 1e-9
-    # The sweep finds contacts and misses.
-    assert 0.1 * len(qs) < report["in_contact"] < 0.9 * len(qs)
+    # The sweep finds contacts and misses, and some are with the shelf beside its trim.
+    assert 0.1 * len(qs) < report["in_contact"] < 0.9 * len(qs) and report["on_the_shelf"] > 0
+    cap = mujoco.mj_name2id(reference, mujoco.mjtObj.mjOBJ_MESH, "cap")
+    assert (
+        painted > 0 and int(np.sum(reference.geom_dataid == cap)) == painted
+    )  # every link painted
 
     def named(model: Any, kind: Any, i: int) -> str:
         return str(mujoco.mj_id2name(model, kind, i))
