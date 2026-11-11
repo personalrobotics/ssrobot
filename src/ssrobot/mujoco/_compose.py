@@ -60,9 +60,9 @@ def compile_world(
     scene's bytes read once, and with a contact exclude for each body pair in
     ``excludes``. Return the model and each top-level scene body's kind (``object``, one
     free joint; ``fixture``, no joints). ``path`` names the model in errors.
-    ``collidable_only`` leaves out the geometry no contact can involve
-    (``_drop_uncollidable``): a model for kinematics and contacts, not for dynamics or
-    rendering."""
+    ``collidable_only`` compiles with MuJoCo's ``discardvisual``: geoms no contact can
+    involve, and the meshes, materials and textures only they use, are left out, after
+    their mass is counted. A model for kinematics and contacts, not for rendering."""
     try:
         spec = mujoco.MjSpec.from_file(str(model_path))
     except ValueError as e:
@@ -94,7 +94,7 @@ def compile_world(
         exclude = spec.add_exclude()
         exclude.bodyname1, exclude.bodyname2 = first, second
     if collidable_only:
-        _drop_uncollidable(spec)
+        spec.compiler.discardvisual = True
     try:
         model = spec.compile()
     except ValueError as e:
@@ -104,50 +104,3 @@ def compile_world(
         code = "scene_conflict" if "repeated name" in message else "invalid_scene"
         raise ValidationError(code, message, path="scene") from None
     return model, kinds
-
-
-def _drop_uncollidable(spec: Any) -> None:
-    """Delete from ``spec`` what no contact can involve: every geom whose ``contype`` and
-    ``conaffinity`` are both 0 and that no explicit ``<pair>`` names, then every mesh,
-    material and texture nothing left uses. Bodies, joints, sites and cameras stay, so
-    every frame and every contact is the same; a body's mass may change.
-
-    MuJoCo refuses a moving body whose weld group (it and its jointless descendants)
-    has no mass, so a group without explicit inertia and without a collidable geom
-    keeps its geoms."""
-    paired = {name for p in spec.pairs for name in (p.geomname1, p.geomname2) if name}
-    explicit = spec.compiler.inertiafromgeom != mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_TRUE
-
-    def uncollidable(geom: Any) -> bool:
-        return geom.contype == 0 and geom.conaffinity == 0 and geom.name not in paired
-
-    def welded(body: Any) -> list[Any]:
-        return [body, *(b for c in body.bodies if not c.joints for b in welded(c))]
-
-    def massive(group: list[Any]) -> bool:
-        return any(
-            (explicit and b.explicitinertial) or not all(uncollidable(g) for g in b.geoms)
-            for b in group
-        )
-
-    dropped: list[Any] = []
-
-    def walk(body: Any, keep: bool) -> None:
-        if not keep:
-            dropped.extend(g for g in body.geoms if uncollidable(g))
-        for child in body.bodies:
-            walk(child, not massive(welded(child)) if child.joints else keep)
-
-    walk(spec.worldbody, False)
-    for geom in dropped:
-        spec.delete(geom)
-    meshes = {g.meshname for g in spec.geoms if g.meshname}
-    for mesh in [m for m in spec.meshes if m.name not in meshes]:
-        spec.delete(mesh)
-    owners = [*spec.geoms, *spec.sites, *spec.tendons, *spec.skins, *spec.flexes]
-    materials = {o.material for o in owners if o.material}
-    for material in [m for m in spec.materials if m.name not in materials]:
-        spec.delete(material)
-    textures = {t for m in spec.materials for t in m.textures if t}
-    for texture in [t for t in spec.textures if t.name not in textures]:
-        spec.delete(texture)

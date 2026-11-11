@@ -56,8 +56,11 @@ def planning_model(
     """The runtime's model, rebuilt from the same sources by the same composition, with
     ``excludes`` added (the collision allowances that sscbirrt's native policy would not
     otherwise honour) and without the geometry no contact can involve: visual meshes,
-    their materials and textures. Every frame and every contact are the runtime's; the
-    model is a fraction of the size, which every native scene exports and hashes."""
+    their materials and textures (MuJoCo's ``discardvisual``). Every contact, and every
+    frame of an object in the world, is the runtime's. A removed object parks by this
+    model's own extent, which, unless the model states its statistics, is the extent of
+    what can collide. The model is a fraction of the size, which every native scene
+    exports and hashes."""
     return compile_world(model_path, scene, excludes=excludes, collidable_only=True)[0]
 
 

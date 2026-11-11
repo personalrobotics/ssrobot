@@ -340,7 +340,15 @@ SHELF = """<mujoco>
       <freejoint/>
       <geom type="sphere" size="0.01" contype="0" conaffinity="0"/>
     </body>
+    <body name="pulley" pos="-0.4 0 0.3">
+      <geom name="wheel" type="cylinder" size="0.02 0.01" contype="0" conaffinity="0"/>
+      <site name="in" pos="-0.05 0 0.05"/>
+      <site name="out" pos="0.05 0 0.05"/>
+    </body>
   </worldbody>
+  <tendon>
+    <spatial name="cord"><site site="in"/><geom geom="wheel"/><site site="out"/></spatial>
+  </tendon>
 </mujoco>
 """
 
@@ -352,7 +360,7 @@ def test_a_planning_scene_leaves_out_only_what_cannot_collide(
     colliding conformance arms, each link painted with a visual mesh, swept under a
     shelf with visual trim that the left arm reaches when it pitches up, report the
     contacts of the full model at every configuration. A free tag with only a visual
-    geom keeps it: MuJoCo needs its mass."""
+    geom keeps its mass, and a visual pulley a tendon wraps stays."""
     root, _ = colliding_bimanual(tmp_path / "painted")
     model = root / "bimanual.xml"
     text = model.read_text().replace("</default>\n", "</default>\n  " + PAINT, 1)
@@ -417,11 +425,17 @@ def test_a_planning_scene_leaves_out_only_what_cannot_collide(
     assert report["same_pairs"] == len(qs) and report["max_distance_difference"] < 1e-9
     # The sweep finds contacts and misses.
     assert 0.1 * len(qs) < report["in_contact"] < 0.9 * len(qs)
+
+    def named(model: Any, kind: Any, i: int) -> str:
+        return str(mujoco.mj_id2name(model, kind, i))
+
     uncollidable = [
-        mujoco.mj_id2name(lean_model, mujoco.mjtObj.mjOBJ_BODY, lean_model.geom_bodyid[g])
+        named(lean_model, mujoco.mjtObj.mjOBJ_GEOM, g)
         for g in range(lean_model.ngeom)
         if lean_model.geom_contype[g] == 0 and lean_model.geom_conaffinity[g] == 0
     ]
-    assert uncollidable == ["tag"]  # the only visual geom left carries a moving body's mass
+    assert uncollidable == ["wheel"]  # the only visual geom left is the one a tendon wraps
     assert lean_model.nmesh == 0 and lean_model.ntex == 0 and lean_model.nmat == 0
+    tag = mujoco.mj_name2id(lean_model, mujoco.mjtObj.mjOBJ_BODY, "tag")
+    assert lean_model.body_mass[tag] == reference.body_mass[tag] > 0
     assert report["bytes"][1] < report["bytes"][0]
