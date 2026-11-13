@@ -1147,7 +1147,7 @@ dev = [
 
 [[package]]
 name = "sstsr"
-version = "4.0.0"
+version = "4.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -1156,9 +1156,9 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/5a/e589a8b06810eafa956a7b1438e96d7a4fd99f07b6c6178747ac88111ec4/sstsr-4.0.0.tar.gz", hash = "sha256:6808a16ad72a16585ad1f19abaa721477bece507a5ffd9891ade4e282d9e1bf6", size = 1846141, upload-time = "2026-10-26T04:37:50.934Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/45/c7/945bc03165d80656917e945819e72e71e4b00216e1847ef0eb30e9041b5f/sstsr-4.5.0.tar.gz", hash = "sha256:252df03e6f827afc3081dc72888b1a44aea0b5051b431270024d424bc422c140", size = 1913779, upload-time = "2026-11-12T19:52:16.294Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1c/8b/05206864796743960aa3391c3ad988fc8f2f2194c097628eb4ecca760567/sstsr-4.0.0-py3-none-any.whl", hash = "sha256:ff2b51ac9a262dcee46adf795dd391864a2f1d4be795094e41c8baa87b0899d9", size = 135600, upload-time = "2026-10-26T04:37:49.258Z" },
+    { url = "https://files.pythonhosted.org/packages/b0/8b/fcb2de4e437af71c46ae103cca701ccb2ebd8535ddba3b39ff3d2720297c/sstsr-4.5.0-py3-none-any.whl", hash = "sha256:e81fa581b8de12ce49d25c56923498ea8f9a509ec6481f79e739f97567678ce4", size = 154825, upload-time = "2026-11-12T19:52:14.521Z" },
 ]
 
 [[package]]
