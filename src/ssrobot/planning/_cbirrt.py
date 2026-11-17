@@ -346,12 +346,24 @@ class CBiRRT:
             elif not reason.startswith(("Timeout", "Max iterations")):
                 status = PlanStatus.BACKEND_FAILURE
             return self._failure(request, status, code, reason, backend)
+        source = native_result.trajectory
+        if len(native_result.path) < 2 or not any(
+            ramp.pieces for piece in source.pieces for ramp in piece.ramps
+        ):
+            # sscbirrt reached the goal without moving: a single waypoint, or a timed
+            # trajectory with no span. A success needs motion, so this is refused.
+            return self._failure(
+                request,
+                PlanStatus.INVALID_INPUT,
+                "goal_at_start",
+                "the start already satisfies the goal; there is nothing to plan",
+                backend,
+            )
         path = GeometricPath(
             group=request.group,
             joints=request.joints,
             waypoints=tuple(tuple(float(v) for v in q) for q in native_result.path),
         )
-        source = native_result.trajectory
         if (
             source.path is None
             or len(source.path) != len(native_result.path)
