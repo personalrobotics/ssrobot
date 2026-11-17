@@ -13,6 +13,7 @@ import enum
 import importlib.machinery
 import os
 import re
+import sys
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -354,15 +355,49 @@ def load_installed_package(module: str) -> RobotPackage:
     parts = module.split(".")
     for i in range(1, len(parts) + 1):
         name = ".".join(parts[:i])
-        spec = importlib.machinery.PathFinder.find_spec(name, search)
-        locations = None if spec is None else spec.submodule_search_locations
+        locations = _locations(name, search)
         if not locations:
             raise ValidationError(
                 "package_not_found", f"no installed Python package {name!r}", path=module
             )
-        search = list(locations)
+        search = locations
     assert search is not None
     root = Path(search[0])
     if not (root / MANIFEST).is_file():
         raise ValidationError("package_not_found", f"{module!r} has no {MANIFEST}", path=module)
     return load_package(root)
+
+
+def _locations(name: str, search: list[str] | None) -> list[str]:
+    """The directories of the package ``name`` in ``search`` (``sys.path`` when None),
+    found without importing it or its parents; empty when there is no such package."""
+    if search is None:
+        spec = importlib.machinery.PathFinder.find_spec(name)
+        return [] if spec is None else list(spec.submodule_search_locations or [])
+    # PathFinder wraps a namespace portion in a path that looks its parent up in
+    # sys.modules, which fails for a parent never imported (#235). Ask each entry's
+    # finder, as PathFinder does, and gather the namespace portions it would.
+    portions: list[str] = []
+    for entry in search:
+        spec = _entry_spec(entry, name)
+        if spec is None:
+            continue
+        if spec.loader is not None:  # a regular package or a module
+            return list(spec.submodule_search_locations or [])
+        portions.extend(spec.submodule_search_locations or [])
+    return portions
+
+
+def _entry_spec(entry: str, name: str) -> importlib.machinery.ModuleSpec | None:
+    """``name``'s spec from the finder for the path entry ``entry``: the cached one, or
+    the first ``sys.path_hooks`` hook's that accepts the entry."""
+    if entry in sys.path_importer_cache:
+        finder = sys.path_importer_cache[entry]
+        return None if finder is None else finder.find_spec(name)
+    for hook in sys.path_hooks:
+        try:
+            found = hook(entry)
+        except ImportError:
+            continue
+        return found.find_spec(name)
+    return None
