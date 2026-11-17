@@ -15,9 +15,11 @@ package.report()               # a PackageReport: resolved files and their hashe
 ```
 
 `load_installed_package(name)` takes a dotted name of regular or namespace packages on
-`sys.path`, such as `my_robot_assets` or `lab.robots.geodude`. It locates each part
-with `importlib.machinery.PathFinder` and imports nothing, so neither the package nor
-any parent `__init__.py` runs. It then loads the `ssrobot.toml` in that directory.
+`sys.path`, such as `my_robot_assets` or `lab.robots.geodude`, in any mix: a namespace
+package may sit under a regular one. It locates the first part with
+`importlib.machinery.PathFinder`, and each later part with the path-entry finder of each
+of its parent's directories, as `PathFinder` does. It imports nothing, so neither the
+package nor any parent `__init__.py` runs. It then loads the `ssrobot.toml` in that directory.
 
 - A malformed name fails with `invalid_name`.
 - A missing package, a module that is not a package, or a package without a

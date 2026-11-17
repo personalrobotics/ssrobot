@@ -536,10 +536,14 @@ def test_installed_discovery_runs_no_package_code(
     _package_module(site, "outer.robot", initializer=True)
     _package_module(site, "spaced.robot", initializer=False)  # namespace parent
     (site / "spaced" / "robot" / "__init__.py").write_text("raise RuntimeError('no')\n")
+    _package_module(site, "outer.loose", initializer=False)  # namespace under a regular (#235)
+    _package_module(site, "spaced.loose", initializer=False)  # namespace under a namespace
     monkeypatch.syspath_prepend(str(site))
     expected = {
         "outer.robot": None,
         "spaced.robot": None,
+        "outer.loose": None,
+        "spaced.loose": None,
         "outer": "package_not_found",
         "outer.missing": "package_not_found",
         "outer..robot": "invalid_name",
@@ -557,7 +561,16 @@ def test_installed_discovery_runs_no_package_code(
             outcome = {"code": e.code}
         outcome["initializers_ran"] = sorted(p.name for p in site.glob("*.ran"))
         outcome["imported"] = sorted(
-            m for m in ("outer", "outer.robot", "spaced.robot") if m in sys.modules
+            m
+            for m in (
+                "outer",
+                "outer.robot",
+                "outer.loose",
+                "spaced",
+                "spaced.robot",
+                "spaced.loose",
+            )
+            if m in sys.modules
         )
         report[name] = outcome
     (artifacts / "discovery-report.json").write_text(json.dumps(report, indent=2) + "\n")
