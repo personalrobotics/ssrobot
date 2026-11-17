@@ -34,7 +34,9 @@ The evidence is ``continuation.json``: the prediction and its lineage, the accep
 report (predicted and actual start, the rest watch's result, sscbirrt's account of its rebase,
 the rebased plan and compiled command), and every refusal's report; a second run gives
 the same bytes, which the test checks. ``timeline.json`` holds the wall-clock overlap: how
-many of the source motion's ticks the context stepped while the worker planned.
+many of the source motion's ticks the context stepped while the worker planned. The
+worker's planner waits for the context's first step, so that count is at least one on
+every run; the rest of it depends on scheduling (#229).
 ``reconciliation.json`` holds what a continuation refuses to take on trust (#185); see
 ``test_continuations_check_what_they_reconcile``. Reproduce with
 ``uv run pytest tests/test_continuation.py``.
@@ -45,6 +47,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -126,6 +129,21 @@ class _NoRebase:
         self, request: PlanningRequest, scene: PlanningScene, *, abort: Any = None
     ) -> PlanResult:
         return self._inner.plan(request, scene, abort=abort)
+
+
+class _Held(CBiRRT):
+    """sscbirrt, whose ``plan`` starts once ``released`` is set: a worker planning with
+    it cannot finish before the context has stepped (#229)."""
+
+    def __init__(self, description: Any, released: threading.Event) -> None:
+        super().__init__(description)
+        self._released = released
+
+    def plan(
+        self, request: PlanningRequest, scene: PlanningScene, *, abort: Any = None
+    ) -> PlanResult:
+        self._released.wait()
+        return super().plan(request, scene, abort=abort)
 
 
 def _request(ctx: RobotContext, goal: tuple[float, float], snapshot: Any) -> PlanningRequest:
@@ -275,16 +293,22 @@ def _accepted(ctx: RobotContext, planner: CBiRRT) -> dict[str, Any]:
     source, prediction = _start_source(ctx, planner)
     started = (time.monotonic(), ctx.now.time_ns)
     request = _request(ctx, B, prediction)
-    ahead = CBiRRT(ctx.description)  # the worker's own planner
+    stepped = threading.Event()
+    ahead = _Held(ctx.description, stepped)  # the worker's own planner
     future = ctx.plan_async(request, snapshot=prediction, planner=ahead)
     # The context keeps stepping the source motion while the worker plans; count the
-    # steps taken before the plan was ready.
+    # steps taken before the plan was ready. The worker starts planning only once the
+    # context has stepped, so at least that first step overlaps it.
     ticks = stepped_while_planning = 0
-    while not source.done:
-        ctx.step()
-        ticks += 1
-        if not future.done():
-            stepped_while_planning += 1
+    try:
+        while not source.done:
+            ctx.step()
+            ticks += 1
+            if not future.done():
+                stepped_while_planning += 1
+            stepped.set()
+    finally:
+        stepped.set()
     plan = future.result()
     planned_by = time.monotonic()
     source_ended = (time.monotonic(), ctx.now.time_ns)
