@@ -386,6 +386,10 @@ def _code(action: Callable[[], object]) -> str:
     return "accepted"
 
 
+def _outcome(result: PlanResult) -> str:
+    return f"{result.status.value}:{result.diagnostics[0].code}"
+
+
 def test_adapter_refusals(artifacts: Path) -> None:
     """What the adapter cannot do is refused before planning; what it cannot reach is a
     failed result; and a command that would collide never becomes execution-ready."""
@@ -427,6 +431,8 @@ def test_adapter_refusals(artifacts: Path) -> None:
             ),
             "goal_in_collision": plan(configuration(FLOOR)).status.value,
             "cancelled": plan(configuration(ASIDE), abort=lambda: True).status.value,
+            "goal_at_start": _outcome(plan(configuration(q0))),
+            "goal_within_1e-11_of_start": _outcome(plan(configuration([v + 1e-11 for v in q0]))),
             "success_claiming_a_colliding_path": _code(
                 lambda: PlanResult(
                     request=through,
@@ -450,6 +456,8 @@ def test_adapter_refusals(artifacts: Path) -> None:
         "effort_limits": "unsupported_constraint",
         "goal_in_collision": "infeasible",
         "cancelled": "cancelled",
+        "goal_at_start": "invalid_input:goal_at_start",
+        "goal_within_1e-11_of_start": "invalid_input:goal_at_start",
         "success_claiming_a_colliding_path": "invalid_motion",
     }
 
