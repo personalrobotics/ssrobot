@@ -116,9 +116,11 @@ effort = 150.0
 
 ### Gripper positions
 
-A `GripperCommand` is not validated against the scene the way a trajectory is. To check
-one, a caller evaluates the planning scene with the gripper's joints where the command
-leaves them. A package declares those positions per gripper:
+`ctx.grip` checks a `GripperCommand` against the scene before it submits it, as
+`ctx.execute` checks a plan: it evaluates the planning scene with the gripper's joints
+where the command leaves them (see *Gripper commands* in [contracts.md](contracts.md)).
+`ctx.submit` passes one on unchecked. A package declares those positions per gripper,
+and a gripper without them cannot be checked, so `ctx.grip` refuses it:
 
 ```toml
 [[semantics.grippers]]
