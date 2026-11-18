@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="620" viewBox="0 0 400 620" role="img" aria-labelledby="title desc">
+  <title id="title">Planning a continuation while the current motion executes</title>
+  <desc id="desc">On the live context, motion A executes and reaches an observed arrival state. In parallel, a worker plans motion B from A's projected result. At arrival, the context checks the prediction and either validates a rebased continuation or replans from the measured state.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3.5 L0,7 Z" fill="#334155"/></marker>
+    <style>
+      .label { font: 600 15px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #17212b; }
+      .body { font: 400 13px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #475569; }
+      .small { font: 500 12.5px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #5c6773; }
+      .lane { font: 600 11.5px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; letter-spacing: 1px; fill: #64748b; }
+    </style>
+  </defs>
+  <rect width="400" height="620" rx="18" fill="#fafaf7"/>
+
+  <text x="103" y="30" text-anchor="middle" class="lane">LIVE CONTEXT</text>
+  <text x="297" y="30" text-anchor="middle" class="lane">PLANNING WORKER</text>
+  <line x1="103" y1="40" x2="103" y2="452" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="297" y1="40" x2="297" y2="452" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="16" y="52" width="174" height="66" rx="12" fill="#e3f3f0" stroke="#0f766e" stroke-width="2"/>
+  <text x="103" y="78" text-anchor="middle" class="label">Execute motion A</text>
+  <text x="103" y="99" text-anchor="middle" class="small">the runtime advances</text>
+  <text x="103" y="113" text-anchor="middle" class="small">the live robot</text>
+
+  <path d="M190 100 C226 100 236 112 236 128" fill="none" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <rect x="210" y="130" width="174" height="62" rx="12" fill="#edf1f5" stroke="#64748b"/>
+  <text x="297" y="156" text-anchor="middle" class="label">Project A's result</text>
+  <text x="297" y="178" text-anchor="middle" class="small">not a captured snapshot</text>
+
+  <rect x="210" y="216" width="174" height="62" rx="12" fill="#e8f0f6" stroke="#2f5d7e" stroke-width="2"/>
+  <text x="297" y="242" text-anchor="middle" class="label">Plan motion B</text>
+  <text x="297" y="264" text-anchor="middle" class="small">while A is still moving</text>
+
+  <circle cx="103" cy="272" r="7" fill="#0f766e"/>
+  <rect x="20" y="246" width="66" height="18" fill="#fafaf7"/>
+  <text x="54" y="260" text-anchor="middle" class="small">measured</text>
+  <rect x="20" y="266" width="66" height="18" fill="#fafaf7"/>
+  <text x="54" y="280" text-anchor="middle" class="small">arrival</text>
+
+  <rect x="16" y="300" width="174" height="62" rx="12" fill="#fff8ed" stroke="#b45309" stroke-width="2"/>
+  <text x="103" y="326" text-anchor="middle" class="label">Check arrival</text>
+  <text x="103" y="348" text-anchor="middle" class="small">scene · rest · tolerance</text>
+
+  <path d="M276 278 C276 352 186 360 110 380" fill="none" stroke="#334155" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <rect x="226" y="330" width="146" height="18" fill="#fafaf7"/>
+  <text x="300" y="344" text-anchor="middle" class="small">bind to A's execution</text>
+
+  <rect x="16" y="388" width="174" height="62" rx="12" fill="#e3f3f0" stroke="#0f766e" stroke-width="2"/>
+  <text x="103" y="414" text-anchor="middle" class="label">Execute motion B</text>
+  <text x="103" y="436" text-anchor="middle" class="small">only after validation</text>
+
+  <rect x="16" y="478" width="368" height="126" rx="14" fill="#f6f8fa" stroke="#cbd5df"/>
+  <circle cx="38" cy="503" r="7" fill="#0f766e"/>
+  <text x="54" y="508" class="label">Arrival agrees</text>
+  <text x="54" y="528" class="small">rebase from the measured state, validate</text>
+  <text x="54" y="545" class="small">the whole motion, then continue</text>
+  <circle cx="38" cy="568" r="7" fill="#a13a3a"/>
+  <text x="54" y="573" class="label">Arrival disagrees</text>
+  <text x="54" y="592" class="small">refuse with evidence and replan from the measured state</text>
+</svg>

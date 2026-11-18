@@ -5,7 +5,10 @@ the robot and world that were open, the state on which a decision was based, the
 command that was accepted, the progress of its execution, and the observations that
 followed. References between these records preserve their causal order.
 
-![Robot and world identities lead through a snapshot, request, plan, validation, command, execution, and observations. A trace links those records, while a run bundle adds the exact files needed to inspect them elsewhere.](figures/trace-causality.svg)
+<picture>
+  <source media="(max-width: 600px)" srcset="figures/trace-causality-narrow.svg">
+  <img alt="Robot and world identities lead through a snapshot, request, plan, validation, command, execution, and observations. A trace links those records, while a run bundle adds the exact files needed to inspect them elsewhere." src="figures/trace-causality.svg">
+</picture>
 
 *A trace connects a decision to the state and contract under which it was made. A run
 bundle makes the referenced files portable and verifiable.*

@@ -20,7 +20,6 @@ Each figure has one canonical owner:
 | --- | --- | --- |
 | `context-runtime.svg` | `README.md` | What is the difference between a description, runtime, and context? |
 | `snapshot-planning.svg` | `README.md` | How can planning be parallel while execution remains singular? |
-| `context-runtime-narrow.svg`, `snapshot-planning-narrow.svg` | `README.md` | The same questions, laid out for narrow screens |
 | `robot-package.svg` | `docs/authoring.md` | Why does a robot package contain more than MJCF or URDF? |
 | `interleaved-planning.svg` | `docs/planning.md` | How can the next motion be planned while the current one executes? |
 | `trace-causality.svg` | `docs/traces.md` | What causal evidence does a trace preserve? |
@@ -52,8 +51,7 @@ its nominal size. The owning document selects it with a `picture` element:
 ```
 
 A host that ignores `picture` shows the wide figure. Change a figure and its variant
-together. `robot-package.svg`, `interleaved-planning.svg`, and `trace-causality.svg`
-do not have variants yet.
+together. Every SVG figure above has one, and a variant's owner is its figure's owner.
 
 ## The run panels
 
