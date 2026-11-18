@@ -1,16 +1,19 @@
 """Fail if the core package imports or requires a prohibited backend dependency.
 
 Core is the package without its integration subpackages (``INTEGRATIONS``), each of
-which may use only the backends of its own extra. The checks:
+which may use only the backends of its own extra, and without its composers
+(``COMPOSERS``), each of which may import only the integrations it names and uses their
+backends only through them. The checks:
 
 - Runtime: import the package and every core submodule, and report any prohibited
   top-level module the import pulled in. With --integration NAME, also import that
-  integration and report any prohibited module other than its own backends.
+  integration or composer and report any prohibited module other than its backends.
 - Source: parse every module and report ``import`` and ``from ... import`` statements
   naming a prohibited module anywhere, including inside functions, plus
   ``importlib.import_module("...")`` and ``__import__("...")`` with a literal name.
   An integration may import only its own backends. Core may not import an
-  integration, and an integration may not import another one.
+  integration, and an integration may not import another one; a composer may import
+  the integrations it names and no backend.
   Other dynamic imports, such as names built at run time, are not detected.
 - Metadata: report prohibited unconditional requirements of the installed
   distribution.
@@ -57,6 +60,12 @@ INTEGRATIONS = {
     "planning": frozenset({"sscbirrt", "ssik", "tsr"}),
 }
 
+# Subpackages that compose integrations, by name under the package, and the integrations
+# each may import. A composer uses their backends only through them, never directly.
+COMPOSERS = {
+    "demo": frozenset({"mujoco", "planning"}),
+}
+
 PROHIBITED = frozenset(
     {
         # Simulators and viewers belong in integrations or applications.
@@ -83,10 +92,18 @@ PROHIBITED = frozenset(
 )
 
 
+def _backends(name: str) -> frozenset[str]:
+    """The prohibited backends integration or composer ``name`` may load."""
+    if name in COMPOSERS:
+        return frozenset().union(*(INTEGRATIONS[i] for i in COMPOSERS[name]))
+    return INTEGRATIONS[name]
+
+
 def _walk(module: Any, skip: frozenset[str]) -> Iterator[str]:
-    """Import every submodule of ``module`` except those named in ``skip``."""
+    """Import every submodule of ``module`` except those named in ``skip`` and the
+    ``__main__`` modules, which run a program rather than define one."""
     for info in pkgutil.iter_modules(module.__path__, prefix=f"{module.__name__}."):
-        if info.name in skip:
+        if info.name in skip or info.name.endswith(".__main__"):
             continue
         loaded = importlib.import_module(info.name)
         yield info.name
@@ -99,7 +116,7 @@ def imported_modules(package: str) -> tuple[str, list[str], set[str]]:
     importing them loaded."""
     before = set(sys.modules)
     root = importlib.import_module(package)
-    skip = frozenset(f"{package}.{name}" for name in INTEGRATIONS)
+    skip = frozenset(f"{package}.{name}" for name in (*INTEGRATIONS, *COMPOSERS))
     submodules = sorted(_walk(root, skip))
     loaded = {name.split(".")[0] for name in set(sys.modules) - before}
     return str(root.__file__), submodules, loaded
@@ -142,8 +159,10 @@ def source_backends(package: str) -> list[str]:
         for path in sorted(base.rglob("*.py")):
             parts = path.relative_to(base).with_suffix("").parts
             module = ".".join((package, *parts)).removesuffix(".__init__")
-            owner = parts[0] if len(parts) > 1 and parts[0] in INTEGRATIONS else None
+            owned = len(parts) > 1 and parts[0] in (*INTEGRATIONS, *COMPOSERS)
+            owner = parts[0] if owned else None
             allowed = INTEGRATIONS.get(owner, frozenset()) if owner else frozenset()
+            composes = COMPOSERS.get(owner, frozenset()) if owner else frozenset()
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for line, name in _imported_names(tree):
                 inner = name.split(".")
@@ -154,6 +173,7 @@ def source_backends(package: str) -> list[str]:
                     and len(inner) > 1
                     and inner[1] in INTEGRATIONS
                     and inner[1] != owner
+                    and inner[1] not in composes
                 ):
                     found.append(f"{module}:{line} imports integration {name}")
     return found
@@ -249,7 +269,9 @@ def main() -> int:
     parser.add_argument("--installed", action="store_true", help="require site-packages")
     parser.add_argument("--report", type=Path, help="write the import report here as JSON")
     parser.add_argument(
-        "--integration", choices=sorted(INTEGRATIONS), help="also check this integration"
+        "--integration",
+        choices=sorted((*INTEGRATIONS, *COMPOSERS)),
+        help="also check this integration or composer",
     )
     args = parser.parse_args()
     location, submodules, loaded = imported_modules(args.package)
@@ -258,7 +280,7 @@ def main() -> int:
         extra_modules, extra_loaded = imported_integration(args.package, args.integration)
         submodules = sorted({*submodules, *extra_modules})
         loaded |= extra_loaded
-        foreign = extra_loaded & (PROHIBITED - INTEGRATIONS[args.integration])
+        foreign = extra_loaded & (PROHIBITED - _backends(args.integration))
         failures += [f"{args.integration} imports prohibited module {m!r}" for m in sorted(foreign)]
     requirements = required_backends(args.package)
     print(f"{args.package} imported from {location}")

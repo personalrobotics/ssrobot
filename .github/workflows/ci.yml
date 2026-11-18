@@ -67,6 +67,29 @@ jobs:
           uv pip install --python clean-planning "$(echo dist/*.whl)[mujoco,planning]"
       - name: Dependency gate on the installed wheel with the planning extra
         run: clean-planning/bin/python scripts/check_core_imports.py --installed --integration planning --report artifacts/installed-conformance/imports-planning.json
+      - name: Dependency gate on the installed wheel's demo, which composes both extras
+        run: clean-planning/bin/python scripts/check_core_imports.py --installed --integration demo --report artifacts/installed-conformance/imports-demo.json
+      - name: The demo runs from the installed wheel alone, the same twice, and reads back after a move
+        working-directory: ${{ runner.temp }}
+        run: |
+          python="$GITHUB_WORKSPACE/clean-planning/bin/python"
+          "$python" -P -m ssrobot.demo --out demo-a --seed 0 | tee demo-a.txt
+          "$python" -P -m ssrobot.demo --out demo-b --seed 0 > /dev/null
+          diff demo-a/report.json demo-b/report.json
+          mv demo-a demo-moved
+          "$python" -P -c "import ssrobot; b = ssrobot.open_bundle('demo-moved/bundle'); t = ssrobot.read_trace('demo-moved/trace.jsonl'); assert len(b.records) == len(t) > 0; print(len(t), 'records read back')"
+          # The printed verification command runs as printed, whatever the output path.
+          "$python" -P -m ssrobot.demo --out "odd dir/it's \"x\" \$HOME" > odd.txt
+          bash -c "$(sed -n 's/^verify and read it: //p' odd.txt)"
+          mkdir -p "$GITHUB_WORKSPACE/artifacts/installed-conformance/demo"
+          cp -R demo-moved/. demo-a.txt "$GITHUB_WORKSPACE/artifacts/installed-conformance/demo/"
+      - name: Without the extras, the demo refuses and names them
+        working-directory: ${{ runner.temp }}
+        run: |
+          status=0
+          "$GITHUB_WORKSPACE/clean/bin/python" -P -m ssrobot.demo --out demo-core 2> demo-core.txt || status=$?
+          cat demo-core.txt
+          test "$status" = 2 && grep -q 'ssrobot\[mujoco,planning\]' demo-core.txt && test ! -e demo-core
       - name: The README's planning example runs from the installed wheel, and its trace is kept
         working-directory: ${{ github.workspace }}
         run: |
