@@ -10,6 +10,12 @@ the mechanism that runs it, gives computations an immutable state on which to ba
 their decisions, and checks those decisions when they return to execution. The same
 boundary records enough evidence to explain what happened later.
 
+![Three views of the example arm from one camera. Left: the planned motion as ghosted poses, from the arm raised to its hand over the pedestal. Middle: the simulated arm halfway through executing that plan. Right: the same moment rebuilt from the run's recorded snapshot, identical to the middle view.](docs/figures/run-panels.png)
+
+*One run of the example below, from one camera. Left, the plan, drawn in the state it
+was planned from. Middle, the live simulation halfway through executing it. Right, the
+same moment reconstructed from the run bundle alone.*
+
 The scope is intentionally narrow. ssrobot is not a planner, simulator, policy
 framework, skill library, viewer, or robot application. It defines the robot semantics
 and execution contracts that those systems share.
