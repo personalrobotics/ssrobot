@@ -893,15 +893,26 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
             ctx.step()
 
     def touching(ctx: Any, runtime: Any) -> list[str]:
-        """Ground truth from the simulation, never read by the guard: what the robot
-        touches of what the scene composed in, sorted."""
+        """Ground truth from the simulation, never read by the guard: what the moving arm
+        touches of what the scene composed in, sorted. Only the arm's bodies count: an
+        object resting on a part of the robot that the arm does not move, such as
+        Geodude's worktable, is touching the robot, not the arm (#238)."""
         model, data = runtime._model, runtime._data
         scene = {model.body(name).id for name in (*ctx.info.objects, *ctx.info.fixtures)}
         roots = model.body_rootid
+        arm = {model.jnt_bodyid[model.joint(j).id] for j in joints}
+        moving = set()
+        for body in range(model.nbody):
+            ancestor = body
+            while ancestor and ancestor not in arm:
+                ancestor = model.body_parentid[ancestor]
+            if ancestor:
+                moving.add(body)
         touched = set()
         for contact in data.contact[: data.ncon]:
-            first, second = (roots[model.geom_bodyid[g]] for g in (contact.geom1, contact.geom2))
-            if (first in scene) != (second in scene):
+            bodies = [model.geom_bodyid[g] for g in (contact.geom1, contact.geom2)]
+            first, second = (roots[b] for b in bodies)
+            if (first in scene) != (second in scene) and any(b in moving for b in bodies):
                 touched.add(model.body(first if first in scene else second).name)
         return sorted(touched)
 
@@ -1020,6 +1031,11 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
         setpoint = approach.trajectory.goal
         hold(ctx, setpoint)
         start = arm_q(ctx)
+        # A proof that starts in contact cannot show that the guard detects it (#238).
+        record["start_touching"] = touching(ctx, runtime)
+        if record["start_touching"]:
+            record["descent"] = f"starts in contact with {record['start_touching']}"
+            return finish(record)
         # The straight descent, by IK on the settled scene, one waypoint per tick.
         settled = ctx.snapshot()
         scene = ctx.planning_scene(settled, manipulator.group)
@@ -1074,7 +1090,24 @@ def guarded(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
         command = GuardedJointTrajectory(trajectory=descent, guard=guard)
         (out / "guarded.command.json").write_text(dumps(command) + "\n")
         record["descent"] = {"waypoints": len(rows), "distance_m": g["distance"]}
-        record["contact"] = run(ctx, runtime, command)
+        contact = record["contact"] = run(ctx, runtime, command)
+        if contact["first_contact_tick"] is not None and contact["cause"] == "guard_triggered":
+            # Evidence, not a bound: MuJoCo's sensors have no delay, so the latency is
+            # the time the contact takes to push the guard's measure over its threshold
+            # at the descent's speed there (#238).
+            ticks = contact["ended_tick"] - contact["first_contact_tick"]
+            t = contact["first_contact_tick"] / steps
+            record["latency"] = {
+                "first_contact_to_trip_ticks": ticks,
+                "first_contact_to_trip_ns": ticks * period,
+                "speed_at_first_contact_m_s": float(g["distance"])
+                * math.pi
+                / (2.0 * steps * period * 1e-9)
+                * math.sin(math.pi * t),
+                "measure_at_trip": contact["measure"],
+                "basis": "the contact's force building to the guard's threshold; "
+                "the simulated sensor and controller add no delay",
+            }
     record["no_surface"] = unobstructed(command)
     return finish(record)
 
@@ -1696,7 +1729,9 @@ def check(
         calibration = guarded.get("calibration", {"state": "succeeded"})
         add(
             "guarded_contact",
-            contact.get("cause") == "guard_triggered"
+            guarded.get("start_touching") == []
+            and "latency" in guarded
+            and contact.get("cause") == "guard_triggered"
             and contact.get("ended_tick") == contact.get("first_tick_over_threshold")
             and contact.get("first_contact_tick") is not None
             and contact["ended_tick"] >= contact["first_contact_tick"]
@@ -1708,6 +1743,8 @@ def check(
             + "; no surface: "
             + json.dumps({k: v for k, v in free.items() if k != "profile"})
             + f"; calibration {json.dumps(guarded.get('calibration'))}"
+            + f"; start touching {guarded.get('start_touching')}"
+            + f"; latency {json.dumps(guarded.get('latency'))}"
             + f"; approach {guarded.get('approach')}, descent {guarded.get('descent')}",
         )
         identical = startup_record.get("guarded_identical", {})

@@ -543,11 +543,19 @@ the uv version. The script then runs two public commands, and opens the runtime:
   validated (#143). The same command then runs in a runtime without the scene, held at
   the same setpoint first.
 
-  It passes when contact ends with `guard_triggered` on the first tick the script's
-  own reading of the channel trips the guard, no sooner than the robot first touches
-  the scene, and the free run ends with `trajectory_completed`. The touch is read from
-  the simulation as ground truth only; the guard never reads it. Both runs must give
-  the same `guarded.json` and `guarded.command.json`, byte for byte.
+  It passes when the arm starts touching nothing, contact ends with `guard_triggered`
+  on the first tick the script's own reading of the channel trips the guard, no sooner
+  than the arm first touches the scene, and the free run ends with
+  `trajectory_completed`. A descent that starts in contact is refused before it runs:
+  it cannot show that the guard detects contact (#238). The touch is read from the
+  simulation as ground truth only, and counts only the bodies the arm's joints move,
+  so an object resting on a fixed part of the robot, such as Geodude's worktable, is
+  not a touch. The guard never reads it. `guarded.json` records the latency from first
+  contact to the trip, with the descent's speed at first contact and the guard's
+  measure at the trip. It is evidence, not a bound: the simulated sensor and controller
+  add no delay, so the latency is the time the contact's force takes to build to the
+  threshold. Both runs must give the same `guarded.json` and `guarded.command.json`,
+  byte for byte.
   - **Geodude:** the open hand moves along its approach axis from the side-grasp band
     into the cylinder.
   - **ADA:** the fork tip moves down onto the cylinder's top.
