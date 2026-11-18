@@ -5,9 +5,9 @@ its open fingers. ``ctx.grip`` puts the fingers where the command leaves them, t
 gripper's declared ``closed_positions`` when it closes them and ``open_positions`` when
 it opens them, and refuses a command whose fingers would end touching anything new but
 what it allows, before anything reaches the runtime. Closing on the box is refused
-unless the box is allowed, and so is a partial close; allowed, it runs. Opening off the
-held box makes no new contact and runs. ``ctx.submit`` checks a gripper command the same
-way, allowing nothing, so closing on the box through it is refused too. A copy of the
+unless the box is allowed, and so is a partial close; allowed, it runs. ``ctx.submit``
+checks a gripper command the same way, allowing nothing: closing on the box through it is
+refused too, and opening off the held box through it makes no new contact and runs. A copy of the
 package whose gripper declares no positions is refused, through ``grip`` and ``submit``
 alike, never left unchecked; only ``grip(..., unchecked=True)``, as calibration does,
 submits it unchecked.
@@ -73,7 +73,7 @@ def _cases(root: Path) -> dict[str, Any]:
         case(ctx, "half_close_on_the_box", lambda: ctx.grip(close(0.5)))
         case(ctx, "allow_as_one_string", lambda: ctx.grip(close(), allow="box"))
         case(ctx, "close_allowing_the_box", lambda: ctx.grip(close(), allow=("box",)))
-        case(ctx, "open_off_the_box", lambda: ctx.grip(close(1.0)))
+        case(ctx, "submit_open_off_the_box", lambda: ctx.submit(close(1.0)))
     undeclared = shutil.copytree(PACKAGE, root / "undeclared")
     _undeclared(undeclared)
     package = load_package(undeclared)
@@ -102,7 +102,7 @@ def test_a_gripper_command_is_checked_where_it_is_submitted(
         assert all(f"{a}/{b}" in case["message"] for a, b in closing), case
     assert report["allow_as_one_string"]["code"] == "wrong_type"
     assert report["allow_as_one_string"]["reached_runtime"] == 0
-    for name in ("close_allowing_the_box", "open_off_the_box"):
+    for name in ("close_allowing_the_box", "submit_open_off_the_box"):
         assert report[name] == {"state": "succeeded", "reached_runtime": 1}, report[name]
     for name in ("undeclared_positions", "submit_undeclared_positions"):
         assert report[name]["code"] == "undeclared_positions", report[name]
