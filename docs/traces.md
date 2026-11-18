@@ -116,7 +116,7 @@ For example, a planner-generated dataset may use privileged object poses to cons
 training labels while retaining only camera and joint channels as policy inputs.
 
 ssrobot records this distinction; dataset conversion and policy training belong to
-their integration packages and are planned for M4.
+their integration packages and are planned for M6.
 
 ## What the record can and cannot establish
 

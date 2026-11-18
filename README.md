@@ -37,7 +37,7 @@ with one execution system. It determines how time advances, how observations are
 obtained, how commands are applied and tracked, and how the connection is opened and
 closed. `MujocoRuntime` implements these operations using MuJoCo, while
 `ReplayRuntime` implements them from a declared script. A physical runtime is planned
-for M6.
+for M7.
 
 A `RobotContext` is the application-facing robot session. It combines one
 `RobotDescription`, one runtime, and one world, then owns the session lifecycle,
@@ -111,8 +111,8 @@ forcing planners, policies, and operators into one algorithmic interface.
 ssrobot owns this shared boundary. Task sequencing, grasp strategy, policy
 architecture, and operator interfaces remain in the packages that implement them.
 
-Planning and MuJoCo execution are implemented today. Learned-policy execution is M4,
-physical deployment is M6, and teleoperation is not yet scheduled. The common
+Planning and MuJoCo execution are implemented today. Learned-policy execution is M6,
+physical deployment is M7, and teleoperation is not yet scheduled. The common
 boundary does not imply that every decision source or runtime is already supported.
 
 ## Planning and execution in MuJoCo
@@ -180,8 +180,8 @@ execution choices.
 | Versioned traces, portable run bundles, strict reading, and replay | Implemented | [Traces and replay](docs/traces.md) |
 | Live visualization and bundle replay | Provided by [mj_viser](https://github.com/personalrobotics/mj_viser)'s optional ssrobot integration | mj_viser |
 | Robot-neutral grasp, place, and drop skills | Provided by [ssgrasping](https://github.com/personalrobotics/ssgrasping), demonstrated on Geodude in MuJoCo | ssgrasping |
-| Learned-policy execution | Planned for M4 | [Architecture](docs/architecture.md) |
-| Physical hardware through ROS 2 | Planned for M6 | [Architecture](docs/architecture.md) |
+| Learned-policy execution | Planned for M6 | [Architecture](docs/architecture.md) |
+| Physical hardware through ROS 2 | Planned for M7 | [Architecture](docs/architecture.md) |
 | Teleoperation | Not scheduled | [Architecture](docs/architecture.md) |
 
 MuJoCo is currently the only simulated runtime and sscbirrt the only planner adapter.
