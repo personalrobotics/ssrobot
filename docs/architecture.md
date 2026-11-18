@@ -7,7 +7,7 @@ planning, learning, control, visualization, and task algorithms themselves remai
 outside ssrobot.
 
 This document is normative for scope, ownership, and the architecture decisions listed
-below. It describes both what exists and what v0.1 targets, and marks each with its
+below. It describes both what exists and what is planned, and marks each with its
 status. Implemented behavior, with exact types and schemas, is specified only in
 [contracts.md](contracts.md), [packages.md](packages.md), [authoring.md](authoring.md),
 [mujoco.md](mujoco.md), [planning.md](planning.md), and [traces.md](traces.md).
@@ -19,7 +19,7 @@ status. Implemented behavior, with exact types and schemas, is specified only in
 | `RobotDescription` | Immutable, validated semantic model of a robot: joints, links, frames, groups, manipulators, bases, end effectors, sensors, declared capabilities. Safe to share across contexts. | Implemented, including the `MobileBase` and `BaseTwistCommand` contracts. Their first validation, on Opendubs, a mobile manipulator with a mecanum base, is tracked by #85 |
 | Robot package | A model plus its `ssrobot.toml` manifest, loaded from a directory or an installed Python package into a `RobotDescription`. | Implemented |
 | `RobotContext` | The public session. It binds exactly one description, runtime, and world, and is the only path through which users observe, submit commands, step, snapshot, and close. | Implemented, with the planning views `ctx.manipulator` and `ctx.base` (#21) |
-| `Runtime` | Injected execution mechanics (replay, MuJoCo, future ROS 2). Owns backend I/O, time, status, and capability reporting, including the trajectory-execution contract it accepts. Contains no planning, policy, or task logic. | Implemented: the protocol, the declared trajectory contract (#128), `ReplayRuntime`, and `MujocoRuntime` with joint, trajectory, gripper, and chunk commands and robot observations: joint state, effort, poses, wrenches, and camera images (#14–#16), scenes with declared attachments (#17), object and contact observations (#101), and snapshots with planning scenes (#18; see [mujoco.md](mujoco.md)). `Ros2Runtime` is M6 |
+| `Runtime` | Injected execution mechanics (replay, MuJoCo, future ROS 2). Owns backend I/O, time, status, and capability reporting, including the trajectory-execution contract it accepts. Contains no planning, policy, or task logic. | Implemented: the protocol, the declared trajectory contract (#128), `ReplayRuntime`, and `MujocoRuntime` with joint, trajectory, gripper, and chunk commands and robot observations: joint state, effort, poses, wrenches, and camera images (#14–#16), scenes with declared attachments (#17), object and contact observations (#101), and snapshots with planning scenes (#18; see [mujoco.md](mujoco.md)). `Ros2Runtime` is M7 |
 | `Execution` | Passive handle returned by `submit`. Owns no thread, loop, or clock. | Implemented |
 | `SceneState` | A context's scene: objects, fixtures, and attachments (object, end effector, transform, allowed contacts), with a revision. Declared state for planners and traces; it never changes physics. | Implemented (#17) |
 | `SceneSnapshot` | Immutable, serializable scene state. | Implemented (#18) |
@@ -28,7 +28,7 @@ status. Implemented behavior, with exact types and schemas, is specified only in
 | `MotionValidator` | The one answer to whether a motion is valid, and how far a configuration is from the goal, for one scene, group, constraint set, goal, and policy. Planning, its final checks, and compilation all ask the same one; integrations construct it. | Implemented (#132); sscbirrt's validator behind it |
 | Plan execution | `ctx.execute(plan, planner=)` compiles a plan with `ssrobot.prepare` for the runtime's declared contract, validates it, and submits it; the trace links the compiled evidence to the submission. `prepare` is core and also runs offline. `ctx.prepare(plan, planner=)` compiles and validates without submitting, so a caller choosing among plans rejects one whose command is not ready; raced candidates are prepared before they can be selected. | Implemented (#133, #207) |
 | Trace | Versioned JSONL record of everything a context did, with content-addressed external assets. | Implemented |
-| `PolicyRunner` | Drives policy inference timing over a context: observe, infer, validate, submit, step. | M4 |
+| `PolicyRunner` | Drives policy inference timing over a context: observe, infer, validate, submit, step. | M6 |
 
 ## Load and understand a robot
 
@@ -82,7 +82,7 @@ the runtime's trajectory contract. See [planning.md](planning.md).
 
 Planners, learned policies, and operators may arrive at commands in different ways.
 They share declared observations, typed commands, ownership, execution states, and
-tracing. Planning is implemented today. Policy execution is M4, hardware is M6, and
+tracing. Planning is implemented today. Policy execution is M6, hardware is M7, and
 teleoperation is not scheduled.
 
 ### Evidence
@@ -105,7 +105,7 @@ to inspect that record elsewhere. See [traces.md](traces.md).
 | Pose constraints (TSRs) | `sstsr` | Carries constraints in planning requests |
 | Motion planning | `sscbirrt`; future planner adapters | Defines neutral requests/results; adapts |
 | Physics and collision | MuJoCo; `sscbirrt` native collision scene | Runtime and `PlanningScene` provider adapters |
-| Hardware transport | ROS 2 and existing Geodude controllers | `Ros2Runtime` adapter (v0.2) |
+| Hardware transport | ROS 2 and existing Geodude controllers | `Ros2Runtime` adapter (M7) |
 | Real-time safety, e-stops, watchdogs | Hardware controllers | Coordinates with, never replaces |
 | Policy models and training | LeRobot, Torch | Optional adapter; `PolicyRunner` drives inference timing only |
 | Datasets | LeRobotDataset | Optional recorder mapped from the trace |
@@ -136,9 +136,9 @@ TSR sampler is out of scope (1).
 
 ## Dependency direction
 
-This is the target v0.1 structure. Today core has no runtime dependencies, and the
-`mujoco` and `planning` integrations ship as extras; `lerobot` arrives with M4, and ROS 2
-with M6.
+This is the target structure. Today core has no runtime dependencies, and the
+`mujoco` and `planning` integrations ship as extras; `lerobot` arrives with M6, and ROS 2
+with M7.
 
 ```mermaid
 flowchart TD
@@ -149,8 +149,8 @@ flowchart TD
         core["ssrobot core<br/>description, context, records,<br/>PolicyRunner, planning contracts, trace"]
         mj["mujoco integration<br/>MujocoRuntime, PlanningScene provider"]
         pl["planning integration<br/>sscbirrt / ssik / sstsr adapter"]
-        lr["lerobot integration<br/>policy loading, dataset recorder"]
-        ros["ros2 integration (v0.2)<br/>Ros2Runtime"]
+        lr["lerobot integration (M6)<br/>policy loading, dataset recorder"]
+        ros["ros2 integration (M7)<br/>Ros2Runtime"]
     end
 
     apps --> core
@@ -208,8 +208,8 @@ Rules:
   and referenced by relative path and content hash. LeRobotDataset is a mapping from
   the trace, not a replacement for it.
 - **Packaging.** One `ssrobot` distribution, managed with uv, requiring Python 3.11+
-  (stdlib `tomllib`). Extras: `mujoco`, `planning`, `lerobot`, and in v0.2 `ros2`; no
-  `all` extra. The `mujoco` and `planning` extras resolve the exact MuJoCo version
+  (stdlib `tomllib`). Extras: `mujoco` and `planning`, then `lerobot` with M6
+  and `ros2` with M7; no `all` extra. The `mujoco` and `planning` extras resolve the exact MuJoCo version
   sscbirrt's native adapter is built against (currently 3.14.0).
 - **Visualization** is an application concern over synchronous observation and trace
   sinks. Core exposes no viewer object or GUI lifecycle.
@@ -273,10 +273,11 @@ compressed code over simple design. It measures:
 
 ## Releases
 
-- **v0.1 — simulation first** (M0–M5). Contracts, robot loading, MuJoCo runtime,
-  planning, policies, recording, and planning-only, policy-only, and hybrid Geodude
-  workflows in simulation, with legacy simulation code migrated.
-- **v0.2 — physical Geodude** (M6). `Ros2Runtime`, hardware profiles and calibration,
-  guarded execution, shadow mode, physical policy rollout and recording, and
-  migration from `HardwareContext`. Simulation-only users keep v0.1's dependency
-  boundaries.
+- **v0.1 — public planning platform** (M0–M4). Contracts, robot loading, the MuJoCo
+  runtime, planning, checked execution, traces, bundles, and replay, with a
+  planning-only reference application, all published from released artifacts.
+- **After v0.1**, in order: the planner ecosystem and its adoption (M5); policies and
+  demonstration data, including policy-only and hybrid workflows in simulation (M6);
+  and physical deployment (M7): `Ros2Runtime`, hardware profiles and calibration,
+  guarded execution, shadow mode, physical policy rollout and recording, and migration
+  from `HardwareContext`. Simulation-only users keep v0.1's dependency boundaries.
