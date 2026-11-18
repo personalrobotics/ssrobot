@@ -123,6 +123,19 @@ boundary does not imply that every decision source or runtime is already support
 
 ## Planning and execution in MuJoCo
 
+The package carries a small example arm and scene, so the first planned motion needs no
+checkout. Until ssrobot is released, install it from GitHub with its MuJoCo and
+planning extras, then run the demonstration:
+
+```sh
+pip install "ssrobot[mujoco,planning] @ git+https://github.com/personalrobotics/ssrobot"
+python -m ssrobot.demo
+```
+
+It plans and executes the motion below and writes the trace, a run bundle, and a report
+of every identity and choice to a new `ssrobot-demo` directory. `--seed` sets the
+planner's seed; the same seed gives the same report.
+
 From a clone, [uv](https://docs.astral.sh/uv/) installs the MuJoCo and planning
 integrations used by the repository examples:
 

@@ -42,6 +42,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ssrobot"]
 
+# The demo's robot and scene (ssrobot.demo), from the one copy under examples.
+[tool.hatch.build.targets.wheel.force-include]
+"examples/packages/mujoco_arm" = "ssrobot/demo/robot"
+"examples/scenes/pedestal.xml" = "ssrobot/demo/scene/pedestal.xml"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

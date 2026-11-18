@@ -140,6 +140,11 @@ This is the target structure. Today core has no runtime dependencies, and the
 `mujoco` and `planning` integrations ship as extras; `lerobot` arrives with M6, and ROS 2
 with M7.
 
+`ssrobot.demo` composes the `mujoco` and `planning` integrations into the installed first
+motion (`python -m ssrobot.demo`). It is neither core nor an integration: the dependency
+gate (`scripts/check_core_imports.py`, `COMPOSERS`) lets it import exactly those two
+integrations and no backend directly, and nothing imports it.
+
 ```mermaid
 flowchart TD
     apps["Applications<br/>tasks, grasp selection, viewers"]
