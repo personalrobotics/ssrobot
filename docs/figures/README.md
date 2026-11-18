@@ -20,6 +20,7 @@ Each figure has one canonical owner:
 | --- | --- | --- |
 | `context-runtime.svg` | `README.md` | What is the difference between a description, runtime, and context? |
 | `snapshot-planning.svg` | `README.md` | How can planning be parallel while execution remains singular? |
+| `context-runtime-narrow.svg`, `snapshot-planning-narrow.svg` | `README.md` | The same questions, laid out for narrow screens |
 | `robot-package.svg` | `docs/authoring.md` | Why does a robot package contain more than MJCF or URDF? |
 | `interleaved-planning.svg` | `docs/planning.md` | How can the next motion be planned while the current one executes? |
 | `trace-causality.svg` | `docs/traces.md` | What causal evidence does a trace preserve? |
@@ -37,6 +38,22 @@ Every figure must remain self-contained, include an SVG `title` and `desc`, and 
 legible at the width of its owning document. Edit the SVG directly and render it at
 both the normal documentation width and 360 pixels before committing. Add a figure
 only when it answers a technical question that the existing figures do not.
+
+A wide figure scaled to a phone's width shrinks its text to a few pixels. A figure that
+cannot stay legible at 360 pixels has a narrow variant, `<name>-narrow.svg`, with the
+same claim, `title`, and `desc`, drawn about 400 units wide so its text renders near
+its nominal size. The owning document selects it with a `picture` element:
+
+```html
+<picture>
+  <source media="(max-width: 600px)" srcset="docs/figures/<name>-narrow.svg">
+  <img alt="..." src="docs/figures/<name>.svg">
+</picture>
+```
+
+A host that ignores `picture` shows the wide figure. Change a figure and its variant
+together. `robot-package.svg`, `interleaved-planning.svg`, and `trace-causality.svg`
+do not have variants yet.
 
 ## The run panels
 
