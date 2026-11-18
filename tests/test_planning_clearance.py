@@ -183,10 +183,11 @@ def _held(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     records: list[TraceRecord] = []
     report: dict[str, Any] = {}
     with RobotContext(package.description, runtime, sinks=[records.append]) as ctx:
-        q0 = _hold(ctx)
         runtime_model = _model_digest(runtime._model)  # the live model, before any scene
-        snapshot = ctx.snapshot()
+        # Counted from before the hold: its grip is checked in a planning scene (#249).
         counts = _counted(monkeypatch)
+        q0 = _hold(ctx)
+        snapshot = ctx.snapshot()
         steps: dict[str, dict[str, int]] = {}
 
         def step(name: str) -> None:

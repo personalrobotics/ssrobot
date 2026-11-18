@@ -119,8 +119,9 @@ effort = 150.0
 `ctx.grip` checks a `GripperCommand` against the scene before it submits it, as
 `ctx.execute` checks a plan: it evaluates the planning scene with the gripper's joints
 where the command leaves them (see *Gripper commands* in [contracts.md](contracts.md)).
-`ctx.submit` passes one on unchecked. A package declares those positions per gripper,
-and a gripper without them cannot be checked, so `ctx.grip` refuses it:
+`ctx.submit` checks one the same way, allowing no contact. A package declares those
+positions per gripper, and a gripper without them cannot be checked, so both refuse
+it; only calibration, which measures them, submits with `ctx.grip(..., unchecked=True)`:
 
 ```toml
 [[semantics.grippers]]

@@ -1965,7 +1965,11 @@ class RobotContext:
         the runtime accepted the command. Does not advance a manual clock. ``snapshot``
         is the one the command was planned on: if the scene has changed since, the
         command is refused (``stale_snapshot``), and the trace records which it was.
+        A ``GripperCommand`` is checked as ``grip`` checks it, allowing no contact: a
+        command expected to touch something goes through ``grip`` with its ``allow``.
         """
+        if isinstance(command, GripperCommand):
+            return self.grip(command, source=source, timeout_ns=timeout_ns)
         return self._submit(command, source=source, timeout_ns=timeout_ns, snapshot=snapshot)
 
     def execute(
@@ -2167,6 +2171,7 @@ class RobotContext:
         command: GripperCommand,
         *,
         allow: Sequence[str] = (),
+        unchecked: bool = False,
         source: str = "client",
         timeout_ns: int | None = None,
     ) -> Execution:
@@ -2176,9 +2181,18 @@ class RobotContext:
         command is submitted with: the fingers must end touching nothing new but
         ``allow``. Otherwise nothing reaches the runtime (``gripper_obstructed``, naming
         each contact as ``first/second``). It is the fingers' counterpart of ``execute``
-        for an arm's plan; ``submit`` passes a ``GripperCommand`` on unchecked, as it does
-        a ``JointTrajectory``."""
+        for an arm's plan. ``submit`` checks a ``GripperCommand`` the same way, allowing
+        nothing.
+
+        ``unchecked=True`` submits without the check, for what cannot be checked: a
+        gripper being calibrated, before it declares its positions, or a runtime that
+        takes no snapshots, such as a replay. It says so where it is called; nothing
+        else skips the check."""
         self._require("grip")
+        if not isinstance(unchecked, bool):
+            raise ValidationError("wrong_type", "unchecked must be a bool", path="unchecked")
+        if unchecked:
+            return self._submit(command, source=source, timeout_ns=timeout_ns, snapshot=None)
         snapshot = self.snapshot()
         contacts = self.gripper_contacts(command, snapshot=snapshot, allow=allow)
         if contacts:

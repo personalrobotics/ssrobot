@@ -86,10 +86,13 @@ def _move(ctx: RobotContext, goal: tuple[float, ...]) -> None:
     assert ctx.run_until(ctx.submit(trajectory), max_ticks=2_000).state is ExecutionState.SUCCEEDED
 
 
-def _grip(ctx: RobotContext, runtime: MujocoRuntime, opening: float) -> dict[str, Any]:
-    """Submit one gripper command and step until it ends, observing the opening each tick."""
+def _grip(
+    ctx: RobotContext, runtime: MujocoRuntime, opening: float, allow: tuple[str, ...] = ("box",)
+) -> dict[str, Any]:
+    """Submit one gripper command, which may close on the box (``ctx.grip``, #249), and
+    step until it ends, observing the opening each tick."""
     observed = [(ctx.now.time_ns, _opening(ctx))]
-    execution = ctx.submit(GripperCommand(gripper="gripper", opening=opening))
+    execution = ctx.grip(GripperCommand(gripper="gripper", opening=opening), allow=allow)
     for _ in range(5_000):
         ctx.step()
         observed.append((ctx.now.time_ns, _opening(ctx)))
@@ -156,7 +159,7 @@ def _close_on_box(ctx: RobotContext, runtime: MujocoRuntime) -> dict[str, Any]:
 def _open_against_walls(ctx: RobotContext, runtime: MujocoRuntime) -> dict[str, Any]:
     _move(ctx, ABOVE)
     _move(ctx, LEVEL)
-    return _grip(ctx, runtime, 1.0)
+    return _grip(ctx, runtime, 1.0, allow=("left_wall", "right_wall"))  # opened into them
 
 
 Scenario = Callable[[RobotContext, MujocoRuntime], dict[str, Any]]
@@ -269,7 +272,9 @@ def test_a_gripper_without_a_completion_detector_is_refused(tmp_path: Path) -> N
         mujoco = ctx.submit(GripperCommand(gripper="gripper", opening=0.0)).status
     script = ReplayScript.hold(package.description, clock="replay", tick_ns=2_000_000, ticks=4)
     with RobotContext(package.description, ReplayRuntime(script)) as ctx:
-        replay = ctx.submit(GripperCommand(gripper="gripper", opening=0.0)).status
+        # A replay takes no snapshots, so its gripper commands cannot be checked.
+        command = GripperCommand(gripper="gripper", opening=0.0)
+        replay = ctx.grip(command, unchecked=True).status
     for status in (mujoco, replay):
         assert status.state is ExecutionState.REJECTED
         assert status.diagnostic is not None
