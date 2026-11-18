@@ -58,7 +58,9 @@ def _move(ctx: RobotContext, goal: tuple[float, ...], duration_ns: int = 1_000_0
 
 
 def _grip(ctx: RobotContext, opening: float) -> None:
-    ctx.run_until(ctx.submit(GripperCommand(gripper="gripper", opening=opening)), max_ticks=1)
+    """Open or close the hand, which may close on the box (``ctx.grip``, #249)."""
+    command = GripperCommand(gripper="gripper", opening=opening)
+    ctx.run_until(ctx.grip(command, allow=("box",)), max_ticks=1)
     for _ in range(300):
         ctx.step()
 

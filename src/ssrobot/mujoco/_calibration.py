@@ -246,7 +246,8 @@ def _command(
         return bool(found)
 
     started = ctx.now.time_ns
-    execution = ctx.submit(GripperCommand(gripper=gripper, opening=opening))
+    # Calibration measures the positions the check needs, so it cannot be checked.
+    execution = ctx.grip(GripperCommand(gripper=gripper, opening=opening), unchecked=True)
     ticks = 0
     contact = touched("command")
     while not contact and not execution.done and ticks < COMMAND_DEADLINE_TICKS:

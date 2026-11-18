@@ -132,9 +132,11 @@ trace. It validates everything going into the runtime and everything coming out.
 | `trajectory_contract` | The `TrajectoryContract` the runtime declared in `RuntimeInfo.trajectory`. Fails with `trajectory_contract_undeclared` (a `CapabilityError`) when it declared none. |
 | `observe(request)` | Checks the request against declared and available channels, then checks that the observation answers it on the runtime clock. |
 | `watch_rest(condition, *, deadline_ns)` | Open or faulted. Starts watching a `JointRest` or `ObjectRest` condition until `deadline_ns` on the runtime clock, and returns a passive `RestWatch`. See *Rest watches*. |
-| `submit(command, *, source="client", timeout_ns=None, snapshot=None)` | Validates, takes ownership, and returns a passive `Execution`. Does not advance time. With `snapshot`, the snapshot the command was planned on, it is refused (`stale_snapshot`) if the scene has moved past it. |
+| `submit(command, *, source="client", timeout_ns=None, snapshot=None)` | Validates, takes ownership, and returns a passive `Execution`. Does not advance time. With `snapshot`, the snapshot the command was planned on, it is refused (`stale_snapshot`) if the scene has moved past it. A `GripperCommand` goes through `grip` with nothing allowed, so it is checked against the scene; one expected to touch something goes through `grip` with its `allow`. |
 | `execute(plan, *, planner, processor=None, source="planner", timeout_ns=None)` | Compiles a successful plan for `trajectory_contract` with `ssrobot.prepare` and `planner`'s validator, then submits it with its snapshot; returns the `Execution`. The plan's snapshot must have been captured by this context at the current scene revision (`stale_snapshot`), and its request must be one built from this description and that snapshot (`check_planned_in`, `request_mismatch`). Every refusal precedes submission. The trace's `compiled` record holds the `PreparedTrajectory`, and the `Submission` names its fingerprint (`prepared`). See planning.md. |
 | `prepare(plan, *, planner, processor=None)` | Performs the preparation step of `execute` without submitting. It compiles a successful plan for `trajectory_contract` with `ssrobot.prepare`, validates the command with `planner`'s validator, and returns the `PreparedTrajectory`. It does not submit, advance time, or write to the trace. Its refusals are those `execute` makes before submission: `wrong_type`, `predicted_plan`, `projected_plan`, `trajectory_contract_undeclared`, `stale_snapshot`, `request_mismatch`, and `execution_unready`, which names each failed check. The context keeps the result, keyed by the plan's content, until the scene changes. A later `prepare` or `execute` of the same plan reuses its command validation only after verifying that the request, trajectory, contract, command, and validator all match, and otherwise validates the command again. See planning.md. |
+| `grip(command, *, allow=(), unchecked=False, source="client", timeout_ns=None)` | Open only. Checks a `GripperCommand` with `gripper_contacts` on a fresh snapshot, then submits it with that snapshot; returns the `Execution`. A command whose fingers would end touching anything new but `allow` is refused before anything reaches the runtime (`gripper_obstructed`, naming each contact as `first/second`). `unchecked=True` submits it without the check, for what cannot be checked. See *Gripper commands*. |
+| `gripper_contacts(command, *, snapshot=None, allow=(), group=None, q=None)` | Open or faulted. The `Contact`s a `GripperCommand` would newly make in a snapshot (the current scene when None), besides those with `allow`, one per pair at its deepest. See *Gripper commands*. |
 | `cancel(execution)` | Cancels one unfinished execution (`canceled`). |
 | `stop(components=None)` | Cancels every unfinished execution touching the components, or all of them (`stopped`). |
 | `step()` | Manual clocks only: advances one control tick, then applies the runtime's update. |
@@ -1128,6 +1130,30 @@ ends when the fingers' motion ends.
   faults keep their states, with no result. Only a gripper command's `succeeded` status
   may carry a result, and it always does; anything else is a contract breach
   (`runtime_contract`).
+- **Checking it against the scene (#249).** `ctx.grip` is the fingers' counterpart of
+  `ctx.execute`: it refuses a command whose fingers would end in an unexpected contact
+  before the runtime moves. `ctx.gripper_contacts` puts the gripper's joints where the
+  command leaves them, its declared `open_positions` if the command opens the fingers
+  from where the snapshot has them, measured along the line between the declared ends,
+  and its `closed_positions` if it closes them; a partial opening is checked at the
+  end it moves toward. It counts only contacts that change of finger positions
+  introduces, not those already there, and none with a name in `allow`, the objects,
+  fixtures, or frames the command is expected to touch, such as the object grasped and
+  its support. Contacts come from the planning scene of the manipulator carrying the
+  gripper, or `group` at `q`, with no clearance. Only where the fingers end is checked,
+  not their sweep: fingers that move monotonically between open and closed sweep no
+  further out than they end when opening, nor further in when closing. A gripper
+  without declared positions is refused (`undeclared_positions`), never left unchecked;
+  so are `allow` given as one string (`wrong_type`), a snapshot missing a gripper joint
+  (`missing_joints`), and `q` without `group` (`missing_field`).
+- **Every submission is checked.** `ctx.submit(GripperCommand(...))` goes through
+  `ctx.grip` with nothing allowed, so closing on an object through it is refused; a
+  command expected to touch something goes through `ctx.grip` with its `allow`. The one
+  exception is explicit at its call: `ctx.grip(command, unchecked=True)` submits without
+  the check, for what cannot be checked, a gripper being calibrated before it declares
+  its positions (`scripts/calibrate_gripper.py`'s routine) or a runtime that takes no
+  snapshots, such as a replay. An `ActionChunk`'s gripper steps are setpoints in a
+  policy's stream and are not checked.
 
 ### Rest watches
 
@@ -1450,6 +1476,7 @@ artifact's `first-journey/`.
 | `artifacts/test_installed_discovery_runs_no_package_code/discovery-report.json` | Dotted and namespace installed packages loading with raising initializers that never run: regular and namespace packages under a regular parent and under a namespace parent (#235), with none of them imported. Bad and missing names fail with stable codes. |
 | `artifacts/test_package_ingress_rejects_bad_packages/ingress-report.json` | Manifest, path, symlink, and semantic mistakes, each rejected with its code and path before any description exists. That includes joint-limit declarations: a non-positive rate or an inverted range is rejected at the manifest field; an unknown joint, a widened limit, an emptied range, or a repeated declaration is rejected at `joint_limits[i]` and its field. |
 | `artifacts/test_declared_gripper_positions_match_a_fresh_calibration/` | `calibrate/mujoco_arm.json`, the evidence of `scripts/calibrate_gripper.py` run on the example arm with the command its manifest records, and `stdout.txt`. Every command ends `reached_target` and settles, touching nothing outside the hand; the fresh positions equal the declared ones within 1e-6 m, and the printed TOML, pasted into the package without its declaration, loads to the same gripper. |
+| `artifacts/test_a_gripper_command_is_checked_where_it_is_submitted/grip-report.json` | The example arm level with the box between its open fingers (#249). Closing, fully or halfway, would touch the box with both fingers, so `ctx.grip` refuses it (`gripper_obstructed`, naming `left_finger/box` and `right_finger/box`) and nothing reaches the runtime; `allow` as one string is `wrong_type`. Allowing the box, the close runs. `ctx.submit` of the same close is refused too, and `ctx.submit` opening off the held box makes no new contact and runs. A copy of the package without declared positions is refused (`undeclared_positions`) by `grip` and `submit` alike; `grip(..., unchecked=True)` submits it, and a non-bool `unchecked` is `wrong_type`. A second run is byte-identical. |
 | `artifacts/test_gripper_positions_are_validated/gripper-positions-report.json` | The example arm's gripper positions declared, undeclared, and refused: a wrong count (`shape_mismatch`), NaN or infinity (`non_finite`), past a joint limit (`out_of_limits`), and only one of the two (`missing_field`), each with its path. |
 | `artifacts/test_declared_joint_limits_change_the_description_and_its_checks/declared-limits.json` | The example MuJoCo arm with and without its declared limits: joint velocities, description fingerprints, the package report's velocity, their accelerations, and which shoulder trajectories are accepted. A single segment of 3.2 rad in 1.0 s is too fast. In 1.1 s it is within velocity, but it starts at 5.3 rad/s² from rest, over the 5 rad/s² limit. In 1.3 s it is accepted. A dense 4 rad/s² trapezoid is accepted. The package without declarations accepts all of them. |
 | `artifacts/test_franka_parser_fixture_matches_its_provenance/franka-provenance.json` | The Franka parser fixture's copied files match the hashes pinned in `provenance.json`; its mesh placeholders are exactly the files `panda.xml` names, and all are empty. |

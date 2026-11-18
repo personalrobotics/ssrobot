@@ -573,7 +573,8 @@ def payload_trials(robot: Robot, arm: Arm, channel: str) -> list[Trial]:
         ctx.run_until(ctx.submit(approach), max_ticks=20_000)
         held["object_approached"] = where(ctx)
         status = ctx.run_until(
-            ctx.submit(GripperCommand(gripper=gripper, opening=0.0)),
+            # The close is meant to grip the object, so it is allowed (#249).
+            ctx.grip(GripperCommand(gripper=gripper, opening=0.0), allow=(spec["object"],)),
             max_ticks=GRIPPER_DEADLINE_TICKS,
         )
         held["close"] = None if status.gripper is None else status.gripper.termination.value

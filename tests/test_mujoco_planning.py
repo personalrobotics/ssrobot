@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from ssrobot import (
+    GripperCommand,
     JointTrajectory,
     JsonlTrace,
     ObservationRequest,
@@ -159,8 +160,10 @@ def test_planning_scenes_are_isolated_and_agree(artifacts: Path, tmp_path: Path)
     assert report["native"] == "NativeCollisionChecker"
     assert report["decoded_equal"] and report["decoded_answers"] == probes
 
+    # One snapshot for the planning scenes, and one the hold's gripper command was checked
+    # on (#249): the scenes capture none of their own.
     kinds = [r.kind.value for r in read_trace(artifacts / "trace.jsonl")]
-    assert kinds.count("snapshot") == 1
+    assert kinds.count("snapshot") == 2
 
 
 def _lift(start: tuple[float, ...]) -> JointTrajectory:
@@ -246,7 +249,10 @@ def test_planning_refuses_what_does_not_apply(artifacts: Path) -> None:
     submitted = [
         r.payload.snapshot
         for r in read_trace(artifacts / "trace.jsonl")
-        if isinstance(r.payload, Submission) and r.payload.snapshot is not None
+        if isinstance(r.payload, Submission)
+        and r.payload.snapshot is not None
+        # The hold's gripper command carries the snapshot it was checked on (#249).
+        and not isinstance(r.payload.command, GripperCommand)
     ]
     (artifacts / "refusals.json").write_text(json.dumps(codes, indent=2) + "\n")
     assert codes == {

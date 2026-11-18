@@ -151,6 +151,8 @@ ALLOWED_STATES: dict[str, frozenset[ContextState]] = {
     "submit": frozenset({_S.OPEN}),
     "execute": frozenset({_S.OPEN}),
     "prepare": frozenset({_S.OPEN}),
+    "grip": frozenset({_S.OPEN}),
+    "gripper_contacts": frozenset({_S.OPEN, _S.FAULTED}),
     "cancel": frozenset({_S.OPEN, _S.FAULTED}),
     "stop": frozenset({_S.OPEN, _S.FAULTED}),
     "step": frozenset({_S.OPEN, _S.FAULTED}),
@@ -1963,7 +1965,11 @@ class RobotContext:
         the runtime accepted the command. Does not advance a manual clock. ``snapshot``
         is the one the command was planned on: if the scene has changed since, the
         command is refused (``stale_snapshot``), and the trace records which it was.
+        A ``GripperCommand`` is checked as ``grip`` checks it, allowing no contact: a
+        command expected to touch something goes through ``grip`` with its ``allow``.
         """
+        if isinstance(command, GripperCommand):
+            return self.grip(command, source=source, timeout_ns=timeout_ns)
         return self._submit(command, source=source, timeout_ns=timeout_ns, snapshot=snapshot)
 
     def execute(
@@ -2063,6 +2069,139 @@ class RobotContext:
         )
         self._prepared[key] = prepared
         return prepared
+
+    def gripper_contacts(
+        self,
+        command: GripperCommand,
+        *,
+        snapshot: SceneSnapshot | None = None,
+        allow: Sequence[str] = (),
+        group: str | None = None,
+        q: Sequence[float] | None = None,
+    ) -> tuple[Contact, ...]:
+        """The contacts ``command`` would newly make in ``snapshot`` (the current scene
+        when None), besides those with ``allow``: the scene objects, fixtures, or frames
+        it is expected to touch, such as the object grasped and its support.
+
+        The fingers are put where the command leaves them: the gripper's declared
+        ``open_positions`` when it opens them from where ``snapshot`` has them, measured
+        along the line between the declared ends, and its ``closed_positions`` when it
+        closes them. Only where they end is checked, not their sweep: fingers that move
+        monotonically between open and closed sweep no further out than they end when
+        opening, nor further in when closing. A partial opening is checked at the end
+        it moves toward, which the fingers do not pass. A contact that is already there
+        with the fingers where ``snapshot`` has them is not the command's, so it is not
+        counted. Each pair of names is reported once, at its deepest contact. Contacts
+        come from the planning scene of ``group`` with no clearance,
+        ``group`` at ``q`` (where ``snapshot`` has it when None). ``group`` defaults to a
+        manipulator whose end effector the gripper actuates; it is required with ``q``.
+
+        Refused (``ValidationError``): ``allow`` as one string; a gripper that declares
+        no positions (``undeclared_positions``), so no command is left unchecked; a
+        snapshot that does not measure every one of its joints; ``q`` without ``group``;
+        a gripper no manipulator carries, without ``group``."""
+        self._require("gripper_contacts")
+        if isinstance(allow, str):
+            raise ValidationError("wrong_type", "a sequence of names, not one string", path="allow")
+        snapshot = self.snapshot() if snapshot is None else snapshot
+        description = self._description
+        gripper = description.gripper(command.gripper)
+        if not gripper.open_positions:
+            raise ValidationError(
+                "undeclared_positions",
+                f"gripper {gripper.name!r} declares no open_positions and closed_positions",
+                path="command.gripper",
+            )
+        missing = sorted(set(gripper.joints) - set(snapshot.joints))
+        if missing:
+            raise ValidationError(
+                "missing_joints",
+                f"the snapshot does not measure {', '.join(missing)}",
+                path="snapshot",
+            )
+        if group is None:
+            if q is not None:
+                raise ValidationError("missing_field", "q needs its group", path="group")
+            group = next(
+                (
+                    m.group
+                    for m in description.manipulators
+                    if m.end_effector is not None
+                    and description.end_effector(m.end_effector).gripper == gripper.name
+                ),
+                None,
+            )
+            if group is None:
+                raise ValidationError(
+                    "missing_field",
+                    f"no manipulator carries gripper {gripper.name!r}: name the group",
+                    path="group",
+                )
+        if q is None:
+            q = tuple(snapshot.position(j) for j in description.group(group).joints)
+        # Where the fingers are now, as a fraction of the way from closed to open.
+        now = [snapshot.position(j) for j in gripper.joints]
+        span = [
+            o - c for o, c in zip(gripper.open_positions, gripper.closed_positions, strict=True)
+        ]
+        along = sum(
+            (n - c) * d for n, c, d in zip(now, gripper.closed_positions, span, strict=True)
+        ) / sum(d * d for d in span)
+        ends = gripper.open_positions if command.opening >= along else gripper.closed_positions
+        at = dict(zip(gripper.joints, ends, strict=True))
+        ended = replace(
+            snapshot,
+            positions=tuple(
+                at.get(j, v) for j, v in zip(snapshot.joints, snapshot.positions, strict=True)
+            ),
+        )
+        allowed = set(allow)
+        before = {(c.first, c.second) for c in self.planning_scene(snapshot, group).contacts(q)}
+        deepest: dict[tuple[str, str], Contact] = {}
+        for c in self.planning_scene(ended, group).contacts(q):
+            pair = (c.first, c.second)
+            if c.first in allowed or c.second in allowed or pair in before:
+                continue
+            if pair not in deepest or c.distance < deepest[pair].distance:
+                deepest[pair] = c
+        return tuple(deepest[pair] for pair in sorted(deepest))
+
+    def grip(
+        self,
+        command: GripperCommand,
+        *,
+        allow: Sequence[str] = (),
+        unchecked: bool = False,
+        source: str = "client",
+        timeout_ns: int | None = None,
+    ) -> Execution:
+        """Check ``command`` against the current scene, then submit it; nonblocking.
+
+        The check is ``gripper_contacts`` on a fresh snapshot, which is also the one the
+        command is submitted with: the fingers must end touching nothing new but
+        ``allow``. Otherwise nothing reaches the runtime (``gripper_obstructed``, naming
+        each contact as ``first/second``). It is the fingers' counterpart of ``execute``
+        for an arm's plan. ``submit`` checks a ``GripperCommand`` the same way, allowing
+        nothing.
+
+        ``unchecked=True`` submits without the check, for what cannot be checked: a
+        gripper being calibrated, before it declares its positions, or a runtime that
+        takes no snapshots, such as a replay. It says so where it is called; nothing
+        else skips the check."""
+        self._require("grip")
+        if not isinstance(unchecked, bool):
+            raise ValidationError("wrong_type", "unchecked must be a bool", path="unchecked")
+        if unchecked:
+            return self._submit(command, source=source, timeout_ns=timeout_ns, snapshot=None)
+        snapshot = self.snapshot()
+        contacts = self.gripper_contacts(command, snapshot=snapshot, allow=allow)
+        if contacts:
+            raise ValidationError(
+                "gripper_obstructed",
+                "the fingers would touch " + ", ".join(f"{c.first}/{c.second}" for c in contacts),
+                path="command",
+            )
+        return self._submit(command, source=source, timeout_ns=timeout_ns, snapshot=snapshot)
 
     def _submit(
         self,

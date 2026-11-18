@@ -1186,7 +1186,9 @@ def gripped(package: Any, spec: dict[str, Any], keyframe: str | None, out: Path)
 
     def grip(ctx: Any, target: float) -> dict[str, Any]:
         history = [observed(ctx)]
-        execution = ctx.submit(GripperCommand(gripper=gripper, opening=target))
+        # The close is meant to meet the cylinder, so it is allowed (#249).
+        command = GripperCommand(gripper=gripper, opening=target)
+        execution = ctx.grip(command, allow=("grip_cylinder",))
         tick = 0
         while not execution.done and tick < GRIPPER_DEADLINE_TICKS:
             ctx.step()
