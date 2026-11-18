@@ -78,6 +78,9 @@ jobs:
           diff demo-a/report.json demo-b/report.json
           mv demo-a demo-moved
           "$python" -P -c "import ssrobot; b = ssrobot.open_bundle('demo-moved/bundle'); t = ssrobot.read_trace('demo-moved/trace.jsonl'); assert len(b.records) == len(t) > 0; print(len(t), 'records read back')"
+          # The printed verification command runs as printed, whatever the output path.
+          "$python" -P -m ssrobot.demo --out "odd dir/it's \"x\" \$HOME" > odd.txt
+          bash -c "$(sed -n 's/^verify and read it: //p' odd.txt)"
           mkdir -p "$GITHUB_WORKSPACE/artifacts/installed-conformance/demo"
           cp -R demo-moved/. demo-a.txt "$GITHUB_WORKSPACE/artifacts/installed-conformance/demo/"
       - name: Without the extras, the demo refuses and names them

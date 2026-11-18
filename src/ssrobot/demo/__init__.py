@@ -16,9 +16,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shlex
 import sys
 from collections.abc import Sequence
-from importlib import resources
+from importlib import resources, util
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,8 @@ GOAL = (-0.6, -0.4, 0.0)
 VELOCITY_SCALING = 0.5
 MAX_TICKS = 5_000
 EXTRAS = "ssrobot[mujoco,planning]"
+BACKENDS = ("mujoco", "sscbirrt", "ssik", "tsr")
+"""The top-level modules those extras install (sstsr installs ``tsr``)."""
 
 
 def _files() -> tuple[Path, Path]:
@@ -128,12 +131,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--seed", type=int, default=0, help="the planner's seed (default: 0)")
     args = parser.parse_args(argv)
-    try:
-        import ssrobot.mujoco
-        import ssrobot.planning
-    except ImportError as e:
+    # Whether the extras are installed is asked of each backend without importing it,
+    # so a failure while importing an installed integration is a defect and propagates.
+    missing = [name for name in BACKENDS if util.find_spec(name) is None]
+    if missing:
         print(
-            f"the demo needs ssrobot's mujoco and planning extras, {EXTRAS}: {e}", file=sys.stderr
+            f"the demo needs ssrobot's mujoco and planning extras, {EXTRAS}: "
+            f"{', '.join(missing)} not installed",
+            file=sys.stderr,
         )
         return 2
     out = args.out or _fresh(Path.cwd() / "ssrobot-demo")
@@ -149,6 +154,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  trace   {out / 'trace.jsonl'} ({report['trace']['records']} records)")
     print(f"  bundle  {out / 'bundle'}")
     print(f"  report  {out / 'report.json'}")
-    check = f"len(ssrobot.open_bundle('{out / 'bundle'}').records)"
-    print(f'verify and read it: python -c "import ssrobot; print({check})"')
+    code = f"import ssrobot; print(len(ssrobot.open_bundle({str(out / 'bundle')!r}).records))"
+    print(f"verify and read it: {shlex.join([sys.executable, '-c', code])}")
     return 0 if report["outcome"] == "succeeded" else 1
