@@ -3,12 +3,12 @@
 Usage: python scripts/check_doc_links.py
 
 Reads ``README.md`` and every Markdown file under ``docs``, ``conformance``, and
-``examples``. Each inline link or image whose target has no URL scheme must name a file
-or directory that exists, relative to the linking file; a ``#fragment`` into a Markdown
-file must name one of its headings, as GitHub derives anchors: lowercase, punctuation
-other than ``-`` and ``_`` dropped, spaces as ``-``, and ``-1``, ``-2``, ... after a
-repeated heading. Links inside fenced or inline code are not links. External URLs are
-not fetched.
+``examples``. Each inline link or image, and each HTML ``src`` or ``srcset`` attribute,
+whose target has no URL scheme must name a file or directory that exists, relative to the
+linking file; a ``#fragment`` into a Markdown file must name one of its headings, as
+GitHub derives anchors: lowercase, punctuation other than ``-`` and ``_`` dropped, spaces
+as ``-``, and ``-1``, ``-2``, ... after a repeated heading. Links inside fenced or inline
+code are not links. External URLs are not fetched.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ SOURCES = ("README.md", "docs", "conformance", "examples")
 FENCE = re.compile(r"^(```|~~~).*?^\1", re.M | re.S)
 CODE = re.compile(r"`[^`\n]*`")
 LINK = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+SOURCE = re.compile(r"\b(?:src|srcset)=\"([^\"\s]+)[^\"]*\"")
 HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.M)
 
 
@@ -46,7 +47,8 @@ def anchors(path: Path) -> frozenset[str]:
 
 def broken(path: Path) -> list[str]:
     problems = []
-    for target in LINK.findall(_prose(path.read_text())):
+    prose = _prose(path.read_text())
+    for target in LINK.findall(prose) + SOURCE.findall(prose):
         if re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", target):
             continue
         name, _, fragment = target.partition("#")

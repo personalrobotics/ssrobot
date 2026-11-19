@@ -51,7 +51,10 @@ command ownership, scene revision, snapshots, execution boundary, and trace. An
 application therefore uses a context rather than depending directly on MuJoCo, replay,
 or a future hardware transport. Integration authors implement runtimes.
 
-![A robot package produces a stable RobotDescription. RobotContext binds it to exactly one selected runtime and presents the resulting session to an application. Snapshots and traces leave the context as evidence.](docs/figures/context-runtime.svg)
+<picture>
+  <source media="(max-width: 600px)" srcset="docs/figures/context-runtime-narrow.svg">
+  <img alt="A robot package produces a stable RobotDescription. RobotContext binds it to exactly one selected runtime and presents the resulting session to an application. Snapshots and traces leave the context as evidence." src="docs/figures/context-runtime.svg">
+</picture>
 
 *The description gives the robot a stable meaning. The runtime implements one way of
 running it. The context combines them into the session seen by an application.*
@@ -80,7 +83,10 @@ validator to check the command that will actually be submitted. A stale world,
 incompatible arrival, invalid motion, or unavailable capability is refused with a
 specific reason. The plan is never adjusted silently.
 
-![The live context captures one immutable snapshot. Several isolated planning scenes explore alternatives concurrently. Deterministic selection chooses a result, which must pass preparation and validation before it can execute.](docs/figures/snapshot-planning.svg)
+<picture>
+  <source media="(max-width: 600px)" srcset="docs/figures/snapshot-planning-narrow.svg">
+  <img alt="The live context captures one immutable snapshot. Several isolated planning scenes explore alternatives concurrently. Deterministic selection chooses a result, which must pass preparation and validation before it can execute." src="docs/figures/snapshot-planning.svg">
+</picture>
 
 *Several computations may use the same captured state. Only a result that passes the
 context's preparation and validation checks may affect the live robot.*

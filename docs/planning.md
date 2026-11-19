@@ -478,7 +478,10 @@ selected plan, `result.selected[2][0].plan`, executes with
 
 ## Interleaving planning and execution
 
-![Motion A executes on the live context while a worker plans motion B from A's projected result. At the measured arrival, the context either checks, rebases, validates, and executes B or refuses it and replans from reality.](figures/interleaved-planning.svg)
+<picture>
+  <source media="(max-width: 600px)" srcset="figures/interleaved-planning-narrow.svg">
+  <img alt="Motion A executes on the live context while a worker plans motion B from A's projected result. At the measured arrival, the context either checks, rebases, validates, and executes B or refuses it and replans from reality." src="figures/interleaved-planning.svg">
+</picture>
 
 *Planning may overlap execution, but a speculative plan acquires no authority until
 the live context checks its particular source execution and measured arrival.*

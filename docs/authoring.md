@@ -10,7 +10,10 @@ capabilities, observation channels, limits, configurations, model choices, and r
 profiles. Loading validates the manifest and model together and produces one immutable
 `RobotDescription`.
 
-![MJCF or URDF and SRDF provide the mechanical model. ssrobot.toml adds portable semantic roles, capabilities, channels, limits, and profiles. Both are validated into one RobotDescription while runtimes retain the original resources.](figures/robot-package.svg)
+<picture>
+  <source media="(max-width: 600px)" srcset="figures/robot-package-narrow.svg">
+  <img alt="MJCF or URDF and SRDF provide the mechanical model. ssrobot.toml adds portable semantic roles, capabilities, channels, limits, and profiles. Both are validated into one RobotDescription while runtimes retain the original resources." src="figures/robot-package.svg">
+</picture>
 
 *The manifest complements the established model formats. It does not copy their
 physics or geometry into another model.*

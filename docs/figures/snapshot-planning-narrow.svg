@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="580" viewBox="0 0 400 580" role="img" aria-labelledby="title desc">
+  <title id="title">Planning leaves the live context and returns through one checked boundary</title>
+  <desc id="desc">The live RobotContext captures one immutable snapshot. Three isolated planning scenes explore alternatives concurrently. Deterministic selection chooses one result, which must pass preparation and validation before it can execute. A refusal leads to another result or replanning. The trace links the whole sequence.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-teal" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#0f766e"/>
+    </marker>
+    <style>
+      .lane { font: 600 11.5px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; letter-spacing: 1px; }
+      .label { font: 600 14.5px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #17212b; }
+      .small { font: 500 12.5px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #5c6773; }
+      .code { font: 600 14.5px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #17212b; }
+    </style>
+  </defs>
+
+  <rect width="400" height="580" rx="18" fill="#fafaf7"/>
+
+  <rect x="10" y="10" width="128" height="526" rx="14" fill="#edf8f5" stroke="#b9ddd6"/>
+  <text x="22" y="34" class="lane" fill="#0f766e">LIVE SESSION</text>
+  <text x="22" y="52" class="small">one authority</text>
+  <rect x="148" y="10" width="242" height="526" rx="14" fill="#f1f5f8" stroke="#cbd5df"/>
+  <text x="160" y="34" class="lane" fill="#2f5d7e">SPECULATIVE WORK</text>
+  <text x="160" y="52" class="small">isolated · parallel</text>
+
+  <rect x="20" y="72" width="108" height="62" rx="12" fill="#e3f3f0" stroke="#0f766e" stroke-width="2.5"/>
+  <text x="74" y="98" text-anchor="middle" class="code">RobotContext</text>
+  <text x="74" y="120" text-anchor="middle" class="small">live state</text>
+
+  <text x="157" y="95" text-anchor="middle" class="small">capture</text>
+  <path d="M128 103 L180 103" fill="none" stroke="#0f766e" stroke-width="2.5" marker-end="url(#arrow-teal)"/>
+  <rect x="186" y="72" width="194" height="62" rx="12" fill="#edf1f5" stroke="#64748b" stroke-width="2"/>
+  <text x="283" y="98" text-anchor="middle" class="code">SceneSnapshot</text>
+  <text x="283" y="120" text-anchor="middle" class="small">immutable world state</text>
+
+  <path d="M194 134 L194 249" fill="none" stroke="#334155" stroke-width="1.8"/>
+  <path d="M194 173 L206 173" fill="none" stroke="#334155" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <path d="M194 211 L206 211" fill="none" stroke="#334155" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <path d="M194 249 L206 249" fill="none" stroke="#334155" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <rect x="212" y="158" width="150" height="30" rx="9" fill="#e8f0f6" stroke="#7b98ad"/>
+  <text x="287" y="178" text-anchor="middle" class="label">Planning scene A</text>
+  <rect x="212" y="196" width="150" height="30" rx="9" fill="#e8f0f6" stroke="#7b98ad"/>
+  <text x="287" y="216" text-anchor="middle" class="label">Planning scene B</text>
+  <rect x="212" y="234" width="150" height="30" rx="9" fill="#e8f0f6" stroke="#7b98ad"/>
+  <text x="287" y="254" text-anchor="middle" class="label">Planning scene C</text>
+
+  <path d="M362 173 L374 173 M362 211 L374 211 M362 249 L374 249" fill="none" stroke="#334155" stroke-width="1.8"/>
+  <path d="M374 173 L374 282" fill="none" stroke="#334155" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <rect x="186" y="288" width="194" height="62" rx="12" fill="#eeeaf8" stroke="#6d5aae" stroke-width="2"/>
+  <text x="283" y="314" text-anchor="middle" class="label">Deterministic selection</text>
+  <text x="283" y="336" text-anchor="middle" class="small">priority · cost · order</text>
+
+  <path d="M283 350 L283 376" fill="none" stroke="#334155" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <rect x="186" y="382" width="194" height="72" rx="14" fill="#fff8ed" stroke="#b45309" stroke-width="3"/>
+  <text x="283" y="412" text-anchor="middle" class="code">prepare + validate</text>
+  <text x="283" y="436" text-anchor="middle" class="small">execution contract</text>
+
+  <rect x="20" y="387" width="108" height="62" rx="12" fill="#e3f3f0" stroke="#0f766e" stroke-width="2.5"/>
+  <text x="74" y="413" text-anchor="middle" class="label">Execute</text>
+  <text x="74" y="435" text-anchor="middle" class="small">via the context</text>
+  <text x="157" y="410" text-anchor="middle" class="small" fill="#0f766e">accepted</text>
+  <path d="M186 418 L134 418" fill="none" stroke="#0f766e" stroke-width="2.5" marker-end="url(#arrow-teal)"/>
+
+  <path d="M283 454 L283 476" fill="none" stroke="#a13a3a" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="186" y="482" width="194" height="44" rx="10" fill="#fbeaea" stroke="#c87979"/>
+  <text x="283" y="500" text-anchor="middle" class="small">refused: another result</text>
+  <text x="283" y="517" text-anchor="middle" class="small">or replan</text>
+
+  <text x="200" y="562" text-anchor="middle" class="small">The trace links capture, choice, check, and execution.</text>
+</svg>

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="590" viewBox="0 0 400 590" role="img" aria-labelledby="title desc">
+  <title id="title">A robot package combines an established model with explicit portable semantics</title>
+  <desc id="desc">MJCF or URDF and SRDF provide the mechanical model. ssrobot.toml provides semantic roles, capabilities, channels, profiles, and limits. Both are validated together into one RobotDescription, while the package retains the original model files and assets for runtimes.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L7,3.5 L0,7 Z" fill="#334155"/></marker>
+    <style>
+      .label { font: 600 15.5px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #17212b; }
+      .body { font: 400 13.5px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #475569; }
+      .small { font: 500 12.5px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #5c6773; }
+      .eyebrow { font: 600 11.5px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; letter-spacing: 1px; fill: #64748b; }
+      .code { font: 600 15.5px Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif; fill: #17212b; }
+    </style>
+  </defs>
+  <rect width="400" height="590" rx="18" fill="#fafaf7"/>
+
+  <rect x="14" y="14" width="372" height="330" rx="16" fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="7 6"/>
+  <text x="28" y="40" class="eyebrow">ROBOT PACKAGE · PORTABLE FILE CLOSURE</text>
+
+  <rect x="28" y="54" width="168" height="104" rx="12" fill="#e8f0f6" stroke="#2f5d7e" stroke-width="2"/>
+  <text x="112" y="82" text-anchor="middle" class="label">MJCF</text>
+  <text x="112" y="104" text-anchor="middle" class="body">or URDF + SRDF</text>
+  <text x="112" y="126" text-anchor="middle" class="small">topology · joints</text>
+  <text x="112" y="145" text-anchor="middle" class="small">model semantics</text>
+
+  <rect x="204" y="54" width="168" height="104" rx="12" fill="#f6f8fa" stroke="#94a3b8"/>
+  <text x="288" y="82" text-anchor="middle" class="label">Original resources</text>
+  <text x="288" y="104" text-anchor="middle" class="small">includes · meshes</text>
+  <text x="288" y="124" text-anchor="middle" class="small">textures · calibration</text>
+  <text x="288" y="144" text-anchor="middle" class="small">backend models</text>
+
+  <rect x="28" y="182" width="168" height="146" rx="12" fill="#edf1f5" stroke="#64748b" stroke-width="2"/>
+  <text x="112" y="210" text-anchor="middle" class="code">ssrobot.toml</text>
+  <text x="112" y="236" text-anchor="middle" class="small">arms · bases</text>
+  <text x="112" y="256" text-anchor="middle" class="small">end effectors</text>
+  <text x="112" y="276" text-anchor="middle" class="small">commands · channels</text>
+  <text x="112" y="296" text-anchor="middle" class="small">limits · model choices</text>
+  <text x="112" y="316" text-anchor="middle" class="small">runtime profiles</text>
+
+  <path d="M288 158 L288 176" fill="none" stroke="#94a3b8" stroke-width="1.7" marker-end="url(#arrow)"/>
+  <rect x="204" y="182" width="168" height="146" rx="12" fill="#f6f8fa" stroke="#94a3b8"/>
+  <text x="288" y="208" text-anchor="middle" class="label">Validated</text>
+  <text x="288" y="227" text-anchor="middle" class="label">file identity</text>
+  <text x="288" y="254" text-anchor="middle" class="small">resolved paths</text>
+  <text x="288" y="274" text-anchor="middle" class="small">containment · hashes</text>
+  <text x="288" y="294" text-anchor="middle" class="small">provenance</text>
+  <text x="288" y="314" text-anchor="middle" class="small">safe installed loading</text>
+
+  <path d="M200 344 L200 382" fill="none" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="212" y="368" class="small">validated together</text>
+
+  <rect x="60" y="390" width="280" height="108" rx="16" fill="#e3f3f0" stroke="#0f766e" stroke-width="3"/>
+  <text x="200" y="416" text-anchor="middle" class="eyebrow" fill="#0f766e">PORTABLE MEANING</text>
+  <text x="200" y="443" text-anchor="middle" class="code">RobotDescription</text>
+  <text x="200" y="466" text-anchor="middle" class="body">immutable · validated</text>
+  <text x="200" y="486" text-anchor="middle" class="body">simulator-independent</text>
+
+  <text x="200" y="528" text-anchor="middle" class="body">Runtimes still read the original model.</text>
+  <text x="200" y="548" text-anchor="middle" class="body">The description does not copy physics,</text>
+  <text x="200" y="568" text-anchor="middle" class="body">geometry, or actuator parameters.</text>
+</svg>

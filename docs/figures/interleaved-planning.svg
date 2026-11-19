@@ -17,7 +17,7 @@
   <text x="365" y="121" text-anchor="middle" class="label">Execute motion A</text>
   <text x="365" y="145" text-anchor="middle" class="body">the runtime advances the live robot</text>
   <circle cx="565" cy="127" r="8" fill="#0f766e"/>
-  <text x="565" y="96" text-anchor="middle" class="body">measured arrival</text>
+  <text x="565" y="82" text-anchor="middle" class="body">measured arrival</text>
   <rect x="610" y="92" width="190" height="70" rx="14" fill="#fff8ed" stroke="#b45309" stroke-width="2"/>
   <text x="705" y="121" text-anchor="middle" class="label">Check arrival</text>
   <text x="705" y="145" text-anchor="middle" class="body">scene · rest · tolerance</text>
@@ -27,7 +27,7 @@
   <path d="M800 127 L842 127" fill="none" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
 
   <text x="58" y="260" class="lane">PLANNING WORKER</text>
-  <line x1="182" y1="255" x2="1120" y2="255" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="226" y1="255" x2="1120" y2="255" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
   <rect x="250" y="220" width="230" height="70" rx="14" fill="#edf1f5" stroke="#64748b"/>
   <text x="365" y="249" text-anchor="middle" class="label">Project A's result</text>
   <text x="365" y="273" text-anchor="middle" class="body">not a captured snapshot</text>
