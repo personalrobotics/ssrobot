@@ -27,6 +27,36 @@ $ ssrobot inspect path/to/package                      # what was loaded
 $ uv build && ssrobot doctor path/to/package --wheel dist/my_robot-*.whl
 ```
 
+## Two worked references
+
+[`scripts/author_reference_packages.py`](../scripts/author_reference_packages.py)
+authors two reference packages from their mechanical models alone:
+[`mujoco_arm`](../examples/packages/mujoco_arm) from MJCF, and
+[`urdf_arm`](../tests/fixtures/packages/urdf_arm) from URDF with its SRDF. It answers
+`init` from a recorded answers file, takes the reference manifest as the author's
+finished version, checks the package with `doctor` and its wheel, and inspects it
+installed by module name. CI runs it from the clean wheel:
+
+```console
+$ python scripts/author_reference_packages.py --out authoring
+```
+
+Each robot's `provenance.json` records which manifest entries `init` wrote from the
+model, which fields the author changed, and which entries the author added:
+
+- **From `init`, in both.** `init` writes the model entry, the manipulator, the gripper,
+  and the end effector. For MJCF, which has no groups, it also writes the arm's group.
+- **Changed by the author, in both.** The author moves the manipulator's tool frame
+  from the last link `init` proposed to `flange`.
+- **Added by the author to `mujoco_arm`.** Commands, channels, sensors, rate limits, two
+  configurations, gripper calibration, a second group, a collision allowance, and the
+  MuJoCo profile.
+- **Added by the author to `urdf_arm`.** A trajectory command, a joint-position channel,
+  a MuJoCo model, and its profile.
+
+Frames, joints, and the URDF's limits stay in the model, as do the SRDF's groups and
+collision allowances. None of them is copied into the manifest.
+
 ## `ssrobot init MODEL`
 
 `init` writes an `ssrobot.toml` for an MJCF (`.xml`), URDF (`.urdf`, with a sibling

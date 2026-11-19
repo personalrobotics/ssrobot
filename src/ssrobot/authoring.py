@@ -217,10 +217,21 @@ def draft(
         path=path.relative_to(root).as_posix(),
         srdf=None if srdf is None or not srdf.is_file() else srdf.relative_to(root).as_posix(),
     )
-    probe = assemble_package(
-        root,
-        PackageManifest(robot="draft", canonical_model=entry.name, models=(entry,)),
-    )
+    # The model resolves its package:// URIs against the robot's name.
+    name = robot if robot is not None else _robot_name(root.name)
+    try:
+        probe = assemble_package(
+            root,
+            PackageManifest(robot=name, canonical_model=entry.name, models=(entry,)),
+        )
+    except ValidationError as e:
+        if e.code != "unknown_package" or robot is not None:
+            raise
+        raise ValidationError(
+            e.code,
+            f"{e.message}; name the robot as its package:// URIs do, with --robot",
+            path=e.path,
+        ) from None
     description = probe.description
     declared = _semantics_of(description)
     model_only = KinematicModel(

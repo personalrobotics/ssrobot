@@ -458,3 +458,34 @@ def test_operational_errors_are_diagnostics(artifacts: Path, tmp_path: Path) -> 
     for name, outcome in report.items():
         assert outcome["status"] == outcome["expected_status"], (name, outcome)
         assert outcome["mentions"] and not outcome["traceback"], (name, outcome)
+
+
+def test_reference_packages_are_authored_from_their_models(artifacts: Path) -> None:
+    """#257: from only an MJCF model, and only a URDF with its SRDF, ``init`` and the
+    author's recorded additions reach the reference packages, which pass ``doctor``
+    with their wheel and inspect identically when installed. The model's
+    ``package://<robot>/`` URIs resolve against the robot being authored."""
+    out = artifacts / "exercise"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "author_reference_packages.py"),
+            "--out",
+            str(out),
+            "--ssrobot",
+            f"{sys.executable} -m ssrobot.cli",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    summary = {s["robot"]: s for s in json.loads((out / "summary.json").read_text())}
+    assert set(summary) == {"mujoco_arm", "urdf_arm"}
+    for robot, s in summary.items():
+        assert s["fingerprints_agree"] and not s["doctor_failed"], s
+        for name in ("doctor", "doctor-wheel", "inspect-source", "inspect-installed"):
+            _valid(out / robot / f"{name}.json")
+        # Nothing init wrote had to be deleted; the author only changed or added.
+        assert "removed" not in s["entries"], s
