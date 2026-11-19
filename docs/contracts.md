@@ -944,7 +944,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`MujocoProfile`](../schemas/ssrobot.MujocoProfile.v2.json) | MuJoCo-specific settings a package declares for `MujocoRuntime`. See [mujoco.md](mujoco.md). |
 | [`AuthoringDraft`](../schemas/ssrobot.AuthoringDraft.v1.json) | What `ssrobot init` knows about a package being authored, and what is undecided. See [authoring.md](authoring.md). |
 | [`AuthoringAnswers`](../schemas/ssrobot.AuthoringAnswers.v1.json) | Answers to a draft's decisions, for non-interactive authoring. |
-| [`DoctorReport`](../schemas/ssrobot.DoctorReport.v1.json) | The result of `ssrobot doctor`. |
+| [`DoctorReport`](../schemas/ssrobot.DoctorReport.v2.json) | The result of `ssrobot doctor`. A failed check carries its refusal code and guidance (v2). |
 
 ### Capabilities
 

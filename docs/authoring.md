@@ -144,7 +144,9 @@ The summary is not a compatibility surface. `--json PATH` writes the
 | `capabilities` | (Reports the declared commands and channels.) |
 | `wheel` | With `--wheel PATH`, the wheel lacks the package's `ssrobot.toml` or any file it needs, or loading it as an installed package gives a different description or file set. |
 
-`--json PATH` writes an `ssrobot.DoctorReport`. `--check` writes nothing and cannot be
+A failed check prints what to do next and the section that explains it.
+`--json PATH` writes an `ssrobot.DoctorReport`, whose failed checks carry the refusal
+`code` with its `why`, `next`, and `see`. `--check` writes nothing and cannot be
 combined with `--json`. A wheel that cannot be read fails the `wheel` check with the
 reason, rather than stopping `doctor`. That covers a missing file, a non-zip, or a
 corrupt entry.
@@ -154,7 +156,7 @@ corrupt entry.
 | Status | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 1 | An invalid model, package, or answer; a missing input or unwritable output file; or a failed check. Each prints a diagnostic, never a traceback. |
+| 1 | An invalid model, package, or answer; a missing input or unwritable output file; or a failed check. Each prints a diagnostic, never a traceback. A refusal also prints why ssrobot will not choose, what to do next, and where it is documented; see [Refusals](packages.md#refusals). |
 | 2 | Decisions still need answers and there is no terminal to ask. |
 | 3 | A different manifest exists and `--force` was not given. |
 

@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.DoctorReport v1",
+  "title": "ssrobot.DoctorReport v2",
   "$ref": "#/$defs/DoctorReport",
   "$defs": {
     "DoctorCheck": {
       "type": "object",
-      "description": "DoctorCheck(*, name: 'str', outcome: 'CheckOutcome', detail: 'str')",
+      "description": "DoctorCheck(*, name: 'str', outcome: 'CheckOutcome', detail: 'str', code: 'str | None' = None, why: 'str | None' = None, next: 'str | None' = None, see: 'str | None' = None)",
       "properties": {
         "name": {
           "type": "string",
@@ -22,7 +22,51 @@
         },
         "detail": {
           "type": "string",
-          "description": "What was found, or how to fix it."
+          "description": "What was found."
+        },
+        "code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A failed check's refusal code."
+        },
+        "why": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why ssrobot refuses rather than choosing for the author."
+        },
+        "next": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What to do next."
+        },
+        "see": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The canonical document section, relative to the repository root."
         }
       },
       "required": [
@@ -40,7 +84,7 @@
           "const": "ssrobot.DoctorReport"
         },
         "version": {
-          "const": 1
+          "const": 2
         },
         "robot": {
           "anyOf": [

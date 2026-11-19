@@ -20,13 +20,23 @@ from ssrobot.package import (
     load_package,
     parse_manifest,
 )
+from ssrobot.refusals import guidance
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DoctorCheck(Value):
     name: str = field(metadata=meta("Check name."))
     outcome: CheckOutcome = field(metadata=meta("Result."))
-    detail: str = field(metadata=meta("What was found, or how to fix it."))
+    detail: str = field(metadata=meta("What was found."))
+    code: str | None = field(default=None, metadata=meta("A failed check's refusal code."))
+    why: str | None = field(
+        default=None, metadata=meta("Why ssrobot refuses rather than choosing for the author.")
+    )
+    next: str | None = field(default=None, metadata=meta("What to do next."))
+    see: str | None = field(
+        default=None,
+        metadata=meta("The canonical document section, relative to the repository root."),
+    )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -34,7 +44,7 @@ class DoctorReport(Record):
     """The result of ``ssrobot doctor``."""
 
     SCHEMA = "ssrobot.DoctorReport"
-    VERSION = 1
+    VERSION = 2
 
     robot: str | None = field(metadata=meta("Robot name, when the manifest could be read."))
     checks: tuple[DoctorCheck, ...] = field(metadata=meta("Every check, in order."))
@@ -55,17 +65,28 @@ def doctor(
     """Check a package and, given ``wheel``, the installed artifact built from it."""
     checks: list[DoctorCheck] = []
 
-    def add(name: str, ok: bool, detail: str) -> None:
+    def add(name: str, code: str | None, detail: str) -> None:
+        """A passed check without ``code``; a failed one, with its guidance, with it."""
+        if code is None:
+            checks.append(DoctorCheck(name=name, outcome=CheckOutcome.PASSED, detail=detail))
+            return
+        g = guidance(code)
         checks.append(
             DoctorCheck(
-                name=name, outcome=CheckOutcome.PASSED if ok else CheckOutcome.FAILED, detail=detail
+                name=name,
+                outcome=CheckOutcome.FAILED,
+                detail=detail,
+                code=code,
+                why=g.why,
+                next=g.next,
+                see=g.see,
             )
         )
 
     try:
         source = load_any(package)
     except SsrobotError as e:
-        add("manifest", False, f"{e.code} at {e.path or '-'}: {e.message}")
+        add("manifest", e.code, f"{e.code} at {e.path or '-'}: {e.message}")
         for name in ("resources", "semantics", "capabilities", "wheel"):
             checks.append(
                 DoctorCheck(
@@ -76,21 +97,21 @@ def doctor(
             )
         return DoctorReport(robot=None, checks=tuple(checks))
     d = source.description
-    add("manifest", True, f"loaded {d.name!r}, description {d.fingerprint()[:12]}")
-    add("resources", True, f"{len(source.files)} files resolved inside the package root")
+    add("manifest", None, f"loaded {d.name!r}, description {d.fingerprint()[:12]}")
+    add("resources", None, f"{len(source.files)} files resolved inside the package root")
     unresolved = [x for x in source.diagnostics if x.code.startswith("ambiguous_")]
     if source.inference is not None:
         unresolved += [x for x in source.inference.diagnostics if x.code.startswith("ambiguous_")]
     add(
         "semantics",
-        not unresolved,
+        unresolved[0].code if unresolved else None,
         "every semantic is resolved"
         if not unresolved
         else "unresolved: " + "; ".join(f"{x.code}: {x.message}" for x in unresolved),
     )
     add(
         "capabilities",
-        True,
+        None,
         f"{len(d.commands)} command capabilities and {len(d.channels)} channels, "
         "all declared explicitly",
     )
@@ -101,8 +122,8 @@ def doctor(
             )
         )
     else:
-        ok, detail = _check_wheel(source, Path(wheel))
-        add("wheel", ok, detail)
+        code, detail = _check_wheel(source, Path(wheel))
+        add("wheel", code, detail)
     return DoctorReport(robot=d.name, checks=tuple(checks))
 
 
@@ -120,14 +141,15 @@ def _expected_files(source: RobotPackage) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def _check_wheel(source: RobotPackage, wheel: Path) -> tuple[bool, str]:
+def _check_wheel(source: RobotPackage, wheel: Path) -> tuple[str | None, str]:
+    """No code and what was found, or the failure's code and what was wrong."""
     try:
         return _inspect_wheel(source, wheel)
     except (OSError, EOFError, zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error) as e:
-        return False, f"cannot read {wheel}: {type(e).__name__}: {e}"
+        return "wheel_unreadable", f"cannot read {wheel}: {type(e).__name__}: {e}"
 
 
-def _inspect_wheel(source: RobotPackage, wheel: Path) -> tuple[bool, str]:
+def _inspect_wheel(source: RobotPackage, wheel: Path) -> tuple[str | None, str]:
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
         homes = []
@@ -140,7 +162,7 @@ def _inspect_wheel(source: RobotPackage, wheel: Path) -> tuple[bool, str]:
                 homes.append(name.removesuffix(MANIFEST).rstrip("/"))
         if len(homes) != 1:
             return (
-                False,
+                "wheel_manifest",
                 f"expected one {MANIFEST} for {source.manifest.robot!r} in the wheel, "
                 f"found {len(homes)}",
             )
@@ -148,7 +170,10 @@ def _inspect_wheel(source: RobotPackage, wheel: Path) -> tuple[bool, str]:
         prefix = f"{home}/" if home else ""
         missing = [p for p in _expected_files(source) if f"{prefix}{p}" not in names]
         if missing:
-            return False, f"the wheel lacks {len(missing)} file(s) the package needs: {missing}"
+            return (
+                "wheel_incomplete",
+                f"the wheel lacks {len(missing)} file(s) the package needs: {missing}",
+            )
         module = home.replace("/", ".")
         with tempfile.TemporaryDirectory(prefix="ssrobot-wheel-") as extracted:
             archive.extractall(extracted)
@@ -157,7 +182,7 @@ def _inspect_wheel(source: RobotPackage, wheel: Path) -> tuple[bool, str]:
                 installed = load_installed_package(module)
             except SsrobotError as e:
                 return (
-                    False,
+                    "wheel_unloadable",
                     f"the installed package does not load: {e.code} at {e.path}: {e.message}",
                 )
             finally:
@@ -165,8 +190,8 @@ def _inspect_wheel(source: RobotPackage, wheel: Path) -> tuple[bool, str]:
     expected = {(f.role, f.path, f.sha256) for f in source.files}
     got = {(f.role, f.path, f.sha256) for f in installed.files}
     if installed.description != source.description or expected != got:
-        return False, "the installed package differs from the source package"
-    return True, (
+        return "wheel_differs", "the installed package differs from the source package"
+    return None, (
         f"the wheel holds {module or '<root>'}/{MANIFEST} and all {len(_expected_files(source))} "
         "files it needs; loading it installed gives the same description and files"
     )
