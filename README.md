@@ -196,6 +196,10 @@ must describe exactly the same world. See
 [ordinary planning](docs/planning.md#ordinary-planning) for the supported goals and
 execution choices.
 
+[`examples/pick`](examples/pick) is the same structure as a complete application: it
+picks a box with the example arm, every choice in one configuration file, and can be
+followed live in a browser with ssmjviser.
+
 ## Current capabilities
 
 | Capability | Status | Details |

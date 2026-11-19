@@ -100,6 +100,23 @@ jobs:
           grep -q '^succeeded native ' "$RUNNER_TEMP/readme_example.txt"
           mkdir -p artifacts/installed-conformance/readme-example
           cp -R run/. "$RUNNER_TEMP/readme_example.txt" artifacts/installed-conformance/readme-example/
+      - name: The reference application runs from the installed wheel as documented, the same twice and with the released viewer
+        working-directory: ${{ runner.temp }}
+        run: |
+          app="$GITHUB_WORKSPACE/examples/pick/pick.py"
+          planning() { "$GITHUB_WORKSPACE/clean-planning/bin/python" -P "$@"; }
+          planning "$app" --out pick-a | tee pick-a.txt
+          planning "$app" --out pick-b > /dev/null
+          diff pick-a/report.json pick-b/report.json
+          uv venv --no-project "$GITHUB_WORKSPACE/clean-view"
+          uv pip install --python "$GITHUB_WORKSPACE/clean-view" "$(echo $GITHUB_WORKSPACE/dist/*.whl)[mujoco,planning]" ssmjviser==1.0.1
+          "$GITHUB_WORKSPACE/clean-view/bin/python" -P "$app" --out pick-view --view < /dev/null | tee pick-view.txt
+          # The view only reads the simulation: the trace is byte-identical without it.
+          cmp pick-a/trace.jsonl pick-view/trace.jsonl
+          # No learning, hardware, or middleware module, nor a viewer without --view.
+          planning -c "import json, runpy, sys; g = runpy.run_path(sys.argv[1]); m = set(json.load(open('pick-a/report.json'))['modules']); bad = (m & g['PROHIBITED']) - g['INTEGRATIONS']['mujoco'] - g['INTEGRATIONS']['planning']; print(sorted(m)); assert not bad, bad" "$GITHUB_WORKSPACE/scripts/check_core_imports.py"
+          mkdir -p "$GITHUB_WORKSPACE/artifacts/installed-conformance/pick"
+          cp -R pick-a pick-view pick-a.txt pick-view.txt "$GITHUB_WORKSPACE/artifacts/installed-conformance/pick/"
       - name: A planning scene builds on sscbirrt's native scene from the installed wheel
         working-directory: ${{ runner.temp }}
         run: >-

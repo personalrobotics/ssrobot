@@ -1,0 +1,31 @@
+# The reference planning application's configuration: every choice pick.py makes.
+# Paths are relative to this file.
+
+# The robot package and the task scene MujocoRuntime composes with it.
+package = "../packages/mujoco_arm"
+scene = "../scenes/pedestal.xml"
+
+[runtime]
+# How close each joint must end to a trajectory's last waypoint for the trajectory to
+# succeed, in radians. Holding the box, the arm ends the lift 0.014 rad from its goal,
+# so MujocoRuntime's default, 0.01, would fail it.
+goal_tolerance = 0.03
+
+[planner]
+# The planner's seed: equal seeds give byte-identical traces and reports.
+seed = 0
+# The fraction of each joint's declared velocity limit a planned motion may use.
+velocity_scaling = 0.5
+
+[task]
+# The object to pick, the fixture it rests on, and the end effector and gripper that hold it.
+object = "box"
+support = "pedestal"
+end_effector = "hand"
+gripper = "gripper"
+# Arm configurations (shoulder, elbow, wrist), in radians: the hand above the box, where
+# the lift also returns, and the arm level with the fingers around the box.
+above = [0.0, -0.4, 0.0]
+grasp = [0.0, 0.0, 0.0]
+# The most simulation ticks (2 ms each) any one motion or gripper command may take.
+max_ticks = 5000
