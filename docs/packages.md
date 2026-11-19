@@ -413,6 +413,73 @@ override that decided it.
 Packages must not contain credentials or host-specific device paths. Those belong to
 machine-local configuration.
 
+## Refusals
+
+Loading, `ssrobot init`, `inspect`, and `doctor` refuse what they cannot interpret
+without guessing. A refusal names its code, the file or declaration involved, and the
+invalid or missing value. The commands also print why ssrobot will not choose for the
+author, what to do next, and the section below that explains it. `DoctorReport` carries
+the same guidance for each failed check. A code without its own row gets general
+guidance.
+
+<!-- refusals:start -->
+| Code | Why ssrobot refuses | Next | See |
+| --- | --- | --- | --- |
+| `ambiguous_chain` | Several chains could be the arm; choosing one would decide what moves. | Answer each `chain:` decision in `ssrobot init`, or declare the manipulator. | [authoring.md#decisions](authoring.md#decisions) |
+| `ambiguous_end_effector` | Several frames could be the tool center point; a wrong one moves every pose goal. | Answer each `end_effector:` decision in `ssrobot init`, or declare [[semantics.end_effectors]] with its frame. | [authoring.md#decisions](authoring.md#decisions) |
+| `ambiguous_gripper` | Several frames could be the gripper; choosing one would decide what grasps. | Answer each `gripper:` decision in `ssrobot init`, or declare the gripper. | [authoring.md#decisions](authoring.md#decisions) |
+| `ambiguous_limits` | Whether MuJoCo applies the range depends on settings ssrobot will not assume. | Set limited='true' on the joint, or autolimits='true' on <compiler>. | [packages.md#mjcf](#mjcf) |
+| `asymmetric_effort_range` | ssrobot's effort limit is one magnitude for both directions, and the range has two. | Make actuatorfrcrange symmetric about zero, or remove it. | [packages.md#mjcf](#mjcf) |
+| `conflicting_override` | A candidate both included and excluded has no single answer. | Keep the candidate in include or in exclude, not both. | [authoring.md#answers](authoring.md#answers) |
+| `duplicate_candidate` | A candidate answered twice has no single answer. | Answer each candidate once, across include and exclude together. | [authoring.md#answers](authoring.md#answers) |
+| `duplicate_include` | Including a file twice declares its elements twice. | Remove the repeated include. | [packages.md#mjcf](#mjcf) |
+| `duplicate_key` | With a key given twice, either value could be the intended one. | Keep one of the repeated keys. | [packages.md#manifest](#manifest) |
+| `duplicate_name` | Two entities with one name make every reference to it ambiguous. | Rename or remove one of them, then rerun `ssrobot doctor PACKAGE`. | [packages.md#manifest](#manifest) |
+| `empty_include` | An include that adds nothing usually names the wrong file. | Correct or remove the include. | [packages.md#mjcf](#mjcf) |
+| `frame_tree` | Every frame must have exactly one place in one tree. | Correct the joint's parent and child so the frames form a single tree. | [packages.md#model-formats](#model-formats) |
+| `include_cycle` | A model that includes itself has no finite content. | Remove the include that closes the cycle. | [packages.md#mjcf](#mjcf) |
+| `invalid_capability` | A command must fit what the component can physically accept. | Declare the command for a component that accepts it. | [packages.md#manifest](#manifest) |
+| `invalid_chain` | A manipulator's joints must move the frames between its base and tool. | Choose base and tool frames that the group's joints connect. | [packages.md#manifest](#manifest) |
+| `invalid_group` | Groups nest one level, so a composite's parts are unambiguous. | Compose the group from non-composite subgroups. | [packages.md#manifest](#manifest) |
+| `invalid_limits` | Limits that contradict each other admit no motion. | Give a lower bound below the upper one, both or neither. | [packages.md#joint-limits](#joint-limits) |
+| `invalid_name` | Names are identifiers in records and URIs; other characters are ambiguous there. | Use only letters, digits, '_', '.', and '-' (a dotted name for a Python module). | [packages.md#manifest](#manifest) |
+| `invalid_path` | Only plain relative paths mean the same thing wherever the package is installed. | Write the path relative to the package root, without '..' or a leading '/'. | [packages.md#paths](#paths) |
+| `invalid_reference` | The reference is not allowed for this kind of entry. | Remove it, or move it to the entry kind that takes it. | [packages.md#model-formats](#model-formats) |
+| `joint_order` | Joint order is the meaning of every configuration of the group. | List the group's joints from base to tool. | [packages.md#manifest](#manifest) |
+| `malformed_json` | The file is not JSON, so none of it can be trusted. | Fix the syntax at the reported position, then rerun the command. | [packages.md#model-formats](#model-formats) |
+| `malformed_toml` | The file is not TOML, so none of it can be trusted. | Fix the syntax at the reported line, then rerun `ssrobot doctor PACKAGE`. | [packages.md#manifest](#manifest) |
+| `malformed_xml` | An unreadable model cannot be described. | Fix the XML at the reported element; the model must load in its own tools first. | [packages.md#model-formats](#model-formats) |
+| `manifest_exists` | Replacing a different manifest would discard the author's work. | Write elsewhere with `--output PATH`, or replace it with `--force`. | [authoring.md#ssrobot-init-model](authoring.md#ssrobot-init-model) |
+| `missing_field` | A required value has no safe default. | Add the field at the reported path, then rerun `ssrobot doctor PACKAGE`. | [packages.md#manifest](#manifest) |
+| `missing_file` | A package must carry every file it uses. | Add the file, or correct the path; paths are relative to the package root. | [packages.md#paths](#paths) |
+| `no_tcp_candidate` | Nothing in the model marks the tool center point. | Declare the end effector with its frame, through `end_effectors` in the answers. | [authoring.md#answers](authoring.md#answers) |
+| `non_finite` | NaN and infinity have no physical meaning in a robot description. | Replace the value at the reported path with a finite number. | [packages.md#manifest](#manifest) |
+| `noncanonical_pair` | A pair has one canonical spelling so it compares and hashes consistently. | Order the frames so frame_a sorts before frame_b. | [packages.md#manifest](#manifest) |
+| `out_of_limits` | A configuration outside the joint limits cannot be commanded. | Move the value inside the limits that `ssrobot inspect` shows. | [packages.md#joint-limits](#joint-limits) |
+| `package_not_found` | An installed package is found by its module name without importing it. | Install the package, check the dotted module name, and ship ssrobot.toml inside it. | [authoring.md#ssrobot-doctor-package](authoring.md#ssrobot-doctor-package) |
+| `path_escape` | A file outside the package root would not ship with the installed package. | Move the file inside the package root, or set the root with `--package-root`. | [packages.md#paths](#paths) |
+| `schema_mismatch` | The file declares a different record, so it is not this kind of file. | Start the manifest with `schema = "ssrobot.package"`, or run `ssrobot init MODEL`. | [packages.md#manifest](#manifest) |
+| `shape_mismatch` | A value with the wrong number of entries cannot be matched to joints. | Give one value per joint of the group, in the group's order. | [packages.md#manifest](#manifest) |
+| `srdf_mismatch` | An SRDF written for another robot would attach the wrong semantics. | Use the SRDF whose robot name matches the URDF's. | [packages.md#urdf-and-srdf](#urdf-and-srdf) |
+| `unknown_field` | An unrecognized field is usually a misspelling; ignoring it would drop intent. | Correct or remove the field at the reported path, then rerun `ssrobot doctor PACKAGE`. | [packages.md#manifest](#manifest) |
+| `unknown_package` | A package:// URI must name this robot, or the file could come from another package. | Name the robot as the model's package:// URIs do (`ssrobot init MODEL --robot NAME`), or correct the URIs. | [packages.md#paths](#paths) |
+| `unknown_reference` | The name refers to nothing declared, and ssrobot will not guess a substitute. | Declare the referenced entity, or correct the name to one that `ssrobot inspect` lists. | [packages.md#manifest](#manifest) |
+| `unknown_schema` | Without a known schema, the fields have no defined meaning. | Name a schema this ssrobot defines; `ssrobot init MODEL` writes a valid manifest. | [packages.md#manifest](#manifest) |
+| `unresolved_decisions` | Each open decision is a semantic choice the model does not settle. | Answer them on a terminal, or in a file passed with `ssrobot init --answers FILE`. | [authoring.md#answers](authoring.md#answers) |
+| `unsupported_construct` | ssrobot reads only constructs whose kinematics it can describe exactly. | Simplify the reported element, or describe the robot as ssrobot kinematics JSON. | [packages.md#mjcf](#mjcf) |
+| `unsupported_format` | The model format decides how the file is read, and the suffix does not name one. | Use a .xml (MJCF), .urdf, or .json (ssrobot kinematics) model file. | [packages.md#model-formats](#model-formats) |
+| `unsupported_symlink` | A directory symlink can change what the package contains after it is checked. | Replace the symlinked directory with a real one. | [packages.md#paths](#paths) |
+| `version_mismatch` | A version this ssrobot does not implement may mean something different. | Write `version = 1`, or install the ssrobot that wrote the file. | [packages.md#manifest](#manifest) |
+| `wheel_differs` | The installed package would describe a different robot than its source. | Rebuild the wheel from the current source. | [authoring.md#ssrobot-doctor-package](authoring.md#ssrobot-doctor-package) |
+| `wheel_incomplete` | An installed package must carry every file it uses. | Include the listed files in the build (for hatch, `[tool.hatch.build]`), then rebuild. | [authoring.md#ssrobot-doctor-package](authoring.md#ssrobot-doctor-package) |
+| `wheel_manifest` | The installed package is found by its one ssrobot.toml. | Ship exactly one ssrobot.toml for this robot inside the wheel's package directory. | [authoring.md#ssrobot-doctor-package](authoring.md#ssrobot-doctor-package) |
+| `wheel_unloadable` | The package loads from source but not as installed. | Fix the reported refusal in the built package, then rebuild. | [authoring.md#ssrobot-doctor-package](authoring.md#ssrobot-doctor-package) |
+| `wheel_unreadable` | A wheel that cannot be read cannot be installed either. | Rebuild the wheel (`uv build`), then rerun `ssrobot doctor PACKAGE --wheel WHEEL`. | [authoring.md#ssrobot-doctor-package](authoring.md#ssrobot-doctor-package) |
+| `widened_limit` | The model's limits are the robot's; a manifest may only tighten them. | Declare a value within the model's limit, or change the model. | [packages.md#joint-limits](#joint-limits) |
+| `wrong_type` | A value or file of the wrong kind cannot be converted without guessing. | Give the reported field the type the manifest table shows, or point the reported path at a regular file, then rerun `ssrobot doctor PACKAGE`. | [packages.md#manifest](#manifest) |
+| `wrong_value` | The value is outside the field's allowed set. | Use one of the values the manifest table lists, then rerun `ssrobot doctor PACKAGE`. | [packages.md#manifest](#manifest) |
+<!-- refusals:end -->
+
 ## Report and determinism
 
 `RobotPackage.report()` lists, in a fixed order, the manifest, each model, each asset

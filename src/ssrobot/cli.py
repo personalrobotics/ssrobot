@@ -31,8 +31,15 @@ from ssrobot.errors import SsrobotError
 from ssrobot.inference import CandidateChoice
 from ssrobot.manifest_toml import render_manifest
 from ssrobot.package import RobotPackage
+from ssrobot.refusals import guidance
 
 OK, INVALID, UNANSWERED, EXISTS = 0, 1, 2, 3
+
+
+def _advise(code: str) -> None:
+    """Why ssrobot refused with ``code``, and what to do next."""
+    g = guidance(code)
+    print(f"  why: {g.why}\n  next: {g.next}\n  see: {g.url}", file=sys.stderr)
 
 
 def _read_answers(path: Path) -> AuthoringAnswers:
@@ -96,6 +103,7 @@ def _init(args: argparse.Namespace) -> int:
             print(f"  {x.id}", file=sys.stderr)
         where = args.draft_json or "--draft-json PATH"
         print(f"The full draft is in {where}; answer with --answers FILE.", file=sys.stderr)
+        _advise("unresolved_decisions")
         return UNANSWERED
     manifest = finalize(d)
     if interactive and not args.yes:
@@ -108,6 +116,7 @@ def _init(args: argparse.Namespace) -> int:
     except SsrobotError as e:
         if e.code == "manifest_exists":
             print(f"{e.message}", file=sys.stderr)
+            _advise(e.code)
             return EXISTS
         raise
     target = args.output or d.root / "ssrobot.toml"
@@ -174,6 +183,9 @@ def _doctor(args: argparse.Namespace) -> int:
         args.json.write_text(dumps(report) + "\n", encoding="utf-8")
     for c in report.checks:
         print(f"{c.outcome.value:>14}  {c.name}: {c.detail}")
+        if c.code is not None:
+            g = guidance(c.code)
+            print(f"{'':>16}next: {g.next}\n{'':>16}see: {g.url}")
     return OK if report.passed else INVALID
 
 
@@ -211,6 +223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SsrobotError as e:
         where = f" at {e.path}" if e.path else ""
         print(f"error {e.code}{where}: {e.message}", file=sys.stderr)
+        _advise(e.code)
         return INVALID
     except OSError as e:  # a missing input or an unwritable output path
         print(f"error file: {e}", file=sys.stderr)

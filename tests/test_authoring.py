@@ -489,3 +489,97 @@ def test_reference_packages_are_authored_from_their_models(artifacts: Path) -> N
             _valid(out / robot / f"{name}.json")
         # Nothing init wrote had to be deleted; the author only changed or added.
         assert "removed" not in s["entries"], s
+
+
+def test_every_refusal_names_why_and_what_next(artifacts: Path, tmp_path: Path) -> None:
+    """#257: each credible authoring failure is refused with its code, the declaration
+    involved, why ssrobot will not choose, and the next step and its document, from
+    ``doctor`` (in the DoctorReport too), ``inspect``, and ``init``. Every code here has
+    its own guidance, not the general fallback."""
+    from ssrobot.refusals import REFUSALS
+    from tests.test_packages import CASES
+
+    matrix: dict[str, dict[str, Any]] = {}
+
+    def doctor_case(name: str, root: Path, *extra: str | Path) -> None:
+        report = tmp_path / f"{len(matrix)}.json"
+        result = _ssrobot("doctor", root, *extra, "--json", report)
+        failed = [c for c in _valid(report)["checks"] if c["outcome"] == "failed"]
+        matrix[name] = {
+            "command": "doctor",
+            "exit": result.returncode,
+            "check": failed[0]["name"] if failed else None,
+            "code": failed[0]["code"] if failed else None,
+            "next": failed[0]["next"] if failed else None,
+            "see": failed[0]["see"] if failed else None,
+            "printed": "next: " in result.stdout and "see: https://" in result.stdout,
+        }
+
+    def cli_case(name: str, *args: str | Path) -> None:
+        result = _ssrobot(*args)
+        code = next(
+            (line.split()[1] for line in result.stderr.splitlines() if line.startswith("error ")),
+            "unresolved_decisions" if result.returncode == 2 else None,
+        )
+        matrix[name] = {
+            "command": str(args[0]),
+            "exit": result.returncode,
+            "code": code,
+            "printed": "  why: " in result.stderr
+            and "  next: " in result.stderr
+            and "  see: https://" in result.stderr,
+            "traceback": "Traceback" in result.stderr,
+        }
+
+    for name, (mutate, expected) in CASES.items():
+        if expected is None:
+            continue
+        root = shutil.copytree(EXAMPLES / "minimal_arm", tmp_path / f"case{len(matrix)}" / "pkg")
+        try:
+            mutate(root)
+        except SsrobotError:
+            continue  # the case exercises a resolver directly, not a package
+        doctor_case(name, root)
+        matrix[name]["expected"] = expected
+    # Inference that cannot choose among three tool center points.
+    ambiguous = tmp_path / "ambiguous"
+    ambiguous.mkdir()
+    for f in ("arm.xml", "actuators.xml"):
+        shutil.copy(EXAMPLES / "mujoco_arm" / f, ambiguous / f)
+    (ambiguous / "ssrobot.toml").write_text(
+        'schema = "ssrobot.package"\nversion = 1\nrobot = "mujoco_arm"\n'
+        'canonical_model = "mjcf"\n\n[[models]]\nname = "mjcf"\nformat = "mjcf"\n'
+        'path = "arm.xml"\n\n[inference]\nmode = "adopt"\n'
+    )
+    doctor_case("three plausible tool center points", ambiguous)
+    matrix["three plausible tool center points"]["expected"] = "ambiguous_end_effector"
+    # Wheels that would not install the package.
+    root = _without_manifest(FIXTURES / "urdf_arm", tmp_path / "urdf_arm")
+    (root / "ssrobot.toml").write_text((FIXTURES / "urdf_arm" / "ssrobot.toml").read_text())
+    not_zip = tmp_path / "not.whl"
+    not_zip.write_bytes(b"not a zip")
+    partial = _wheel(tmp_path / "partial.whl", root, "urdf_arm_robot", skip="meshes/base.stl")
+    for name, wheel, expected in (
+        ("wheel that is not a zip", not_zip, "wheel_unreadable"),
+        ("wheel missing a mesh", partial, "wheel_incomplete"),
+    ):
+        doctor_case(name, root, "--wheel", wheel)
+        matrix[name]["expected"] = expected
+    # The same guidance from inspect and init.
+    broken = shutil.copytree(EXAMPLES / "minimal_arm", tmp_path / "broken")
+    (broken / "kinematics.json").unlink()
+    cli_case("inspect a package missing its model", "inspect", broken)
+    matrix["inspect a package missing its model"]["expected"] = "missing_file"
+    model = _without_manifest(EXAMPLES / "mujoco_arm", tmp_path / "undecided") / "arm.xml"
+    cli_case("init with decisions left open", "init", model, "--robot", "mujoco_arm")
+    matrix["init with decisions left open"]["expected"] = "unresolved_decisions"
+    urdf = _without_manifest(FIXTURES / "urdf_arm", tmp_path / "unnamed") / "arm.urdf"
+    cli_case("init without the robot its URIs name", "init", urdf, "--no-input")
+    matrix["init without the robot its URIs name"]["expected"] = "unknown_package"
+
+    (artifacts / "refusal-matrix.json").write_text(json.dumps(matrix, indent=2) + "\n")
+    assert len(matrix) > 30, len(matrix)
+    for name, row in matrix.items():
+        assert row["code"] == row["expected"], (name, row)
+        assert row["code"] in REFUSALS, (name, row)
+        assert row["exit"] in (1, 2) and row["printed"] and not row.get("traceback"), (name, row)
