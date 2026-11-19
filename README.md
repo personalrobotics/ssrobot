@@ -18,7 +18,9 @@ same moment reconstructed from the run bundle alone.*
 
 The scope is intentionally narrow. ssrobot is not a planner, simulator, policy
 framework, skill library, viewer, or robot application. It defines the robot semantics
-and execution contracts that those systems share.
+and execution contracts that those systems share. Today it plans and executes motions in
+MuJoCo and records and replays them; learned policies and physical hardware are planned
+([current capabilities](#current-capabilities)).
 
 ## Robot packages
 
@@ -218,11 +220,11 @@ until a complete reference application demonstrates them.
 | Layer | Owns |
 | --- | --- |
 | ssrobot | Robot semantics, runtimes, state, commands, observations, planning contracts, execution, and evidence |
-| sscbirrt, ssik, sstsr | Planning, inverse kinematics, and constraint mathematics |
-| ssgrasping | Robot-neutral manipulation skills |
-| mj_viser, ssmjviser | General read-only MuJoCo visualization and its optional ssrobot integration |
-| Geodude, ADA, Opendubs | Robot- and task-specific applications |
-| sspilot (future) | Discoverable operator, CLI, and agent-facing interfaces |
+| [sscbirrt](https://github.com/personalrobotics/sscbirrt), [ssik](https://github.com/personalrobotics/ssik), [sstsr](https://github.com/personalrobotics/sstsr) | Planning, inverse kinematics, and constraint mathematics |
+| [ssgrasping](https://github.com/personalrobotics/ssgrasping) | Robot-neutral manipulation skills |
+| [mj_viser](https://github.com/personalrobotics/mj_viser), ssmjviser | General read-only MuJoCo visualization and its optional ssrobot integration |
+| [Geodude](https://github.com/personalrobotics/geodude), [ADA](https://github.com/personalrobotics/ada_mj), Opendubs | Robot- and task-specific applications |
+| [sspilot](https://github.com/personalrobotics/sspilot) (future) | Discoverable operator, CLI, and agent-facing interfaces |
 
 Robot-specific behavior belongs in the robot's application. A skill that works across
 robots belongs in ssgrasping. ssrobot holds only the semantics and execution boundary
