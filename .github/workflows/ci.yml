@@ -122,6 +122,9 @@ jobs:
           why = {b.name: b.unavailable.code for b in r.mapping.channels if b.unavailable};
           ctx.close(); print(why);
           assert why == {'wrist_rgb': 'rendering_unavailable', 'wrist_depth': 'rendering_unavailable'}, why"
+      - name: Both reference packages are authored from their models with the installed commands
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/clean/bin/python -P $GITHUB_WORKSPACE/scripts/author_reference_packages.py --out $GITHUB_WORKSPACE/artifacts/installed-conformance/authoring --ssrobot $GITHUB_WORKSPACE/clean/bin/ssrobot
       - name: Conformance from the installed wheel
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/clean/bin/python -m ssrobot.conformance --out $GITHUB_WORKSPACE/artifacts/installed-conformance
