@@ -1,0 +1,28 @@
+# The supported stacks (#259). Each is ssrobot's mujoco and planning extras, as
+# pyproject.toml declares them, plus the reference application's pins below, resolved
+# for Linux and locked with every artifact hash in stack/<name>.txt. The stack CI job
+# installs each lock exactly into a clean environment with the built ssrobot wheel and
+# verifies it. docs/stack.md is generated from these files.
+#
+# To change a dependency, edit pyproject.toml or this file, then run
+#   uv run python scripts/generate_stack.py
+# and commit the regenerated locks and matrix; CI fails until they agree.
+
+# Nothing published after this instant is considered, so a resolution is repeatable.
+exclude_newer = "2026-11-19T00:00:00Z"
+platform = "x86_64-manylinux_2_28"
+
+# Pinned by the reference application, examples/pick, not required by ssrobot.
+applications = ["ssmjviser==1.0.1"]
+
+# Every declared lower bound, on the oldest supported Python.
+[[stacks]]
+name = "minimum"
+python = "3.11"
+resolution = "lowest-direct"
+
+# The newest compatible release of everything, on the newest supported Python.
+[[stacks]]
+name = "newest"
+python = "3.13"
+resolution = "highest"

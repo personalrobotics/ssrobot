@@ -23,6 +23,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          # generate_stack.py --check compares uv's resolutions byte for byte.
+          version: "0.12.15"
           python-version: ${{ matrix.python }}
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libosmesa6
       - run: uv sync --locked
@@ -31,6 +33,7 @@ jobs:
       - run: uv run mypy
       - run: uv run python scripts/generate_schemas.py --check
       - run: uv run python scripts/generate_refusals.py --check
+      - run: uv run python scripts/generate_stack.py --check
       - run: uv run python scripts/check_doc_links.py
       - run: uv run pytest
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -154,6 +157,50 @@ jobs:
         with:
           name: installed-conformance
           path: artifacts/installed-conformance/
+          if-no-files-found: error
+
+  stack:
+    # Each supported stack (docs/stack.md), installed exactly from its lock with the
+    # built wheel, verified, and reported.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - stack: minimum
+            python: "3.11"
+          - stack: newest
+            python: "3.13"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.15"
+          python-version: ${{ matrix.python }}
+      - run: uv build --wheel --out-dir dist
+      - name: The ${{ matrix.stack }} stack, exactly from its lock, with the wheel
+        run: |
+          uv venv --no-project --python ${{ matrix.python }} env
+          uv pip install --python env --require-hashes -r stack/${{ matrix.stack }}.txt
+          uv pip install --python env --no-deps dist/*.whl
+          uv pip check --python env
+      - name: Checks in the stack
+        working-directory: ${{ runner.temp }}
+        run: |
+          out="$GITHUB_WORKSPACE/artifacts/stack-${{ matrix.stack }}"
+          py() { "$GITHUB_WORKSPACE/env/bin/python" -P "$@"; }
+          py "$GITHUB_WORKSPACE/scripts/check_core_imports.py" --installed --integration demo --report "$out/imports.json"
+          py -m ssrobot.conformance --out "$out/conformance"
+          py -m ssrobot.demo --out "$out/demo"
+          py "$GITHUB_WORKSPACE/examples/pick/pick.py" --out "$out/pick"
+          py "$GITHUB_WORKSPACE/examples/pick/pick.py" --out "$out/pick-view" --view < /dev/null
+          cmp "$out/pick/trace.jsonl" "$out/pick-view/trace.jsonl"
+          py "$GITHUB_WORKSPACE/scripts/stack_report.py" --stack ${{ matrix.stack }} --wheel "$(echo $GITHUB_WORKSPACE/dist/*.whl)" --out "$out/stack-${{ matrix.stack }}.json" --check dependency-gate --check conformance --check demo --check pick --check pick-view
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: stack-${{ matrix.stack }}
+          path: artifacts/stack-${{ matrix.stack }}/
           if-no-files-found: error
 
   reference-robots:

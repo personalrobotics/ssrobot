@@ -144,6 +144,9 @@ It plans and executes the motion below and writes the trace, a run bundle, and a
 of every identity and choice to a new `ssrobot-demo` directory. `--seed` sets the
 planner's seed; the same seed gives the same report.
 
+The [supported stack](docs/stack.md) lists the releases of MuJoCo, sscbirrt, sstsr, and
+ssmjviser verified together, and the support policy.
+
 From a clone, [uv](https://docs.astral.sh/uv/) installs the MuJoCo and planning
 integrations used by the repository examples:
 
