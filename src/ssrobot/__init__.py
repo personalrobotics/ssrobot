@@ -173,6 +173,7 @@ from ssrobot.rest import (
 )
 from ssrobot.runtime import Runtime, RuntimeInfo, RuntimeUpdate, SceneRuntime, SnapshotRuntime
 from ssrobot.scene import (
+    ArticulatedState,
     Attachment,
     AttachmentReference,
     AttachmentViolation,
@@ -193,6 +194,7 @@ __all__ = [
     "ActionChunk",
     "AppliedCommand",
     "ArrayValue",
+    "ArticulatedState",
     "AssetStore",
     "Attachment",
     "AttachmentReference",

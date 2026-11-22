@@ -158,7 +158,7 @@ trace. It validates everything going into the runtime and everything coming out.
 | `start_chains(chains, *, snapshot, workers=1, cancel_lower=True, abort=None)` | Open or faulted. Starts a race of staged prefixes from a snapshot or prediction, returning a passive `ChainsRun` the caller advances while the context keeps stepping. See planning.md, *Racing: chains*. |
 | `plan_portfolio(request, *, snapshot, planners, seeds=None, processor=None, workers=1, abort=None)` | Open or faulted. Plans one request with each planner, as one-stage chains, blocking until every planner has ended, and returns the `Chains`; the shortest valid motion is selected. See planning.md, *Planner portfolios*. |
 | `predict(execution, *, unsettled=(), releases=None, removals=(), joints=None)` | Open. The `PredictedSnapshot` expected if a joint trajectory, submitted with a snapshot captured at the current revision, succeeds; with the objects named `unsettled`, the held objects expected released and where, the held objects expected released and removed (registered object poses only), and the positions of joints the motion doesn't move, as planning.md describes. Plannable; a plan made on it executes only as a continuation (`predicted_plan` otherwise). |
-| `project(plan, *, snapshot)` | Open or faulted. The `PlanProjection` of a successful plan that has not run: where it would leave the robot, as a planning state with `snapshot`'s stamp. Plannable; a plan made on it executes only as a continuation of an execution of exactly that plan (`projected_plan` otherwise). It confers no validity. |
+| `project(plan, *, snapshot)` | Open or faulted. The `PlanProjection` of a successful plan that has not run: where it would leave the robot, as a planning state with `snapshot`'s stamp. Plannable; a plan made on it executes only as a continuation of an execution of exactly that plan (`projected_plan` otherwise). It confers no validity. Both `predict` and `project` refuse in a scene with articulated objects (`prediction_unsupported`, a `CapabilityError`). |
 | `continuation(plan, *, planner, prediction)`, `continuation(plan, *, planner, projection, source)`, `execute_continuation(continuation, ...)` | Open. Bind a plan made on a prediction, or on a projection together with the particular execution of the projected plan, to it and its planner. Then run it from the actual arrival state: checked against the prediction, rebased by the planner, validated whole, and submitted, or refused with a code. See *Interleaving planning and execution* in [planning.md](planning.md). |
 | `owners(component)`, `executions` | Every unfinished execution holding any of the component's resources, as `Ownership` entries; and every execution in submission order. |
 
@@ -241,10 +241,18 @@ A failure during this cleanup is attached to the original error as a note.
 ### Scene
 
 Task objects belong to the runtime, not the robot description. A runtime with a scene
-lists them in `RuntimeInfo`. The context rejects a runtime that lists objects or
-fixtures without implementing `SceneRuntime` (`undeclared_capability`).
+lists them in `RuntimeInfo`. The context rejects a runtime that lists objects,
+fixtures, or articulated objects without implementing `SceneRuntime`
+(`undeclared_capability`).
 - `objects` are the bodies that can be attached.
 - `fixtures` are static bodies an attachment may allow contact with.
+- `articulated` (`RuntimeInfo` version 10) are bodies that move on constrained joints,
+  such as a block that slides and turns on a table but never tips. They can be
+  observed and collided with, and are never attached. A prediction or projection would
+  keep them at their captured joint positions although the motion may move them, so
+  `predict` and `project` refuse in a scene that has any (`prediction_unsupported`).
+
+A name is in at most one of the three.
 
 An **attachment** declares that an end effector holds an object. It is what a planner
 needs to treat the object as part of the robot:
@@ -263,6 +271,7 @@ as it was.
 
 | Check | Code |
 | --- | --- |
+| the object is not one of `RuntimeInfo.articulated` | `not_attachable` |
 | the object is one of `RuntimeInfo.objects` | `unknown_reference` |
 | the end effector is declared | `unknown_reference` |
 | each `allow` name is a description frame or a fixture | `unknown_reference` |
@@ -371,6 +380,9 @@ A `SceneSnapshot` is an immutable copy of everything a geometric query reads. It
 - every scene object, with its world pose as measured, not as declared, or, with
   registered object poses, as registered (see *Registered objects*), and its
   `ObjectStatus`;
+- every articulated object's joint positions (`ArticulatedState`), always as the
+  runtime measured them, in the runtime's order for that object, whatever the object
+  poses;
 - the scene's fixtures and attachments, and its revision;
 - its provenance: the description fingerprint, the runtime's name, and `model`, the
   runtime's opaque identity for the simulated world.
@@ -382,13 +394,13 @@ SHA-256 of its canonical encoding.
 fails with `snapshots_unavailable`. `SnapshotRuntime.world()` is the runtime's identity
 for its simulated world, which its snapshots record as `model`. The context checks the
 answer: the runtime's description, name, world, revision, joints, objects, fixtures,
-and attachments must all match its own. The stamp is a direct answer, like `submit`'s. Anything else is a contract
+articulated objects, and attachments must all match its own. The stamp is a direct answer, like `submit`'s. Anything else is a contract
 breach. A good snapshot is traced as a `snapshot` record.
 
 `ctx.planning_scene(snapshot, group, *, clearance_m=0.0)` materializes a
 `PlanningScene`:
-- **Over one joint group.** The group's joints vary. Every other joint, object, and
-  attachment stays as in the snapshot, and each held object moves with its end effector
+- **Over one joint group.** The group's joints vary. Every other joint, object,
+  articulated object, and attachment stays as in the snapshot, and each held object moves with its end effector
   when that end effector moves with the group.
 - **Isolated and timeless.** A planning scene shares nothing mutable with the live
   context or with any other scene from the same snapshot. Its queries never advance
@@ -406,7 +418,7 @@ Materializing refuses:
 | --- | --- |
 | a snapshot of another robot description | `stale_description` (`StaleRevisionError`) |
 | a snapshot from another runtime, or another simulated world (`model` is not `world()`) | `incompatible_snapshot` |
-| a snapshot whose joints are not the description's, in order; whose objects or fixtures are not this scene's; or whose attachments name an unknown end effector, or allow a name that is neither a frame nor a fixture | `incompatible_snapshot` |
+| a snapshot whose joints are not the description's, in order; whose objects, fixtures, or articulated objects are not this scene's; or whose attachments name an unknown end effector, or allow a name that is neither a frame nor a fixture | `incompatible_snapshot` |
 | an undeclared group | `unknown_reference` |
 | a clearance that is not a finite number >= 0 | `wrong_type`, `out_of_limits` |
 | a nonzero clearance the runtime cannot keep | `clearance_unsupported` (`CapabilityError`) |
@@ -415,7 +427,7 @@ Materializing refuses:
 | --- | --- |
 | `forward_kinematics(q, frame)` | `frame`'s world `Pose` at `q`. A camera's frame is its optical frame, as in observations. |
 | `is_valid(q)` | `False` outside joint limits or with any disallowed contact. |
-| `contacts(q)` | Every disallowed `Contact`: `self_collision` or `robot_environment`, naming description frames, objects, fixtures, or `world`, with the signed distance. |
+| `contacts(q)` | Every disallowed `Contact`: `self_collision` or `robot_environment`, naming description frames, objects, fixtures, articulated objects, or `world`, with the signed distance. |
 | `native()` | A backend-native checker a planner adapter may use instead, or `None`. Its type is the backend's. |
 
 `q` is one finite real number per group joint, in group order. A bool or a string is
@@ -906,7 +918,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`KinematicModel`](../schemas/ssrobot.KinematicModel.v1.json) | A robot's frames and joints, as a model loader produces them. |
 | [`ssrobot.package`](../schemas/ssrobot.package.v1.json) | A package manifest, `ssrobot.toml`. See [packages.md](packages.md). |
 | [`PackageReport`](../schemas/ssrobot.PackageReport.v1.json) | What loading a package resolved. |
-| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v9.json) | What an opened runtime binds and confirms, including its scene channels, which channels are privileged, and the rest criteria it declares. |
+| [`RuntimeInfo`](../schemas/ssrobot.RuntimeInfo.v10.json) | What an opened runtime binds and confirms, including its scene channels, which channels are privileged, and the rest criteria it declares. |
 | [`JointRest`](../schemas/ssrobot.JointRest.v2.json), [`ObjectRest`](../schemas/ssrobot.ObjectRest.v2.json) | What a rest watch waits for: a component's joints, or a scene object, at rest. |
 | [`RestResult`](../schemas/ssrobot.RestResult.v2.json) | How a rest watch ended, with the readings that justify it. |
 | [`JointCommand`](../schemas/ssrobot.JointCommand.v1.json) | Instantaneous position, velocity, or effort targets for a group. |
@@ -922,7 +934,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`AppliedCommand`](../schemas/ssrobot.AppliedCommand.v2.json) | What was applied for an execution, and every modification from its submitted command. |
 | [`Submission`](../schemas/ssrobot.Submission.v4.json) | A command accepted for execution, with its identifier, source, and deadline, and the snapshot and compiled plan it came from, if any. |
 | [`RuntimeHealth`](../schemas/ssrobot.RuntimeHealth.v1.json) | A runtime fault or recovery, with the affected components. |
-| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v12.json) | One event in a trace. |
+| [`TraceRecord`](../schemas/ssrobot.TraceRecord.v13.json) | One event in a trace. |
 | [`RunBundle`](../schemas/ssrobot.RunBundle.v1.json) | A run bundle's manifest: the robot and world identities, the trace's clock, and every bundled file's path and hash. |
 | [`ReplayScript`](../schemas/ssrobot.ReplayScript.v1.json) | A recording for `ReplayRuntime`. |
 | [`ChainsReport`](../schemas/ssrobot.ChainsReport.v3.json) | Every attempt and stage of a race of staged prefixes, each chain's choice and cost, and the selection. See planning.md. |
@@ -930,7 +942,7 @@ set fails with `joint_mismatch`. Values are never reordered silently.
 | [`SceneState`](../schemas/ssrobot.SceneState.v2.json) | A context's scene: its objects and fixtures, what it holds, what is registered or removed, and its revision. |
 | [`AttachmentReference`](../schemas/ssrobot.AttachmentReference.v1.json) | An attachment declared from registration, beside the transform the runtime tracks. |
 | [`AttachmentViolation`](../schemas/ssrobot.AttachmentViolation.v1.json) | A runtime's report that an attached object left its declared transform. |
-| [`SceneSnapshot`](../schemas/ssrobot.SceneSnapshot.v2.json) | An immutable copy of everything a geometric query reads, from which planning scenes are built. |
+| [`SceneSnapshot`](../schemas/ssrobot.SceneSnapshot.v3.json) | An immutable copy of everything a geometric query reads, from which planning scenes are built. |
 | [`PlanningRequest`](../schemas/ssrobot.PlanningRequest.v3.json) | Everything a planner needs, fully resolved from a description and a snapshot. |
 | [`ConfigurationGoal`](../schemas/ssrobot.ConfigurationGoal.v1.json) | Reach any one of these configurations. |
 | [`PoseGoal`](../schemas/ssrobot.PoseGoal.v1.json) | Bring a frame to a world pose, within tolerances. |

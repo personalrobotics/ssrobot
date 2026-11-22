@@ -855,6 +855,12 @@ class RobotContext:
         self._require("attach")
         check_name(source, path="source")
         scene = self._current_scene(revision)
+        if object in self.info.articulated:
+            raise ValidationError(
+                "not_attachable",
+                f"{object!r} is an articulated scene object, which cannot be attached",
+                path="object",
+            )
         if object not in scene.objects:
             raise ValidationError(
                 "unknown_reference", f"{object!r} is not a scene object", path="object"
@@ -1081,6 +1087,7 @@ class RobotContext:
             or taken.joints != tuple(j.name for j in self._description.joints)
             or tuple(o.name for o in taken.objects) != scene.objects
             or taken.fixtures != scene.fixtures
+            or tuple(a.name for a in taken.articulated) != info.articulated
             or taken.attachments != scene.attachments
             or any(o.status is not ObjectStatus.MEASURED for o in taken.objects)
         ):
@@ -1354,6 +1361,7 @@ class RobotContext:
         sets joints the motion does not move to the positions expected when the plan
         runs, such as a gripper's, opened by that release; for planning only."""
         self._require("predict")
+        self._refuse_articulated("predict")
         self._check_own(execution)
         command = execution.command
         if isinstance(command, GuardedJointTrajectory) and isinstance(command.guard, OpeningGuard):
@@ -1485,6 +1493,19 @@ class RobotContext:
                 moved[attachment.object] = _compose(after, attachment.transform)
         return moved
 
+    def _refuse_articulated(self, what: str) -> None:
+        """Refuse a predicted state in a scene with articulated objects. It would keep
+        each one at its captured joint positions, though the motion may move it: safe
+        for collision, since every continuation is validated in the actual scene, but
+        not for a goal that depends on where the object is."""
+        if self.info.articulated:
+            raise CapabilityError(
+                "prediction_unsupported",
+                f"{what} cannot predict the articulated objects "
+                f"{', '.join(self.info.articulated)}; plan from a captured snapshot",
+                path="scene",
+            )
+
     def project(
         self, plan: PlanResult, *, snapshot: SceneSnapshot | PredictedSnapshot
     ) -> PlanProjection:
@@ -1495,6 +1516,7 @@ class RobotContext:
         validated. A plan made on it continues only from an execution of exactly
         ``plan`` (``continuation(..., projection=, source=)``)."""
         self._require("project")
+        self._refuse_articulated("project")
         if not isinstance(plan, PlanResult) or not plan.succeeded:
             raise ValidationError(
                 "unsuccessful_plan", "only a successful plan is projected", path="plan"
@@ -2426,6 +2448,8 @@ class RobotContext:
             )
         if snapshot.fixtures != info.fixtures:
             raise incompatible("its fixtures are not this scene's", "fixtures")
+        if tuple(a.name for a in snapshot.articulated) != info.articulated:
+            raise incompatible("its articulated objects are not this scene's", "articulated")
         frames = {f.name for f in self._description.frames}
         effectors = {e.name for e in self._description.end_effectors}
         for i, attachment in enumerate(snapshot.attachments):
@@ -2538,10 +2562,8 @@ class RobotContext:
                 )
         robot = {c.name: c for c in self._description.channels}
         scene = {c.name: c for c in info.scene_channels}
-        entities = (
-            set(info.objects) | set(info.fixtures) | {f.name for f in self._description.frames}
-        )
-        scene_entities = set(info.objects) | set(info.fixtures)
+        scene_entities = set(info.objects) | set(info.fixtures) | set(info.articulated)
+        entities = scene_entities | {f.name for f in self._description.frames}
         frames = {f.name for f in self._description.frames}
         for name, spec in scene.items():
             # Only what the description cannot declare: a scene entity's pose, or a
@@ -2607,7 +2629,7 @@ class RobotContext:
         has_scene = callable(getattr(self._runtime, "attach", None)) and callable(
             getattr(self._runtime, "detach", None)
         )
-        if (info.objects or info.fixtures) and not has_scene:
+        if (info.objects or info.fixtures or info.articulated) and not has_scene:
             raise CapabilityError(
                 "undeclared_capability", "runtime offers scene objects but cannot attach them"
             )
@@ -2835,7 +2857,11 @@ class _CheckedPlanningScene:
         self._frames = {f.name for f in description.frames}
         snapshot = scene.snapshot
         self._names = (
-            self._frames | {o.name for o in snapshot.objects} | set(snapshot.fixtures) | {"world"}
+            self._frames
+            | {o.name for o in snapshot.objects}
+            | set(snapshot.fixtures)
+            | {a.name for a in snapshot.articulated}
+            | {"world"}
         )
         self._limits = tuple(
             (description.joint(j).limits.lower, description.joint(j).limits.upper)

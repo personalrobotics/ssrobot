@@ -21,7 +21,7 @@ import mujoco
 from ssrobot._world import model_signature, world_identity
 from ssrobot.bundle import Bundle
 from ssrobot.errors import CapabilityError, ValidationError
-from ssrobot.mujoco._compose import compile_world, require_version, select
+from ssrobot.mujoco._compose import compile_world, require_version, select, subtree_addresses
 from ssrobot.mujoco._model import unchanged
 from ssrobot.mujoco._scene import load_scene
 from ssrobot.package import ModelEntry, ModelFormat, RobotPackage
@@ -50,7 +50,7 @@ def object_qpos(model: Any, state: ObjectState) -> tuple[float, ...]:
 @dataclass(frozen=True)
 class SnapshotMapping:
     """Where a world's snapshots go in its ``qpos``: each description joint, in order,
-    and each scene object's free joint."""
+    each scene object's free joint, and each articulated object's joints."""
 
     description: str
     world: str
@@ -58,14 +58,18 @@ class SnapshotMapping:
     """Each description joint and its qpos address."""
     objects: tuple[tuple[str, int], ...]
     """Each scene object, sorted, and its free joint's qpos address."""
+    articulated: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    """Each articulated object, sorted, and the qpos address of each of its positions."""
 
     def apply(self, snapshot: SceneSnapshot, data: Any) -> None:
-        """Write ``snapshot``'s joint positions and object poses into ``data.qpos``, from the
-        snapshot alone: a removed object is placed out of the world as planning places it
-        (``object_qpos``), and an unknown one refuses (``unknown_object_pose``). Nothing
-        else changes: run ``mujoco.mj_kinematics`` (or ``mj_forward``) for the body poses.
-        Fails with ``incompatible_snapshot`` for a snapshot of another description or
-        world, or of other joints or objects. ``data`` is unchanged unless it succeeds."""
+        """Write ``snapshot``'s joint positions, object poses, and articulated objects'
+        joint positions into ``data.qpos``, from the snapshot alone: a removed object is
+        placed out of the world as planning places it (``object_qpos``), and an unknown
+        one refuses (``unknown_object_pose``). Nothing else changes: run
+        ``mujoco.mj_kinematics`` (or ``mj_forward``) for the body poses. Fails with
+        ``incompatible_snapshot`` for a snapshot of another description or world, or of
+        other joints, objects, or articulated objects. ``data`` is unchanged unless it
+        succeeds."""
         if snapshot.description != self.description or snapshot.model != self.world:
             raise ValidationError(
                 "incompatible_snapshot",
@@ -81,11 +85,21 @@ class SnapshotMapping:
             raise ValidationError(
                 "incompatible_snapshot", "the snapshot has other objects", path="snapshot.objects"
             )
+        if [(a.name, len(a.positions)) for a in snapshot.articulated] != [
+            (name, len(at)) for name, at in self.articulated
+        ]:
+            raise ValidationError(
+                "incompatible_snapshot",
+                "the snapshot has other articulated objects",
+                path="snapshot.articulated",
+            )
         placed = [(at, object_qpos(data.model, objects[name])) for name, at in self.objects]
         for (_, at), position in zip(self.joints, snapshot.positions, strict=True):
             data.qpos[at] = position
         for at, qpos in placed:
             data.qpos[at : at + 7] = qpos
+        for (_, addresses), state in zip(self.articulated, snapshot.articulated, strict=True):
+            data.qpos[list(addresses)] = state.positions
 
 
 @dataclass(frozen=True)
@@ -183,12 +197,21 @@ def _build(
         for name, kind in sorted(kinds.items())
         if kind == "object"
     )
+    articulated = tuple(
+        (name, subtree_addresses(model, address(_BODY, name, "articulated"))[0])
+        for name, kind in sorted(kinds.items())
+        if kind == "articulated"
+    )
     description = package.description.fingerprint()
     return MaterializedWorld(
         model=model,
         world=world,
         description=description,
         mapping=SnapshotMapping(
-            description=description, world=world, joints=joints, objects=objects
+            description=description,
+            world=world,
+            joints=joints,
+            objects=objects,
+            articulated=articulated,
         ),
     )

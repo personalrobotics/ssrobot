@@ -281,13 +281,36 @@ class ObjectState(Value):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ArticulatedState(Value):
+    """An articulated scene object's configuration: the positions of its joints."""
+
+    name: str = field(metadata=meta("Articulated scene object name."))
+    positions: tuple[float, ...] = field(
+        metadata=meta(
+            "Its joints' positions, in the runtime's order for that object; opaque to the core.",
+            unit="joint",
+        )
+    )
+
+    def _validate(self) -> None:
+        check_name(self.name)
+        if not self.positions:
+            raise ValidationError(
+                "missing_field", "an articulated object has joints", path="positions"
+            )
+        if not all(math.isfinite(p) for p in self.positions):
+            raise ValidationError("non_finite", "positions must be finite", path="positions")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class SceneSnapshot(Record):
     """An immutable copy of everything a geometric query reads: the robot's joint
-    positions, the objects' poses, and the declared attachments, with where they came
-    from. Planning scenes are materialized from it; see docs/contracts.md."""
+    positions, the objects' poses, the articulated objects' joint positions, and the
+    declared attachments, with where they came from. Planning scenes are materialized
+    from it; see docs/contracts.md."""
 
     SCHEMA = "ssrobot.SceneSnapshot"
-    VERSION = 2
+    VERSION = 3
 
     description: str = field(metadata=meta("Fingerprint of the robot description."))
     runtime: str = field(metadata=meta("Name of the runtime that captured it."))
@@ -307,6 +330,13 @@ class SceneSnapshot(Record):
     fixtures: tuple[str, ...] = field(default=(), metadata=meta("Scene fixtures, sorted."))
     attachments: tuple[Attachment, ...] = field(
         default=(), metadata=meta("Declared attachments, sorted by object.")
+    )
+    articulated: tuple[ArticulatedState, ...] = field(
+        default=(),
+        metadata=meta(
+            "Every articulated scene object, sorted by name: its joint positions, as the "
+            "runtime measured them."
+        ),
     )
 
     def _validate(self) -> None:
@@ -334,6 +364,14 @@ class SceneSnapshot(Record):
         names = tuple(o.name for o in self.objects)
         _check_names(names, "objects")
         _check_names(self.fixtures, "fixtures")
+        articulated = tuple(a.name for a in self.articulated)
+        _check_names(articulated, "articulated")
+        if len({*names, *self.fixtures, *articulated}) != len(names + self.fixtures + articulated):
+            raise ValidationError(
+                "duplicate_name",
+                "a name is more than one of an object, a fixture, and an articulated object",
+                path="articulated",
+            )
         _check_names(tuple(a.object for a in self.attachments), "attachments")
         for i, attachment in enumerate(self.attachments):
             if attachment.object not in names:

@@ -18,7 +18,7 @@ from sscbirrt.backends import native_mujoco
 from ssrobot.conventions import Pose
 from ssrobot.description import RobotDescription
 from ssrobot.errors import CapabilityError, ValidationError
-from ssrobot.mujoco._compose import compile_world
+from ssrobot.mujoco._compose import compile_world, subtree_addresses
 from ssrobot.mujoco._materialize import object_qpos
 from ssrobot.mujoco._model import FrameBinding, MujocoObject
 from ssrobot.mujoco._runtime import relative, world_pose
@@ -189,6 +189,7 @@ def materialize(
     models: PlanningModel,
     objects: dict[str, int],
     fixtures: dict[str, int],
+    articulated: dict[str, int],
     snapshot: SceneSnapshot,
     group: str,
     clearance_m: float,
@@ -238,6 +239,17 @@ def materialize(
         free = int(model.body_jntadr[resolve(_BODY, state.name, "snapshot.objects")])
         at = int(model.jnt_qposadr[free])
         data.qpos[at : at + 7] = object_qpos(runtime_model, state)  # where the runtime parks it
+    for config in snapshot.articulated:  # collision geometry at its snapshot configuration
+        body = resolve(_BODY, config.name, "snapshot.articulated")
+        addresses = subtree_addresses(model, body)[0]
+        if len(addresses) != len(config.positions):
+            raise ValidationError(
+                "invalid_snapshot",
+                f"{config.name!r} has {len(addresses)} joint positions, not "
+                f"{len(config.positions)}",
+                path="snapshot.articulated",
+            )
+        data.qpos[list(addresses)] = config.positions
     mujoco.mj_kinematics(model, data)
 
     bound = {}
@@ -297,7 +309,7 @@ def materialize(
     for name, binding in bound.items():
         if binding.object is MujocoObject.BODY:
             names[binding.id] = name
-    for name in (*objects, *fixtures):
+    for name in (*objects, *fixtures, *articulated):
         names[mujoco.mj_name2id(model, _BODY, name)] = name
     for body in range(model.nbody):  # unnamed or nested bodies: their nearest named ancestor
         ancestor = body
