@@ -54,7 +54,12 @@ from ssrobot.execution import (
     ModificationKind,
     RuntimeHealth,
 )
-from ssrobot.mujoco._compose import compile_world, require_version, select
+from ssrobot.mujoco._compose import (
+    compile_world,
+    require_version,
+    select,
+    subtree_addresses,
+)
 from ssrobot.mujoco._model import (
     MODE_ACTUATORS,
     MUJOCO_VERSION,
@@ -90,6 +95,7 @@ from ssrobot.observations import (
 from ssrobot.package import ProfileEntry, RobotPackage
 from ssrobot.runtime import RuntimeEvent, RuntimeInfo, RuntimeUpdate
 from ssrobot.scene import (
+    ArticulatedState,
     Attachment,
     AttachmentViolation,
     ObjectState,
@@ -239,8 +245,9 @@ class MujocoRuntime:
     fails with ``goal_not_reached`` if that takes longer than ``settle_ns``.
 
     ``scene`` is an MJCF file of task objects composed with the robot: its top-level
-    bodies with a free joint are objects that can be attached, and its other top-level
-    bodies are fixtures. Attaching never changes the physics; after each step, an
+    bodies with a free joint are objects that can be attached, those without joints are
+    fixtures, and those on other joints are articulated objects, observed and collided
+    with but never attached. Attaching never changes the physics; after each step, an
     attached object more than ``attach_tolerance_m`` or ``attach_tolerance_rad`` from
     its declared transform is reported once as an ``AttachmentViolation``.
     See docs/mujoco.md.
@@ -301,6 +308,8 @@ class MujocoRuntime:
         self._events: list[RuntimeEvent] = []
         self._objects: dict[str, int] = {}  # scene object: MuJoCo body id
         self._fixtures: dict[str, int] = {}  # scene fixture: MuJoCo body id
+        self._articulated: dict[str, int] = {}  # articulated scene object: MuJoCo body id
+        self._articulated_qpos: dict[str, tuple[int, ...]] = {}  # its joints' qpos addresses
         self._sources: tuple[Path, SceneSource | None] | None = None  # model file, scene
         self._planning_models: Any = None  # PlanningModel, made at the first planning scene
         self._identity = ""  # the simulated world, for snapshot compatibility
@@ -370,8 +379,10 @@ class MujocoRuntime:
                     contacts = self._touching()
                 first, second = self._contacts[channel]
                 value = contacts.get((min(first, second), max(first, second)), (0.0, 0.0))
-            elif channel in self._scene_specs:  # an object's pose, from its free joint
-                value = self._object_pose(self._objects[spec.source])
+            elif channel in self._scene_specs and spec.source in self._objects:
+                value = self._object_pose(self._objects[spec.source])  # from its free joint
+            elif channel in self._scene_specs:  # an articulated object's top body
+                value = self._articulated_pose(self._articulated[spec.source])
             elif spec.quantity is Quantity.JOINT_POSITION:
                 joints = d.group(spec.source).joints
                 value = tuple(float(data.qpos[self._joints[j].qpos_address]) for j in joints)
@@ -569,6 +580,12 @@ class MujocoRuntime:
         tolerances (``attachment_mismatch``). Physics is not changed.
         """
         self._open_data()
+        if attachment.object in self._articulated:
+            raise ValidationError(
+                "not_attachable",
+                f"{attachment.object!r} is an articulated scene object, which cannot be attached",
+                path="object",
+            )
         if attachment.object not in self._objects:
             raise ValidationError(
                 "unknown_reference", f"{attachment.object!r} is not a scene object", path="object"
@@ -594,9 +611,10 @@ class MujocoRuntime:
     # -- Snapshots -------------------------------------------------------------------
 
     def snapshot(self, scene: SceneState) -> SceneSnapshot:
-        """Every description joint's position and every object's actual pose, now.
+        """Every description joint's position, every object's actual pose, and every
+        articulated object's joint positions, now.
 
-        Both come from ``qpos``, the state after the last step. An object's free joint
+        All come from ``qpos``, the state after the last step. An object's free joint
         hangs from the world, so its ``qpos`` is the object's world pose at the same
         instant as the joints; MuJoCo's ``xpos`` would be the pose before that step."""
         model, data, d = self._model, self._open_data(), self._described()
@@ -621,6 +639,10 @@ class MujocoRuntime:
             objects=tuple(objects),
             fixtures=scene.fixtures,
             attachments=scene.attachments,
+            articulated=tuple(
+                ArticulatedState(name=name, positions=tuple(float(data.qpos[a]) for a in at))
+                for name, at in sorted(self._articulated_qpos.items())
+            ),
         )
 
     def world(self) -> str:
@@ -653,6 +675,7 @@ class MujocoRuntime:
             models=self._planning_models,
             objects=self._objects,
             fixtures=self._fixtures,
+            articulated=self._articulated,
             snapshot=snapshot,
             group=group,
             clearance_m=clearance_m,
@@ -720,14 +743,13 @@ class MujocoRuntime:
                     path="keyframe",
                 )
             mujoco.mj_resetDataKeyframe(model, data, key)
-            # The robot's keyframe knows nothing of the scene; objects start where the
-            # scene puts them, not where its zero padding would.
+            # The robot's keyframe knows nothing of the scene; objects and articulated
+            # objects start where the scene puts them, not where its zero padding would.
             for body, kind in objects.items():
-                if kind == "object":
-                    free = int(model.body_jntadr[mujoco.mj_name2id(model, _BODY, body)])
-                    at, dof = int(model.jnt_qposadr[free]), int(model.jnt_dofadr[free])
-                    data.qpos[at : at + 7] = model.qpos0[at : at + 7]
-                    data.qvel[dof : dof + 6] = 0.0
+                if kind in ("object", "articulated"):
+                    at, dof = subtree_addresses(model, mujoco.mj_name2id(model, _BODY, body))
+                    data.qpos[list(at)] = model.qpos0[list(at)]
+                    data.qvel[list(dof)] = 0.0
         for joint in description.joints:
             q = float(data.qpos[self._joints[joint.name].qpos_address])
             low, high = joint.limits.lower, joint.limits.upper
@@ -780,6 +802,11 @@ class MujocoRuntime:
         }
         fixtures = tuple(sorted(b for b, kind in objects.items() if kind == "fixture"))
         self._fixtures = {b: mujoco.mj_name2id(model, _BODY, b) for b in fixtures}
+        articulated = tuple(sorted(b for b, kind in objects.items() if kind == "articulated"))
+        self._articulated = {b: mujoco.mj_name2id(model, _BODY, b) for b in articulated}
+        self._articulated_qpos = {
+            b: subtree_addresses(model, i)[0] for b, i in self._articulated.items()
+        }
         self._sources = (package.root / entry.path, scene_source)
         self._planning_models = None
         scene_identity = None if scene_source is None else scene_source.identity
@@ -800,6 +827,7 @@ class MujocoRuntime:
             scene_files=() if scene_source is None else scene_source.files,
             objects=tuple(sorted(self._objects)),
             fixtures=fixtures,
+            articulated=articulated,
             frames=frames,
             joints=joints,
             actuators=actuators,
@@ -836,6 +864,7 @@ class MujocoRuntime:
             rest=rest,
             objects=tuple(sorted(self._objects)),
             fixtures=fixtures,
+            articulated=articulated,
             # One waypoint per control tick, interpolated linearly (see _interpolate).
             trajectory=TrajectoryContract(
                 period_ns=self._substeps * timestep_ns,
@@ -1266,8 +1295,9 @@ class MujocoRuntime:
         return world_pose(self._current(), self._frames[frame])
 
     def _scene_channels(self, description: RobotDescription) -> tuple[ChannelSpec, ...]:
-        """Declare the scene's channels: each object's pose in the world, and each contact
-        pair asked for. All are privileged: simulator truth, not a robot's own sensing."""
+        """Declare the scene's channels: each object's and articulated object's pose in the
+        world, and each contact pair asked for. All are privileged: simulator truth, not a
+        robot's own sensing."""
         root = next(f.name for f in description.frames if f.parent is None)
         specs = [
             ChannelSpec(
@@ -1279,7 +1309,7 @@ class MujocoRuntime:
                 dtype=DType.FLOAT64,
                 privileged=True,
             )
-            for name in sorted(self._objects)
+            for name in sorted({*self._objects, *self._articulated})
         ]
 
         def body(name: str, path: str) -> int:
@@ -1287,11 +1317,14 @@ class MujocoRuntime:
                 return self._objects[name]
             if name in self._fixtures:
                 return self._fixtures[name]
+            if name in self._articulated:
+                return self._articulated[name]
             if name in self._frames:
                 return self._frames[name].body
             raise ValidationError(
                 "unknown_reference",
-                f"{name!r} is neither a scene object, a fixture, nor a robot frame",
+                f"{name!r} is not a scene object, a fixture, an articulated object, or a "
+                "robot frame",
                 path=path,
             )
 
@@ -1335,6 +1368,15 @@ class MujocoRuntime:
         quat = np.array(data.qpos[at + 3 : at + 7], dtype=float)
         mujoco.mju_normalize4(quat)
         return (*(float(v) for v in data.qpos[at : at + 3]), *(float(v) for v in quat))
+
+    def _articulated_pose(self, body: int) -> tuple[float, ...]:
+        """An articulated object's top body's world pose now, position and unit wxyz: the
+        forward kinematics of the state after the last step (``_current``), as the joints
+        and every other pose are read. It has no free joint whose ``qpos`` is its pose."""
+        data = self._current()
+        quat = np.array(data.xquat[body], dtype=float)
+        mujoco.mju_normalize4(quat)
+        return (*(float(v) for v in data.xpos[body]), *(float(v) for v in quat))
 
     def _touching(self) -> dict[tuple[int, int], tuple[float, float]]:
         """Every touching body pair now, with its summed normal force."""

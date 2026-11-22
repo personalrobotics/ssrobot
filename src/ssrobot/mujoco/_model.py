@@ -308,6 +308,13 @@ class MujocoMapping(Value):
     fixtures: tuple[str, ...] = field(
         default=(), metadata=meta("Scene bodies without joints: static fixtures.")
     )
+    articulated: tuple[str, ...] = field(
+        default=(),
+        metadata=meta(
+            "Scene bodies whose joints are constrained, none free: articulated objects, "
+            "never attached."
+        ),
+    )
     frames: tuple[FrameBinding, ...] = field(metadata=meta("Every frame, in description order."))
     joints: tuple[JointBinding, ...] = field(metadata=meta("Every joint, in description order."))
     actuators: tuple[ActuatorBinding, ...] = field(metadata=meta("Every actuator, by id."))

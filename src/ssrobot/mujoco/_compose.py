@@ -24,6 +24,52 @@ from ssrobot.mujoco._scene import SceneSource
 from ssrobot.package import ModelEntry, ProfileEntry, RobotPackage
 
 _FREE = mujoco.mjtJoint.mjJNT_FREE
+_BALL = int(mujoco.mjtJoint.mjJNT_BALL)
+_SIZES = {int(_FREE): (7, 6), _BALL: (4, 3)}  # qpos and qvel sizes; slide and hinge: 1, 1
+
+
+def _subtree_joints(body: Any) -> list[Any]:
+    """The joints of a spec body's descendants, below it."""
+    found = []
+    for child in body.bodies:
+        found += [*child.joints, *_subtree_joints(child)]
+    return found
+
+
+def _kind(body: Any) -> str:
+    """A top-level scene body's kind: ``object``, one free joint on it and no other joint
+    below; ``fixture``, no joints at all; ``articulated``, no free joint anywhere and at
+    least one other joint on it or below. Anything else is an invalid scene."""
+    own = [j.type for j in body.joints]
+    below = [j.type for j in _subtree_joints(body)]
+    if own == [_FREE] and not below:
+        return "object"
+    if not own and not below:
+        return "fixture"
+    if _FREE not in own and _FREE not in below:
+        return "articulated"
+    raise ValidationError(
+        "invalid_scene",
+        f"{body.name!r} must have one free joint and no other (an object), no joints (a "
+        "fixture), or joints none of which is free (an articulated object)",
+        path=f"scene: {body.name}",
+    )
+
+
+def subtree_addresses(model: Any, body: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """The ``qpos`` and ``qvel`` addresses of every joint of top-level body ``body`` and
+    its descendants, in MuJoCo's joint order: one per slide or hinge, four (wxyz) and
+    three per ball."""
+    qpos: list[int] = []
+    qvel: list[int] = []
+    for j in range(model.njnt):
+        if int(model.body_rootid[int(model.jnt_bodyid[j])]) != body:
+            continue
+        nq, nv = _SIZES.get(int(model.jnt_type[j]), (1, 1))
+        at, dof = int(model.jnt_qposadr[j]), int(model.jnt_dofadr[j])
+        qpos += range(at, at + nq)
+        qvel += range(dof, dof + nv)
+    return tuple(qpos), tuple(qvel)
 
 
 def require_version() -> None:
@@ -58,8 +104,8 @@ def compile_world(
 ) -> tuple[Any, dict[str, str]]:
     """Compile the robot model at ``model_path`` with ``scene``'s bodies, from the
     scene's bytes read once, and with a contact exclude for each body pair in
-    ``excludes``. Return the model and each top-level scene body's kind (``object``, one
-    free joint; ``fixture``, no joints). ``path`` names the model in errors.
+    ``excludes``. Return the model and each top-level scene body's kind (``object``,
+    ``fixture``, or ``articulated``; see ``_kind``). ``path`` names the model in errors.
     ``collidable_only`` compiles with MuJoCo's ``discardvisual``: geoms no contact can
     involve and the meshes only they use are left out, after their mass is counted, and
     so is every material and texture. A model for kinematics and contacts, not for
@@ -79,17 +125,7 @@ def compile_world(
                 raise ValidationError(
                     "invalid_scene", "every top-level scene body needs a name", path="scene"
                 )
-            joints = [j.type for j in body.joints]
-            if joints == [_FREE]:
-                kinds[body.name] = "object"
-            elif not joints:
-                kinds[body.name] = "fixture"
-            else:
-                raise ValidationError(
-                    "invalid_scene",
-                    f"{body.name!r} must have one free joint (an object) or none (a fixture)",
-                    path=f"scene: {body.name}",
-                )
+            kinds[body.name] = _kind(body)
         spec.attach(child, frame=spec.worldbody.add_frame(), prefix="")
     for first, second in excludes:
         exclude = spec.add_exclude()

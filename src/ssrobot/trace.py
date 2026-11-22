@@ -105,7 +105,7 @@ class TraceRecord(Record):
     """One event in a context's life, in causal order."""
 
     SCHEMA = "ssrobot.TraceRecord"
-    VERSION = 12
+    VERSION = 13
 
     sequence: int = field(metadata=meta("Position in the trace, from 0.", unit="count"))
     kind: TraceKind = field(metadata=meta("What happened."))

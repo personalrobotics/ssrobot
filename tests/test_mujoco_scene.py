@@ -255,7 +255,10 @@ def test_invalid_attachments_and_scenes_change_nothing(artifacts: Path, tmp_path
         codes = _refusals(ctx)
     scenes = {
         "scene_conflict": '<body name="link1"><freejoint/><geom size=".02"/></body>',
-        "articulated_object": '<body name="door"><joint type="hinge"/><geom size=".02"/></body>',
+        "free_object_with_a_hinge": '<body name="case"><freejoint/><geom size=".02"/>'
+        '<body name="lid"><joint type="hinge"/><geom size=".02"/></body></body>',
+        "nested_free_joint": '<body name="rack"><geom size=".02"/>'
+        '<body name="cup"><freejoint/><geom size=".02"/></body></body>',
         "unnamed_body": '<body><freejoint/><geom size=".02"/></body>',
         "missing_include": '<include file="object.xml"/>',
         "missing_mesh_file": '<body name="cup"><freejoint/><geom type="mesh" mesh="cup"/></body>'
@@ -284,7 +287,8 @@ def test_invalid_attachments_and_scenes_change_nothing(artifacts: Path, tmp_path
         "already_attached": "already_attached",
         "stale_detach": "stale_revision",
         "scene_conflict": "scene_conflict",
-        "articulated_object": "invalid_scene",
+        "free_object_with_a_hinge": "invalid_scene",
+        "nested_free_joint": "invalid_scene",
         "unnamed_body": "invalid_scene",
         "missing_include": "invalid_scene",
         "missing_mesh_file": "invalid_scene",

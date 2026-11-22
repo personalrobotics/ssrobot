@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.ContinuationReport v6",
+  "title": "ssrobot.ContinuationReport v7",
   "$ref": "#/$defs/ContinuationReport",
   "$defs": {
     "ContinuationReport": {
@@ -11,7 +11,7 @@
           "const": "ssrobot.ContinuationReport"
         },
         "version": {
-          "const": 6
+          "const": 7
         },
         "prediction": {
           "type": "string",

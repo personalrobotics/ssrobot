@@ -570,7 +570,7 @@ it when the robot arrives. Three pieces make that safe:
         expects (an `object_state` discrepancy), so a removal or a registration nothing predicted
         is refused; and every free object within `object_tolerance_m` of its predicted position and
         `object_tolerance_rad` of its predicted orientation
-        (`unpredicted_scene_change`);
+        (`unpredicted_scene_change`). Articulated objects are not compared;
       - with registered object poses, no object's pose is unknown: one released as
         predicted, but neither registered again nor removed, leaves nothing to validate
         the plan around (`continuation_invalid`);
@@ -596,7 +596,7 @@ it when the robot arrives. Three pieces make that safe:
       `execute` does.
 
    A refusal submits nothing. `ContinuationResult.report`, a `ContinuationReport`, is the
-   evidence either way (`ContinuationReport` version 6): the predicted and actual
+   evidence either way (`ContinuationReport` version 7): the predicted and actual
    starts, every tolerance, every discrepancy, the `RestResult` it was given, the
    planner's account of its rebase, and the fingerprints of the rebased plan and compiled
    command. A `Discrepancy` names what differs as a `DiscrepancyKind` (`joint`,

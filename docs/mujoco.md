@@ -86,7 +86,7 @@ only checks its arguments. It compiles nothing and starts no thread:
 | `package_changed` | The package on disk is no longer the one that was loaded. The package is loaded again from its root under the same containment rules, and every recorded file is compared, by hash, with what the `RobotPackage` recorded. That covers the manifest, the model, includes, and assets, before and again after MuJoCo compiles. A changed, missing, or new file, or a path that now escapes the root, fails, naming the path. |
 | `unsupported_backend_version` | The installed MuJoCo distribution, the loaded module, or the compiled library is not exactly `MUJOCO_VERSION` (3.14.0). This is the version sscbirrt's native adapter is built against. |
 | `model_compile_failed` | MuJoCo cannot compile the model. |
-| `invalid_scene` | The scene or a file it depends on cannot be read or compiled with the robot. Or it refers to a file by an absolute path, or through an element whose files the scene cannot resolve (see *Scene and attachments*). Or it has a top-level body that is unnamed or has joints other than one free joint. |
+| `invalid_scene` | The scene or a file it depends on cannot be read or compiled with the robot. Or it refers to a file by an absolute path, or through an element whose files the scene cannot resolve (see *Scene and attachments*). Or it has a top-level body that is unnamed, or a free joint anywhere but alone on a top-level body (see *Scene and attachments*). |
 | `scene_escape` | A file the scene depends on resolves outside `scene_root`, by `..` or through a symlink. Nothing is compiled. |
 | `scene_conflict` | A scene name repeats one of the robot model's. |
 | `invalid_timestep` | The model's timestep is not a whole number of nanoseconds. |
@@ -111,7 +111,7 @@ the position a control of 0 would give. A joint starting just past its stop, wit
 - clock mode `manual`, on clock `mujoco:<robot>`;
 - the description's fingerprint;
 - the declared commands and channels it confirms (see *Binding*);
-- the scene's objects and fixtures, if it has a scene;
+- the scene's objects, fixtures, and articulated objects, if it has a scene;
 - the trajectory contract: a fixed period of `substeps × timestep`, one step, with
   `linear` interpolation.
 - guard support for every group it confirms for joint trajectories: every bound wrench
@@ -181,16 +181,24 @@ the root) share one read and one recorded hash. An empty or whitespace-only refe
 including an `<include>` with no `file`, fails with `invalid_scene`. At open, it
 composes the scene with the robot's model, attaching the scene's world body
 to the robot's with no name prefix:
-- **Objects** are the scene's top-level bodies with exactly one free joint. They can be
-  attached.
-- **Fixtures** are top-level bodies with no joints, such as a table. An attachment may
-  allow contact with them.
-- World geoms come along too, but are neither.
+- **Objects** are the scene's top-level bodies with exactly one free joint, and no other
+  joint on them or below them. They can be attached.
+- **Fixtures** are top-level bodies with no joints on them or below them, such as a
+  table. An attachment may allow contact with them.
+- **Articulated objects** are top-level bodies with no free joint on them or below them,
+  and at least one slide, hinge, or ball joint on them or below them. A block on slides
+  along x, y and z and a hinge about z slides and turns on a table under gravity, but
+  never tips. They are observed and collided with, and never attached: `attach` refuses
+  one with `not_attachable` before anything changes.
+- Any other top-level body, such as one with a free joint and another joint, or with a
+  free joint below it, fails at open with `invalid_scene`, naming it.
+- World geoms come along too, but are none of these.
 - Where the two files set the same simulation option, the robot model's wins.
 
 The robot's keyframes know nothing of the scene: MuJoCo pads them with zeros, which
 would put every object at the world origin. The start state therefore takes robot joints
-from the keyframe and leaves every object where the scene puts it.
+from the keyframe and leaves every object and articulated object where the scene puts it,
+at rest.
 
 **Attaching never changes physics.** There is no weld, no pose write, and no change to
 contact filtering. Friction and contact alone decide whether the object comes along, as
@@ -212,7 +220,8 @@ contacts, since excluding finger contacts would remove the grip itself.
 `runtime.mapping` records the scene path as given, `scene_files` (every file of the
 closure by its path relative to `scene_root`, and its SHA-256), and `scene_identity`, a
 SHA-256 over those paths and hashes. Moving the whole tree keeps the identity, and
-changing any file changes it. It also records the objects and fixtures.
+changing any file changes it. It also records the objects, fixtures, and articulated
+objects.
 
 A friction grasp in MuJoCo creeps under soft contacts. The example arm therefore uses
 elliptic friction cones with `impratio="10"`, as MuJoCo recommends for grasping. That
@@ -222,9 +231,11 @@ keeps the carried box within about 3 mm of its grasp over the whole evidence sce
 
 With a scene, the runtime declares a privileged channel per object, `<object>.pose`:
 its world pose, from its free joint, at the same instant as the joints, as a snapshot
-reads it. `contacts=[(first, second), ...]` asks for a privileged contact channel per
-pair, `contact.<first>.<second>`. Each name is a scene object, a fixture, or a robot
-frame, and stands for exactly that one MuJoCo body, not the bodies below it, so naming
+reads it. It declares one per articulated object too: its top-level body's world pose,
+position then unit wxyz, by forward kinematics of the current `qpos`, at the same
+instant. `contacts=[(first, second), ...]` asks for a privileged contact channel per
+pair, `contact.<first>.<second>`. Each name is a scene object, a fixture, an articulated
+object, or a robot frame, and stands for exactly that one MuJoCo body, not the bodies below it, so naming
 the robot's base does not mean its whole arm. An unknown name fails at open with
 `unknown_reference`, a pair of one body with itself with `invalid_argument`, and a
 scene channel named like a description channel with `duplicate_name`. A contact
@@ -263,9 +274,12 @@ check but `external_clock`.
 
 ## Planning scenes
 
-`snapshot()` reads every description joint's position and every object's pose, both
-from `qpos` after the last step: an object's free joint hangs from the world, so it
-holds the object's world pose at the same instant as the joints. Its
+`snapshot()` reads every description joint's position, every object's pose, and every
+articulated object's joint positions, all from `qpos` after the last step: an object's
+free joint hangs from the world, so it holds the object's world pose at the same instant
+as the joints. An articulated object's positions are the `qpos` of every joint on its
+top-level body and below it, in MuJoCo's joint order: one per slide or hinge, four (wxyz)
+per ball. Its
 `model` identity, also returned by `world()`, is the model signature and the scene's
 `scene_identity`, computed without MuJoCo by the same code run bundles use. A snapshot
 from a different model or scene therefore fails to materialize, or
@@ -289,8 +303,9 @@ opening a runtime never loads it.
    was compiled is not noticed by later planning scenes.
 2. **The native scene.** `NativeScene.from_model(model, group joints)`, made once per
    group and shared, immutably, between planning scenes, whatever their clearance.
-3. **The snapshot.** An `MjData` with the snapshot's joints and object poses becomes
-   sscbirrt's `Snapshot.from_state`. A removed object is placed four times the runtime
+3. **The snapshot.** An `MjData` with the snapshot's joints, object poses, and
+   articulated objects' joint positions becomes sscbirrt's `Snapshot.from_state`, so an
+   articulated object is collision geometry at its snapshot configuration. A removed object is placed four times the runtime
    model's extent (`stat.extent`) below its centre (`stat.center`), not the planning
    model's, whose statistics can differ without visual geometry: the world lies within one
    extent of that centre, so nothing the robot reaches can touch it. `mapping.apply`
@@ -316,7 +331,7 @@ opening a runtime never loads it.
    model nor the runtime's model is written. `native()` returns that checker, for a planner adapter.
 
 Forward kinematics uses the planning scene's own `MjData`. Contacts name the nearest
-description frame, object, or fixture of each body, and `world` for world geoms. A
+description frame, object, fixture, or articulated object of each body, and `world` for world geoms. A
 planning scene answers state queries only: whether a motion is valid is the planner's
 validator's answer (see *Motion validation* in [contracts.md](contracts.md)).
 
@@ -350,7 +365,7 @@ so they resolve once those do. `runtime.mapping` is a `MujocoMapping` that holds
   its kind (see *Binding*);
 - every collision allowance, with the MuJoCo bodies of its two frames, for planners
   (the runtime does not change MuJoCo's contact filtering for them);
-- the scene, its files and identity, objects, and fixtures, if any;
+- the scene, its files and identity, objects, fixtures, and articulated objects, if any;
 - every declared command capability and channel, with its actuators, or why it is not
   confirmed.
 
@@ -577,15 +592,15 @@ one, the bundle's or `world=`, before returning anything. A bundled file changed
 The result is a `MaterializedWorld`, all the caller's own:
 - `model`, a new `MjModel`, and `data()`, a new `MjData` for it;
 - `world` and `description`, the identities its snapshots must name;
-- `mapping`, a `SnapshotMapping`: each description joint's qpos address, and each scene
-  object's free joint's.
+- `mapping`, a `SnapshotMapping`: each description joint's qpos address, each scene
+  object's free joint's, and each articulated object's joints' addresses.
 
-`mapping.apply(snapshot, data)` writes a snapshot's joint positions and object poses
-(position, then wxyz) into `data.qpos`, and nothing else, from the snapshot alone: a
+`mapping.apply(snapshot, data)` writes a snapshot's joint positions, object poses
+(position, then wxyz), and articulated objects' joint positions into `data.qpos`, and nothing else, from the snapshot alone: a
 removed object is placed out of the world exactly as planning places it, and an unknown
 one is refused with `unknown_object_pose`, leaving `data` unchanged; run `mujoco.mj_kinematics`
-for body poses. A snapshot of another description or world, or with other joints or
-objects, fails with `incompatible_snapshot`. Nothing else is created: no context, clock,
+for body poses. A snapshot of another description or world, or with other joints,
+objects, or articulated objects, fails with `incompatible_snapshot`. Nothing else is created: no context, clock,
 controller, actuator binding, renderer, or thread, and physics never steps. Changing
 the returned model or data reaches no other materialization and no runtime.
 
@@ -604,7 +619,8 @@ the returned model or data reaches no other materialization and no runtime.
 | `artifacts/test_mujoco_model_signature_covers_every_file_the_model_brings_in/{original,moved,edited}-mapping.json` | Three copies of the example: unchanged, moved to another directory, and with one gain changed in the included `actuators.xml`. The edited copy has the same root-file hash but a different model signature, and the moved copy's mapping is identical to the original's. |
 | `artifacts/test_mujoco_runtime_refuses_mismatches_before_commands/startup-failures.json` | Each code in *Opening*, plus `invalid_substeps`, with its path and message, including a keyframe with the elbow outside its range (`invalid_initial_state`). Model selection fails four ways: a profile naming a missing model (`invalid_profile`) or the URDF (`unsupported_model_format`); two MJCF models and no choice (`ambiguous_model`); and an MJCF artifact with a renamed joint (`model_mismatch` at `joints[j3]`). An artifact edited after loading fails with `package_changed`, and a keyframe disagreeing with its configuration with `model_mismatch` at `configurations[home]`. A keyframe with the wrist 0.5 mrad past its stop opens, is first observed at 3.0005, and settles back to its stop. For `package_changed`: the canonical MJCF edited after loading, an included file edited, and an include replaced by a symlink out of the package. None of them opened or left a mapping. |
 | `artifacts/test_grasp_carry_release_and_drop_are_traced/{carry,drop}/trace.jsonl`, `summary.json` | The example arm with `examples/scenes/pedestal.xml`. **Carry:** the box starts on the pedestal and the hand closes on it. `attach("box", "hand")` resolves the transform and allows `gripper`, `left_finger`, `right_finger`, and `tcp`. Friction alone lifts the box, swings it 0.6 rad aside and back, and releases it just above the pedestal, where it lands within 1 cm of its start. There is no violation, and detach empties the scene. **Drop:** the hand opens after lifting without detaching. One `violation` is traced, the attachment turns `held: false` and stays, and closing detaches it. `scene` records run at revisions 0 to 2 (carry) and 0 to 3 (drop). A second run gives byte-identical files. |
-| `artifacts/test_invalid_attachments_and_scenes_change_nothing/refusals.json` | Each refused `attach` and `detach`, with its code, leaving the scene unchanged: an unknown object, a fixture as object, an unknown end effector or allow name, a repeated allow name, a non-pose transform, a transform far from the box (`attachment_mismatch`), a stale revision (`StaleRevisionError`), a boolean or float revision (`wrong_type`) and a negative one (`out_of_limits`), already attached, and not attached. A fixture may be allowed. Scenes that reuse a robot name (`scene_conflict`), have an articulated or unnamed body, or include or reference a file that does not exist (`invalid_scene`) fail at open. |
+| `artifacts/test_invalid_attachments_and_scenes_change_nothing/refusals.json` | Each refused `attach` and `detach`, with its code, leaving the scene unchanged: an unknown object, a fixture as object, an unknown end effector or allow name, a repeated allow name, a non-pose transform, a transform far from the box (`attachment_mismatch`), a stale revision (`StaleRevisionError`), a boolean or float revision (`wrong_type`) and a negative one (`out_of_limits`), already attached, and not attached. A fixture may be allowed. Scenes that reuse a robot name (`scene_conflict`), have an unnamed body, a free body with a hinged child, or a free joint below a top-level body, or include or reference a file that does not exist (`invalid_scene`) fail at open. |
+| `artifacts/test_articulated_scene_objects_slide_and_turn_but_never_tip/articulated_scene.json` | The example arm's level hand sweeps through a T on slides along x, y and z and a hinge about z, resting on a fixed table: an articulated object, listed apart from objects and fixtures. Every tick its pose channel equals, exactly, the forward kinematics of its joints in the current `qpos`, computed without MuJoCo, while it moves up to 0.57 mm a tick; it never tilts and stays on the table, pushed 3.5 cm and turned 0.39 rad. At rest the T-table contact carries its weight within 2%, and the finger contacts turn on only during the push. `attach` refuses it with `not_attachable`, in the context and in the runtime, and the scene is unchanged. A snapshot records its joints exactly as `qpos` holds them, decodes equal, and materializes a world whose T is exactly where the pose channel reads it. Planning scenes of the snapshots before and after the push find the hand touching the T at the same shoulder angles as MuJoCo's own collision detection in each materialized world, and the two differ. Run with `uv run pytest tests/test_articulated_scene.py`. A second run is byte-identical. |
 | `artifacts/test_scenes_include_files_and_assets_under_one_identity/scene_assets.json` | A scene that sets `meshdir`, includes a table fixture with a mesh visual, and has a free cylinder, opened with the example arm. The mapping lists `meshes/leg.stl`, `parts/table.xml`, and `scene.xml` with their hashes. A moved copy keeps the identity; editing the include or the mesh changes it. A declared `scene_root` lets the scene use a sibling directory's mesh, which it otherwise cannot reach (`scene_escape`). `..`, a symlink out of the root (`scene_escape`), an absolute path, and a `<model file>` reference (`invalid_scene`) are refused. A mesh rewritten after the closure was read does not reach the compiled model. A planning scene builds on the composed world. Two runs are byte-identical. |
 | `artifacts/test_registered_object_poses_hold_until_registered_again/registered_scene.json` | The example arm and the pedestal's box with registered object poses (#230). Unknown before registration, the box refuses planning. Registered where it is, the right finger's contact at `INTO` agrees with a live context; removed, `INTO` is valid and planned to though MuJoCo still has the box there; registered where `ASIDE` would reach it, `ASIDE` is in contact and infeasible and `INTO` plans. Pushed off the pedestal, the box moves 3.6 m in its pose channel and not in the snapshot, at the same revision, until registered again. Registered 1 cm off and attached with no transform, the declared transform comes from the registration and the `attached` record holds it 1 cm from MuJoCo's; lifted, the snapshot carries the box by the declared transform, about 9 mm from MuJoCo's; pulled out, the violation is traced and the scene still holds it; detached, it is unknown and refuses planning. A continuation predicted with the box in `removals` is accepted after release, detach and removal; one predicted with it only in `releases` is refused (`unpredicted_scene_change`, `object_state box`). Released as predicted but left unknown, the box leaves nothing to validate the continuation around (`continuation_invalid`). A live context refuses `register` and `remove` (`registration_unavailable`), and an object in two states is invalid (`inconsistent_scene`). A second run is byte-identical. |
 | `artifacts/test_an_attachments_allow_set_changes_in_place/allowances.json` | `set_attachment_allowances` (#233) in both pose modes. The box grasped on the pedestal is in contact with it, with the hand 2 cm lower, until the pedestal is allowed too: a new scene revision, so an older snapshot is stale (`stale_snapshot`), with the end effector, transform, held state and the runtime's tracked reference kept. In a live context the box is first pulled sideways out of the hand: the monitor reports it, the attachment stays not held, and the allow set changes all the same, nothing asked of the runtime. Run twice, byte-identical. |

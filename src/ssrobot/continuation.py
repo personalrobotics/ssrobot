@@ -84,7 +84,7 @@ class PredictedSnapshot(Record):
     """The state expected if ``source`` succeeds and every recorded assumption holds."""
 
     SCHEMA = "ssrobot.PredictedSnapshot"
-    VERSION = 4
+    VERSION = 5
 
     state: SceneSnapshot = field(
         metadata=meta("The predicted state, as a snapshot value; never a captured one.")
@@ -254,7 +254,7 @@ class ContinuationReport(Record):
     """Whether a continuation ran, and the evidence for that decision."""
 
     SCHEMA = "ssrobot.ContinuationReport"
-    VERSION = 6
+    VERSION = 7
 
     prediction: str = field(metadata=meta("Fingerprint of the prediction it was planned on."))
     source: str = field(metadata=meta("The source execution's identifier."))

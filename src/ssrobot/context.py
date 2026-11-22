@@ -855,6 +855,12 @@ class RobotContext:
         self._require("attach")
         check_name(source, path="source")
         scene = self._current_scene(revision)
+        if object in self.info.articulated:
+            raise ValidationError(
+                "not_attachable",
+                f"{object!r} is an articulated scene object, which cannot be attached",
+                path="object",
+            )
         if object not in scene.objects:
             raise ValidationError(
                 "unknown_reference", f"{object!r} is not a scene object", path="object"
@@ -1081,6 +1087,7 @@ class RobotContext:
             or taken.joints != tuple(j.name for j in self._description.joints)
             or tuple(o.name for o in taken.objects) != scene.objects
             or taken.fixtures != scene.fixtures
+            or tuple(a.name for a in taken.articulated) != info.articulated
             or taken.attachments != scene.attachments
             or any(o.status is not ObjectStatus.MEASURED for o in taken.objects)
         ):
@@ -2426,6 +2433,8 @@ class RobotContext:
             )
         if snapshot.fixtures != info.fixtures:
             raise incompatible("its fixtures are not this scene's", "fixtures")
+        if tuple(a.name for a in snapshot.articulated) != info.articulated:
+            raise incompatible("its articulated objects are not this scene's", "articulated")
         frames = {f.name for f in self._description.frames}
         effectors = {e.name for e in self._description.end_effectors}
         for i, attachment in enumerate(snapshot.attachments):
@@ -2538,10 +2547,8 @@ class RobotContext:
                 )
         robot = {c.name: c for c in self._description.channels}
         scene = {c.name: c for c in info.scene_channels}
-        entities = (
-            set(info.objects) | set(info.fixtures) | {f.name for f in self._description.frames}
-        )
-        scene_entities = set(info.objects) | set(info.fixtures)
+        scene_entities = set(info.objects) | set(info.fixtures) | set(info.articulated)
+        entities = scene_entities | {f.name for f in self._description.frames}
         frames = {f.name for f in self._description.frames}
         for name, spec in scene.items():
             # Only what the description cannot declare: a scene entity's pose, or a
@@ -2607,7 +2614,7 @@ class RobotContext:
         has_scene = callable(getattr(self._runtime, "attach", None)) and callable(
             getattr(self._runtime, "detach", None)
         )
-        if (info.objects or info.fixtures) and not has_scene:
+        if (info.objects or info.fixtures or info.articulated) and not has_scene:
             raise CapabilityError(
                 "undeclared_capability", "runtime offers scene objects but cannot attach them"
             )
@@ -2835,7 +2842,11 @@ class _CheckedPlanningScene:
         self._frames = {f.name for f in description.frames}
         snapshot = scene.snapshot
         self._names = (
-            self._frames | {o.name for o in snapshot.objects} | set(snapshot.fixtures) | {"world"}
+            self._frames
+            | {o.name for o in snapshot.objects}
+            | set(snapshot.fixtures)
+            | {a.name for a in snapshot.articulated}
+            | {"world"}
         )
         self._limits = tuple(
             (description.joint(j).limits.lower, description.joint(j).limits.upper)

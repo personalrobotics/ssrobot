@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.TraceRecord v12",
+  "title": "ssrobot.TraceRecord v13",
   "$ref": "#/$defs/TraceRecord",
   "$defs": {
     "ActionChunk": {
@@ -137,6 +137,29 @@
         "shape",
         "sha256",
         "path"
+      ],
+      "additionalProperties": false
+    },
+    "ArticulatedState": {
+      "type": "object",
+      "description": "An articulated scene object's configuration: the positions of its joints.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Articulated scene object name."
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Its joints' positions, in the runtime's order for that object; opaque to the core.",
+          "x-unit": "joint"
+        }
+      },
+      "required": [
+        "name",
+        "positions"
       ],
       "additionalProperties": false
     },
@@ -544,7 +567,7 @@
           "const": "ssrobot.ContinuationReport"
         },
         "version": {
-          "const": 6
+          "const": 7
         },
         "prediction": {
           "type": "string",
@@ -2079,7 +2102,7 @@
           "const": "ssrobot.PredictedSnapshot"
         },
         "version": {
-          "const": 4
+          "const": 5
         },
         "state": {
           "$ref": "#/$defs/SceneSnapshot",
@@ -2621,7 +2644,7 @@
           "const": "ssrobot.RuntimeInfo"
         },
         "version": {
-          "const": 9
+          "const": 10
         },
         "runtime": {
           "type": "string",
@@ -2674,6 +2697,13 @@
             "type": "string"
           },
           "description": "Static scene bodies an attachment may allow contact with, sorted."
+        },
+        "articulated": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Scene bodies on constrained joints, sorted: observed and collided with, never attached."
         },
         "trajectory": {
           "anyOf": [
@@ -2736,7 +2766,7 @@
           "const": "ssrobot.SceneSnapshot"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "description": {
           "type": "string",
@@ -2794,6 +2824,13 @@
             "$ref": "#/$defs/Attachment"
           },
           "description": "Declared attachments, sorted by object."
+        },
+        "articulated": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArticulatedState"
+          },
+          "description": "Every articulated scene object, sorted by name: its joint positions, as the runtime measured them."
         }
       },
       "required": [
@@ -2989,7 +3026,7 @@
           "const": "ssrobot.TraceRecord"
         },
         "version": {
-          "const": 12
+          "const": 13
         },
         "sequence": {
           "type": "integer",
