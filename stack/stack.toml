@@ -26,3 +26,11 @@ resolution = "lowest-direct"
 name = "newest"
 python = "3.13"
 resolution = "highest"
+
+# Checked downstream before a release: each package's wheel, built at this commit, is
+# installed on the stack with the built ssrobot wheel, and its own installed checks and
+# tests run there. Its tests' robot packages are fixtures, at the commits it pins.
+[downstream.ssgrasping]
+repository = "personalrobotics/ssgrasping"
+commit = "3ef2b69527b747035a82b705acdff6f62e092237"
+stack = "newest"

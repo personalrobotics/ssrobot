@@ -3,9 +3,9 @@
 Each stack in stack/stack.toml is resolved with ``uv pip compile`` from pyproject.toml's
 mujoco and planning extras and the reference application's pins, and locked with every
 artifact hash in stack/<name>.txt. The matrix in docs/stack.md is generated from those
-locks and the declared requirements. With --check, nothing is written, and this fails if
-a stack no longer resolves (contradictory constraints) or any file differs from what it
-would write.
+locks, the declared requirements, and the downstream packages checked. With --check,
+nothing is written, and this fails if a stack no longer resolves (contradictory
+constraints) or any file differs from what it would write.
 """
 
 from __future__ import annotations
@@ -89,6 +89,10 @@ def matrix(config: dict[str, object], locks: dict[str, str]) -> str:
         rows.append(
             f"| {name} | {kind} | {f'`{spec}`' if spec else '-'} | " + " | ".join(cells) + " |"
         )
+    downstream: dict[str, dict[str, str]] = config.get("downstream", {})  # type: ignore[assignment]
+    for name, d in downstream.items():
+        cells = [f"`{d['commit'][:7]}`" if s["name"] == d["stack"] else "-" for s in stacks]
+        rows.append(f"| {name} | downstream check | - | " + " | ".join(cells) + " |")
     return "\n".join(rows)
 
 

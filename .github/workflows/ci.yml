@@ -203,6 +203,75 @@ jobs:
           path: artifacts/stack-${{ matrix.stack }}/
           if-no-files-found: error
 
+  downstream:
+    # Each downstream package (docs/stack.md), its wheel at the commit stack/stack.toml
+    # names, on its stack with the built ssrobot wheel: its own installed checks and tests.
+    runs-on: ubuntu-latest
+    env:
+      # ssgrasping's tests render the reference robots' camera channels headless.
+      MUJOCO_GL: osmesa
+      PYOPENGL_PLATFORM: osmesa
+    steps:
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libosmesa6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The ssgrasping commit and stack stack/stack.toml name
+        id: pin
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import tomllib
+          d = tomllib.load(open("stack/stack.toml", "rb"))["downstream"]["ssgrasping"]
+          print(f"repository={d['repository']}\ncommit={d['commit']}\nstack={d['stack']}")
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.pin.outputs.repository }}
+          ref: ${{ steps.pin.outputs.commit }}
+          path: downstream/ssgrasping
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.15"
+          python-version: "3.13"
+      - name: Both wheels, without dependencies, on the stack exactly from its lock
+        run: |
+          uv build --wheel --out-dir dist
+          uv build --wheel --out-dir dist-downstream downstream/ssgrasping
+          uv venv --no-project --python 3.13 env
+          uv pip install --python env --require-hashes -r stack/${{ steps.pin.outputs.stack }}.txt
+          uv pip install --python env --no-deps dist/*.whl dist-downstream/*.whl
+          uv pip check --python env
+      - name: ssgrasping's dependency boundary, installed
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$GITHUB_WORKSPACE/env/bin/python" -P "$GITHUB_WORKSPACE/downstream/ssgrasping/scripts/check_boundary.py" --installed --require-extra sstsr --report "$GITHUB_WORKSPACE/artifacts/downstream/boundary.json"
+      - name: ssgrasping's tests, with their fixtures held to the lock
+        run: |
+          # The test tools and robot packages ssgrasping's dev group pins, nothing else.
+          python3 - > "$RUNNER_TEMP/fixtures.txt" <<'PY'
+          import re, tomllib
+          dev = tomllib.load(open("downstream/ssgrasping/pyproject.toml", "rb"))["dependency-groups"]["dev"]
+          names = ("pytest", "geodude-assets", "ada-assets")
+          print("\n".join(r for r in dev if re.split(r"[\[<>=!~;\s@]", r)[0] in names))
+          PY
+          uv pip install --python env -r "$RUNNER_TEMP/fixtures.txt" --constraint stack/${{ steps.pin.outputs.stack }}.txt
+          uv pip check --python env
+          cd downstream/ssgrasping
+          SSGRASPING_ARTIFACTS="$GITHUB_WORKSPACE/artifacts/downstream/tests" "$GITHUB_WORKSPACE/env/bin/python" -m pytest -p no:cacheprovider
+          test -z "$(git status --porcelain)"
+      - name: The report
+        run: |
+          echo "${{ steps.pin.outputs.commit }}" > artifacts/downstream/ssgrasping-commit.txt
+          env/bin/python -P scripts/stack_report.py --stack ${{ steps.pin.outputs.stack }} --wheel "$(echo dist/*.whl)" --downstream "$(echo dist-downstream/*.whl)" --fixtures --out artifacts/downstream/downstream-ssgrasping.json --check ssgrasping-boundary --check ssgrasping-tests
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: downstream-ssgrasping
+          path: |
+            artifacts/downstream/
+            dist/*.whl
+            dist-downstream/*.whl
+          if-no-files-found: error
+
   reference-robots:
     # Geodude and ADA, built from their pinned asset commits and inspected installed.
     runs-on: ubuntu-latest
