@@ -158,7 +158,7 @@ trace. It validates everything going into the runtime and everything coming out.
 | `start_chains(chains, *, snapshot, workers=1, cancel_lower=True, abort=None)` | Open or faulted. Starts a race of staged prefixes from a snapshot or prediction, returning a passive `ChainsRun` the caller advances while the context keeps stepping. See planning.md, *Racing: chains*. |
 | `plan_portfolio(request, *, snapshot, planners, seeds=None, processor=None, workers=1, abort=None)` | Open or faulted. Plans one request with each planner, as one-stage chains, blocking until every planner has ended, and returns the `Chains`; the shortest valid motion is selected. See planning.md, *Planner portfolios*. |
 | `predict(execution, *, unsettled=(), releases=None, removals=(), joints=None)` | Open. The `PredictedSnapshot` expected if a joint trajectory, submitted with a snapshot captured at the current revision, succeeds; with the objects named `unsettled`, the held objects expected released and where, the held objects expected released and removed (registered object poses only), and the positions of joints the motion doesn't move, as planning.md describes. Plannable; a plan made on it executes only as a continuation (`predicted_plan` otherwise). |
-| `project(plan, *, snapshot)` | Open or faulted. The `PlanProjection` of a successful plan that has not run: where it would leave the robot, as a planning state with `snapshot`'s stamp. Plannable; a plan made on it executes only as a continuation of an execution of exactly that plan (`projected_plan` otherwise). It confers no validity. |
+| `project(plan, *, snapshot)` | Open or faulted. The `PlanProjection` of a successful plan that has not run: where it would leave the robot, as a planning state with `snapshot`'s stamp. Plannable; a plan made on it executes only as a continuation of an execution of exactly that plan (`projected_plan` otherwise). It confers no validity. Both `predict` and `project` refuse in a scene with articulated objects (`prediction_unsupported`, a `CapabilityError`). |
 | `continuation(plan, *, planner, prediction)`, `continuation(plan, *, planner, projection, source)`, `execute_continuation(continuation, ...)` | Open. Bind a plan made on a prediction, or on a projection together with the particular execution of the projected plan, to it and its planner. Then run it from the actual arrival state: checked against the prediction, rebased by the planner, validated whole, and submitted, or refused with a code. See *Interleaving planning and execution* in [planning.md](planning.md). |
 | `owners(component)`, `executions` | Every unfinished execution holding any of the component's resources, as `Ownership` entries; and every execution in submission order. |
 
@@ -248,7 +248,9 @@ fixtures, or articulated objects without implementing `SceneRuntime`
 - `fixtures` are static bodies an attachment may allow contact with.
 - `articulated` (`RuntimeInfo` version 10) are bodies that move on constrained joints,
   such as a block that slides and turns on a table but never tips. They can be
-  observed and collided with, and are never attached.
+  observed and collided with, and are never attached. A prediction or projection would
+  keep them at their captured joint positions although the motion may move them, so
+  `predict` and `project` refuse in a scene that has any (`prediction_unsupported`).
 
 A name is in at most one of the three.
 

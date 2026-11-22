@@ -1361,6 +1361,7 @@ class RobotContext:
         sets joints the motion does not move to the positions expected when the plan
         runs, such as a gripper's, opened by that release; for planning only."""
         self._require("predict")
+        self._refuse_articulated("predict")
         self._check_own(execution)
         command = execution.command
         if isinstance(command, GuardedJointTrajectory) and isinstance(command.guard, OpeningGuard):
@@ -1492,6 +1493,19 @@ class RobotContext:
                 moved[attachment.object] = _compose(after, attachment.transform)
         return moved
 
+    def _refuse_articulated(self, what: str) -> None:
+        """Refuse a predicted state in a scene with articulated objects. It would keep
+        each one at its captured joint positions, though the motion may move it: safe
+        for collision, since every continuation is validated in the actual scene, but
+        not for a goal that depends on where the object is."""
+        if self.info.articulated:
+            raise CapabilityError(
+                "prediction_unsupported",
+                f"{what} cannot predict the articulated objects "
+                f"{', '.join(self.info.articulated)}; plan from a captured snapshot",
+                path="scene",
+            )
+
     def project(
         self, plan: PlanResult, *, snapshot: SceneSnapshot | PredictedSnapshot
     ) -> PlanProjection:
@@ -1502,6 +1516,7 @@ class RobotContext:
         validated. A plan made on it continues only from an execution of exactly
         ``plan`` (``continuation(..., projection=, source=)``)."""
         self._require("project")
+        self._refuse_articulated("project")
         if not isinstance(plan, PlanResult) or not plan.succeeded:
             raise ValidationError(
                 "unsuccessful_plan", "only a successful plan is projected", path="plan"

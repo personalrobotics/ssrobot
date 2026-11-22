@@ -531,7 +531,10 @@ it when the robot arrives. Three pieces make that safe:
    `OpeningGuard` is predicted to complete, since its guard triggering is a fault: if it
    triggers, the source has not succeeded as predicted, and neither `predict` nor a
    continuation accepts it (`source_not_succeeded`). A prediction extends a captured
-   snapshot by one motion.
+   snapshot by one motion. In a scene with articulated objects, `predict` and
+   `ctx.project` refuse (`prediction_unsupported`). The predicted state would keep them at
+   their captured joint positions although the motion may move them. Revalidation of the
+   continuation keeps it collision-free, but not a goal based on where they were.
 2. **Planning on it.** `ctx.plan`, the manipulator views and `ctx.plan_async` accept a
    `PredictedSnapshot` and plan in its predicted state. `ctx.plan_async` negotiates and
    builds the planning scene on the context's thread, then runs only `planner.plan` and

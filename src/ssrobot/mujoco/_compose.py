@@ -25,7 +25,7 @@ from ssrobot.package import ModelEntry, ProfileEntry, RobotPackage
 
 _FREE = mujoco.mjtJoint.mjJNT_FREE
 _BALL = int(mujoco.mjtJoint.mjJNT_BALL)
-_SIZES = {int(_FREE): (7, 6), _BALL: (4, 3)}  # qpos and qvel sizes; slide and hinge: 1, 1
+_SIZES = {int(_FREE): (7, 6)}  # qpos and qvel sizes; slide and hinge: 1, 1
 
 
 def _subtree_joints(body: Any) -> list[Any]:
@@ -38,10 +38,18 @@ def _subtree_joints(body: Any) -> list[Any]:
 
 def _kind(body: Any) -> str:
     """A top-level scene body's kind: ``object``, one free joint on it and no other joint
-    below; ``fixture``, no joints at all; ``articulated``, no free joint anywhere and at
-    least one other joint on it or below. Anything else is an invalid scene."""
+    below; ``fixture``, no joints at all; ``articulated``, only slide and hinge joints on
+    it or below, at least one. Anything else is an invalid scene: a ball joint's
+    quaternion state is not yet validated or tested, so it is refused."""
     own = [j.type for j in body.joints]
     below = [j.type for j in _subtree_joints(body)]
+    if _BALL in [int(t) for t in own + below]:
+        raise ValidationError(
+            "invalid_scene",
+            f"{body.name!r} has a ball joint; an articulated object may have only slide "
+            "and hinge joints",
+            path=f"scene: {body.name}",
+        )
     if own == [_FREE] and not below:
         return "object"
     if not own and not below:
@@ -51,15 +59,14 @@ def _kind(body: Any) -> str:
     raise ValidationError(
         "invalid_scene",
         f"{body.name!r} must have one free joint and no other (an object), no joints (a "
-        "fixture), or joints none of which is free (an articulated object)",
+        "fixture), or only slide and hinge joints (an articulated object)",
         path=f"scene: {body.name}",
     )
 
 
 def subtree_addresses(model: Any, body: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """The ``qpos`` and ``qvel`` addresses of every joint of top-level body ``body`` and
-    its descendants, in MuJoCo's joint order: one per slide or hinge, four (wxyz) and
-    three per ball."""
+    its descendants, in MuJoCo's joint order: one per slide or hinge."""
     qpos: list[int] = []
     qvel: list[int] = []
     for j in range(model.njnt):

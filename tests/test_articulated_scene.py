@@ -15,6 +15,8 @@ scene computed independently of MuJoCo:
   the hand pushes;
 - ``attach`` refuses the T (``not_attachable``), in the context and in the runtime, and
   the scene is unchanged;
+- ``predict`` and ``project`` refuse (``prediction_unsupported``): a predicted state would
+  keep the T where it was captured, though the motion may move it;
 - a snapshot records the T's joints as they are in ``qpos``, survives the wire, and
   materializes a world (``materialize_world_from``) whose T is where the pose channel
   reads it. A planning scene holds the T at its snapshot configuration: the hand collides
@@ -37,6 +39,7 @@ import mujoco
 
 from ssrobot import (
     Attachment,
+    Execution,
     JointTrajectory,
     ObservationRequest,
     Pose,
@@ -48,6 +51,7 @@ from ssrobot import (
     loads,
 )
 from ssrobot.mujoco import MujocoRuntime, materialize_world_from
+from ssrobot.planning import CBiRRT
 from tests.test_mujoco_scene import ARM, PACKAGE
 
 G = 9.81
@@ -128,6 +132,7 @@ class _Run:
         self.max_tilt = 0.0
         self.max_sink = 0.0
         self.pushed_ticks = 0
+        self.execution: Execution | None = None
         self.table_force: list[float] = []
         self.last = self.observe()
 
@@ -161,9 +166,10 @@ class _Run:
         trajectory = JointTrajectory(
             group="arm", joints=ARM, time_from_start_ns=(0, duration_ns), positions=(arm, goal)
         )
-        execution = self.ctx.submit(trajectory)
+        execution = self.ctx.submit(trajectory, snapshot=self.ctx.snapshot())
         while not execution.done:
             self.tick()
+        self.execution = execution
         return execution.status.state.value
 
 
@@ -228,7 +234,14 @@ def _scenario(work: Path) -> dict[str, Any]:
             ),
         }
         unchanged = ctx.scene.revision == revision and ctx.scene.attachments == ()
+        plan = ctx.manipulator().plan_to_configuration(
+            CLEAR, snapshot=start, planner=CBiRRT(package.description), velocity_scaling=0.5
+        )
+        refusals["project"] = _refused(lambda: ctx.project(plan, snapshot=start))
         statuses = [run.move(CLEAR, 1_000_000_000)]
+        assert run.execution is not None
+        source = run.execution
+        refusals["predict"] = _refused(lambda: ctx.predict(source))
         before_push = run.pushed_ticks
         statuses.append(run.move(PUSHED, 1_500_000_000))
         end = ctx.snapshot()
@@ -332,6 +345,8 @@ def test_articulated_scene_objects_slide_and_turn_but_never_tip(
     assert report["refusals"] == {
         "context_attach": "not_attachable",
         "runtime_attach": "not_attachable",
+        "project": "prediction_unsupported",
+        "predict": "prediction_unsupported",
     }
     assert report["scene_unchanged_by_refusals"]
 
