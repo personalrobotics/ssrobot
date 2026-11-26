@@ -18,6 +18,7 @@ verified within those ranges.
 | ssmjviser | reference application | `ssmjviser==1.0.1` | 1.0.1 | 1.0.1 |
 | numpy | installed with the above | - | 2.4.6 | 2.5.5 |
 | scipy | installed with the above | - | 1.17.1 | 1.18.1 |
+| ssgrasping | downstream check | - | - | `9e82101` |
 <!-- stack:end -->
 
 Each column is a stack: one exact set of releases, locked with every artifact hash in
@@ -28,7 +29,7 @@ declarations in [`stack/stack.toml`](../stack/stack.toml):
 - **newest** takes the newest compatible release of everything, on the newest supported
   Python.
 
-The *Kind* column distinguishes four kinds of row:
+The *Kind* column distinguishes five kinds of row:
 - **`requires-python`**: the supported Python range.
 - **extra `mujoco`** or **extra `planning`**: a requirement of that optional extra. Core
   ssrobot requires nothing; `pip install ssrobot` installs no backend.
@@ -36,6 +37,8 @@ The *Kind* column distinguishes four kinds of row:
   ssrobot. ssmjviser is optional for any application.
 - **installed with the above**: a version merely known to install, chosen by the
   resolver for another package's requirement. ssrobot declares nothing about it.
+- **downstream check**: a package that depends on ssrobot, checked on that stack at the
+  commit shown. It is not one of ssrobot's requirements.
 
 MuJoCo and sscbirrt are exact. sscbirrt's native MuJoCo adapter is built against one
 MuJoCo release and refuses another, and `MujocoRuntime` checks it at open. Moving to a
@@ -57,6 +60,16 @@ That report names the exact Python, platform, ssrobot wheel and its SHA-256, and
 installed distribution with its version and its lock's artifact hashes. It fails unless
 the installed set is exactly the lock plus ssrobot. The job retains the report with
 every check's output as the `stack-<name>` artifact.
+
+The `downstream` CI job checks each downstream package against the ssrobot wheel being
+built. It builds the package's wheel at the commit `stack/stack.toml` names, and installs
+it with the ssrobot wheel, both without dependencies, on that package's stack, exactly
+from the lock. In that environment it runs the package's own installed checks: for
+ssgrasping, its dependency boundary and its test suite. The tests' tools and robot
+packages are installed as fixtures, at the versions the package pins and constrained to
+the lock, so no locked version moves. The report, `downstream-<package>.json`, names
+both wheels and their SHA-256 and lists each fixture with its version. A change to
+ssrobot that breaks the package fails this job before an ssrobot release.
 
 The `check` job runs `scripts/generate_stack.py --check`, which resolves every stack
 again. It fails in two cases:
@@ -86,7 +99,8 @@ Until 1.0:
 ## Not yet covered
 
 - ssrobot and ssgrasping are not yet released, so the documented install takes ssrobot
-  from GitHub. #34 publishes ssrobot from the artifact these stacks verified. Until
-  ssgrasping and Geodude are released, Geodude names its stack by commit.
+  from GitHub, and ssgrasping is checked by commit. #34 publishes ssrobot from the
+  artifact these stacks verified. Until ssgrasping and Geodude are released, Geodude
+  names its stack by commit.
 - Only Linux is verified. macOS installs and runs the test suite in development, but it
   has no verified stack yet.
