@@ -18,7 +18,7 @@ verified within those ranges.
 | ssmjviser | reference application | `ssmjviser==1.0.1` | 1.0.1 | 1.0.1 |
 | numpy | installed with the above | - | 2.4.6 | 2.5.5 |
 | scipy | installed with the above | - | 1.17.1 | 1.18.1 |
-| ssgrasping | downstream check | - | - | `3ef2b69` |
+| ssgrasping | downstream check | - | - | `9e82101` |
 <!-- stack:end -->
 
 Each column is a stack: one exact set of releases, locked with every artifact hash in
