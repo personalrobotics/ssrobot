@@ -35,7 +35,7 @@ class RuntimeInfo(Record):
     """What an opened runtime reports about itself."""
 
     SCHEMA = "ssrobot.RuntimeInfo"
-    VERSION = 9
+    VERSION = 10
 
     runtime: str = field(metadata=meta("Runtime implementation name."))
     runtime_version: str = field(metadata=meta("Runtime implementation and backend versions."))
@@ -53,6 +53,13 @@ class RuntimeInfo(Record):
     fixtures: tuple[str, ...] = field(
         default=(),
         metadata=meta("Static scene bodies an attachment may allow contact with, sorted."),
+    )
+    articulated: tuple[str, ...] = field(
+        default=(),
+        metadata=meta(
+            "Scene bodies on constrained joints, sorted: observed and collided with, never "
+            "attached."
+        ),
     )
     trajectory: TrajectoryContract | None = field(
         default=None,
@@ -101,7 +108,11 @@ class RuntimeInfo(Record):
                 path="rest",
             )
         check_name(self.clock, path="clock")
-        for path, names in (("objects", self.objects), ("fixtures", self.fixtures)):
+        for path, names in (
+            ("objects", self.objects),
+            ("fixtures", self.fixtures),
+            ("articulated", self.articulated),
+        ):
             for i, name in enumerate(names):
                 check_name(name, path=f"{path}[{i}]")
             if list(names) != sorted(set(names)):
@@ -111,6 +122,12 @@ class RuntimeInfo(Record):
         if set(self.objects) & set(self.fixtures):
             raise ValidationError(
                 "duplicate_name", "a name is both an object and a fixture", path="fixtures"
+            )
+        if set(self.articulated) & (set(self.objects) | set(self.fixtures)):
+            raise ValidationError(
+                "duplicate_name",
+                "a name is both articulated and an object or fixture",
+                path="articulated",
             )
         components = [g.component for g in self.guards]
         if components != sorted(set(components)):

@@ -1,8 +1,31 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ssrobot.PredictedSnapshot v4",
+  "title": "ssrobot.PredictedSnapshot v5",
   "$ref": "#/$defs/PredictedSnapshot",
   "$defs": {
+    "ArticulatedState": {
+      "type": "object",
+      "description": "An articulated scene object's configuration: the positions of its joints.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Articulated scene object name."
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Its joints' positions, in the runtime's order for that object; opaque to the core.",
+          "x-unit": "joint"
+        }
+      },
+      "required": [
+        "name",
+        "positions"
+      ],
+      "additionalProperties": false
+    },
     "Attachment": {
       "type": "object",
       "description": "A scene object declared held by an end effector.",
@@ -135,7 +158,7 @@
           "const": "ssrobot.PredictedSnapshot"
         },
         "version": {
-          "const": 4
+          "const": 5
         },
         "state": {
           "$ref": "#/$defs/SceneSnapshot",
@@ -234,7 +257,7 @@
           "const": "ssrobot.SceneSnapshot"
         },
         "version": {
-          "const": 2
+          "const": 3
         },
         "description": {
           "type": "string",
@@ -292,6 +315,13 @@
             "$ref": "#/$defs/Attachment"
           },
           "description": "Declared attachments, sorted by object."
+        },
+        "articulated": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArticulatedState"
+          },
+          "description": "Every articulated scene object, sorted by name: its joint positions, as the runtime measured them."
         }
       },
       "required": [
